@@ -1,0 +1,68 @@
+name: Commit and PR format
+
+on:
+  # pull_request_target runs this workflow and .github/scripts as they are on the
+  # default branch, so a pull request can't loosen the check that judges it. The
+  # job only reads the PR's title, description, and commit messages; it never
+  # checks out or runs the PR's code.
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+  # Commits that reach main without a pull request still get checked, after the fact.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
+
+jobs:
+  pr-format:
+    name: Check title, description and commits
+    # Dependabot writes its own titles and descriptions. Everyone else, people, agents,
+    # and apps alike, is checked: a skipped job counts as passing a required check.
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the default branch's scripts and history
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+          # Full history so the PR's commits can be compared with the base branch.
+          fetch-depth: 0
+      - name: Fetch the pull request's commits
+        env:
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags origin "$PR_HEAD"
+      - name: Run check_pr.sh
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_BASE: origin/${{ github.event.pull_request.base.ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/check_pr.sh
+
+  main-commits:
+    name: Check commits pushed to main
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out scripts and history
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github
+          fetch-depth: 0
+      - name: Run check_pr.sh --commits
+        env:
+          BEFORE: ${{ github.event.before }}
+        # After a force push the old tip may be gone; then check only the new one.
+        run: |
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            .github/scripts/check_pr.sh --commits "$GITHUB_SHA" --not "$BEFORE"
+          else
+            .github/scripts/check_pr.sh --commits -1 "$GITHUB_SHA"
+          fi
