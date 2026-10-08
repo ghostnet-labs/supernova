@@ -1,0 +1,8 @@
+#!/bin/sh
+# Check the commit message against the rules in AGENTS.md before git records it.
+# Enable with: git config core.hooksPath .githooks git commit, git merge, and rebase's
+# reword run this hook, but clean cherry-picks and reverts, other rebase steps, and
+# am do not, so pre-push checks every commit again before it leaves this machine.
+check="$(dirname "$0")/../.github/scripts/check_pr.sh"
+[ -x "$check" ] || exit 0
+exec "$check" --message "$1"

@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secrets:
+    name: Scan for secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.28.0
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" |
+            tar -xz -C /usr/local/bin gitleaks
+      # Scan only the commits this push or pull request adds.
+      - name: Scan new commits with gitleaks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            range="HEAD~1..HEAD"
+          else
+            range="$BASE_SHA..HEAD"
+          fi
+          gitleaks git --redact --no-banner --verbose --log-opts="$range"
+
+  test:
+    name: Lint and test on Ubuntu
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      # ./test.sh skips the lint row when ShellCheck is missing; the runner image
+      # ships it, so fail here if that ever changes.
+      - name: Check shellcheck is installed
+        run: shellcheck --version
+      - name: Run ./test.sh
+        env:
+          NO_COLOR: "1"
+        run: ./test.sh

@@ -1,0 +1,13 @@
+# Opens a pull request when a GitHub Action used in .github/workflows has a newer version.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    # Titles read "ci: bump ..." to match the PR title format.
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]
