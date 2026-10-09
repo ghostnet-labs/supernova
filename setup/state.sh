@@ -167,13 +167,23 @@ setup_checkout_root() {
 # not manage and that are dangling or point into another setup checkout, such
 # as an old ~/.bin left behind by an earlier setup. It only reports them.
 check_stray_links() {
-  local link name target directory root this_root found=0
+  local link name target directory root this_root config found=0
+  local -a backups=()
 
   setup_state_check "stray home links"
   this_root="$(cd -- "$REPO_DIR" && pwd -P)"
   for link in "$HOME"/.[!.]* "$HOME"/.config/* "$HOME"/.local/bin/*; do
-    [[ -L "$link" ]] || continue
+    [[ -L "$link" || -d "$link" ]] || continue
     name="${link#"$HOME"/}"
+    # --fix moves a config it replaces to ~/.config/NAME.bak.TIMESTAMP, so a
+    # machine moved from another checkout keeps links into it there.
+    for config in "${SETUP_CONFIG_LINKS[@]}"; do
+      if [[ "$name" == ".config/$config.bak."[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9] ]]; then
+        backups+=("$name")
+        continue 2
+      fi
+    done
+    [[ -L "$link" ]] || continue
     # check_managed_links already reports the links this checkout manages.
     if [[ "$name" == .config/* ]]; then
       [[ " ${SETUP_CONFIG_LINKS[*]} " == *" ${name#.config/} "* ]] && continue
@@ -194,6 +204,9 @@ check_stray_links() {
     fi
   done
   ((found)) || setup_state_complete "no dangling or legacy links in ~, ~/.config, or ~/.local/bin"
+  if ((${#backups[@]})); then
+    setup_state_info "${#backups[@]} config backup(s) from earlier --fix runs (~/.config/*.bak.*); safe to remove once you're happy with the new links"
+  fi
 }
 
 check_codex_config() {
