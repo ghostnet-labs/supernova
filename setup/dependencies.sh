@@ -37,6 +37,19 @@ SETUP_REQUIRED_REPO_FILES=(
   apps/agent-workspace/Main.swift
   dotfiles/.bin/agent-workspace
   dotfiles/.bin/awake
+  apps/hardware-planner/Info.plist
+  apps/hardware-planner/Models.swift
+  apps/hardware-planner/ProjectFormat.swift
+  apps/hardware-planner/HardwareStore.swift
+  apps/hardware-planner/Main.swift
+  apps/hardware-planner/PlannerModel.swift
+  apps/hardware-planner/PlannerView.swift
+  apps/hardware-planner/PartEditor.swift
+  apps/hardware-planner/AssemblyEditor.swift
+  apps/hardware-planner/ProjectDetailsEditor.swift
+  apps/hardware-planner/VisualFixtures.swift
+  apps/hardware-planner/install_support.py
+  dotfiles/.bin/hardware-planner
   dotfiles/.vim/colors/tokyonight-night.vim
   dotfiles/.bin/codex-turn-bell
   dotfiles/atuin/config.toml

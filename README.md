@@ -6,8 +6,8 @@ optional [work overlay](#work-overlays) that layers a separate checkout of
 work tools on top. Coding agents should read [AGENTS.md](AGENTS.md), which
 holds the design rules.
 
-For a plain-language walkthrough of Toolbox, Atuin, the shell functions, and
-Agent Control Center's project workspace, start with
+For a plain-language walkthrough of Toolbox, Atuin, the shell functions,
+Agent Control Center's project workspace, and Hardware Planner, start with
 [Your tooling guide](docs/tooling-guide.md).
 
 ## Repository layout
@@ -150,6 +150,7 @@ app is installed, and `--install` builds it from `apps/` and starts it.
 | Keep the Mac and displays awake; optional mouse jiggle | `awake --install` |
 | Cloned GitHub repo activity menu bar app | `gh-activity-bar --install` |
 | Git worktree manager | `worktree-manager --install`, `worktree-manager --open` |
+| Hardware projects, exact part revisions and purchasing BOMs | `hardware-planner --install`, `hardware-planner --open` |
 | Rebuild and restart every macOS app, including a work overlay's | `reinstall-apps`, `reinstall-apps --list` |
 | Find available helpers and commands; insert an editable example | `toolbox`, `toolbox --pick` |
 

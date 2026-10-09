@@ -176,6 +176,7 @@ struct ProjectWorkspaceView: View {
     @ObservedObject var sessionStore: SessionStore
     let onClose: (() -> Void)?
     @StateObject private var model: ProjectWorkspaceModel
+    @StateObject private var hardware = HardwareReportModel()
     @State private var tab = "Memory"
     init(sessionStore: SessionStore, model: ProjectWorkspaceModel? = nil, onClose: (() -> Void)? = nil) {
         self.sessionStore = sessionStore
@@ -207,14 +208,16 @@ struct ProjectWorkspaceView: View {
                         Spacer(); Button("Relink…") { model.addProject(relink:true) }
                     }
                     if project.isMissing { Label("Project directory is missing. Memory is retained; relink before executing work.",systemImage:"exclamationmark.triangle").foregroundStyle(.orange) }
-                    Picker("Workspace",selection:$tab) { ForEach(["Conversation","Tasks","Memory"],id:\.self) { Text($0).tag($0) } }.pickerStyle(.segmented)
+                    Picker("Workspace",selection:$tab) { ForEach(["Conversation","Tasks","Memory","Hardware"],id:\.self) { Text($0).tag($0) } }.pickerStyle(.segmented)
                     switch tab {
                     case "Conversation":
                         if let database = model.database {
-                            ProjectConversationSlot(context:ManagedConversationContext(projectID:project.id,name:project.name,cwd:project.workingDirectory,retrievedContext:[model.summary] + model.hits.prefix(8).map { "Context source \($0.id): \($0.text)" }),database:database)
+                            if !hardware.context(projectID:project.id).isEmpty { Text("Hardware snapshot included with the next message. Manage it in Hardware.").font(.caption).foregroundStyle(.secondary) }
+                            ProjectConversationSlot(context:ManagedConversationContext(projectID:project.id,name:project.name,cwd:project.workingDirectory,retrievedContext:hardware.context(projectID:project.id) + [model.summary] + model.hits.prefix(8).map { "Context source \($0.id): \($0.text)" }),database:database)
                         }
                     case "Tasks":
                         if let database = model.database { ProjectTasksSlot(projectID:project.id,database:database) }
+                    case "Hardware": HardwareReportView(model:hardware)
                     default: memory(project)
                     }
                 }.padding().frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
@@ -225,6 +228,9 @@ struct ProjectWorkspaceView: View {
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .task { await model.load() }
+        .task(id:model.project?.id) {
+            if let project = model.project, let database = model.database { await hardware.load(projectID:project.id,database:database) }
+        }
         .onDisappear { model.pause() }
         .alert("Project memory",isPresented:Binding(get:{model.error != nil},set:{if !$0 {model.error = nil}})) { Button("OK") { model.error = nil } } message: { Text(model.error ?? "") }
         .sheet(item:$model.selectedSource) { hit in sourceSheet(hit) }

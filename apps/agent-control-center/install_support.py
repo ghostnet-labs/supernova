@@ -26,6 +26,7 @@ def source_hashes(source):
             "GhosttyLaunch.swift",
             "GitStatus.swift",
             "SessionPresentation.swift",
+            "HardwareReport.swift",
             "TextLine.swift",
             "octicons/Octicons.swift",
         )

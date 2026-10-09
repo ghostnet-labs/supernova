@@ -19,5 +19,5 @@ sources=()
 for source in "$app"/*.swift; do [[ "$source" == */Main.swift ]] || sources+=("$source"); done
 swiftc -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$scratch/check-position" "${sources[@]}" \
   "$repo_root/apps/lib/octicons/Octicons.swift" "$repo_root/apps/lib/BranchRef.swift" "$repo_root/apps/lib/GhosttyLaunch.swift" "$repo_root/apps/lib/GitStatus.swift" "$repo_root/apps/lib/TextLine.swift" \
-  "$repo_root/apps/lib/SessionPresentation.swift" "$repo_root/tests/dotfiles/fixtures/agent_control_transcript_position.swift"
+  "$repo_root/apps/lib/SessionPresentation.swift" "$repo_root/apps/lib/HardwareReport.swift" "$repo_root/tests/dotfiles/fixtures/agent_control_transcript_position.swift"
 "$scratch/check-position" "$scratch"

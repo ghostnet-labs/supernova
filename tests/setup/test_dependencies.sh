@@ -31,6 +31,10 @@ done
 for workspace_source in apps/agent-workspace/Info.plist apps/agent-workspace/Main.swift dotfiles/.bin/agent-workspace; do
   assert_array_contains "$workspace_source" "${SETUP_REQUIRED_REPO_FILES[@]}"
 done
+for hardware_source in Info.plist Models.swift ProjectFormat.swift HardwareStore.swift Main.swift PlannerModel.swift PlannerView.swift PartEditor.swift AssemblyEditor.swift ProjectDetailsEditor.swift VisualFixtures.swift install_support.py; do
+  assert_array_contains "apps/hardware-planner/$hardware_source" "${SETUP_REQUIRED_REPO_FILES[@]}"
+done
+assert_array_contains dotfiles/.bin/hardware-planner "${SETUP_REQUIRED_REPO_FILES[@]}"
 assert_array_excludes .bin "${SETUP_USER_BIN_DIRS[@]}"
 assert_array_excludes bin "${SETUP_USER_BIN_DIRS[@]}"
 [[ ${#SETUP_USER_BIN_DIRS[@]} -eq 1 ]] || fail_test "expected only ~/.local/bin to be setup-managed"
