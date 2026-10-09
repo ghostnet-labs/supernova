@@ -8,4 +8,5 @@
 <!-- The problem this solves or the reason for it. -->
 
 ## Checked
-- [ ] `./test.sh` passes
+- [ ] `./setup.sh --test` passes
+- [ ] Changed commands' `--help` still matches their behavior

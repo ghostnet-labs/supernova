@@ -1,7 +1,8 @@
 #!/bin/sh
 # Check the first line of every commit this push adds, as the pull request check
 # does: clean cherry-picks and reverts, most rebase steps, and am skip the
-# commit-msg hook. Enable with: git config core.hooksPath .githooks
+# commit-msg hook. Also check that none adds a term from the untracked
+# .local/denylist. setup.sh --fix points core.hooksPath here.
 check="$(dirname "$0")/../.github/scripts/check_pr.sh"
 [ -x "$check" ] || exit 0
 # Commits on a remote-tracking branch are not checked again. With none fetched,
@@ -16,9 +17,12 @@ while read -r _ local_sha remote_ref remote_sha; do
   case $local_sha in *[!0]*) ;; *) continue ;; esac        # branch deletion
   # The remote's old tip counts as checked when this clone has it.
   if git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-    "$check" --commits "$local_sha" --not --remotes "$remote_sha" </dev/null || status=1
+    set -- "$local_sha" --not --remotes "$remote_sha"
   else
-    "$check" --commits "$local_sha" --not --remotes </dev/null || status=1
+    set -- "$local_sha" --not --remotes
   fi
+  "$check" --commits "$@" </dev/null || status=1
+  # Terms listed in the untracked .local/denylist must not leave this clone.
+  "$(dirname "$0")/check-denylist" --commits "$@" </dev/null || status=1
 done
 exit $status
