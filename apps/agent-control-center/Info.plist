@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Agent Control Center</string>
+  <key>CFBundleExecutable</key>
+  <string>AgentControlCenter</string>
+  <key>CFBundleIdentifier</key>
+  <string>local.agent-control-center</string>
+  <key>CFBundleName</key>
+  <string>Agent Control Center</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key><string>local.agent-control-center.session</string>
+    <key>CFBundleURLSchemes</key><array><string>agent-control-center</string><string>codex-sessions</string></array>
+  </dict></array>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>Agent Control Center brings the exact Ghostty window, tab, and pane running a Codex or Claude Code session to the front.</string>
+</dict>
+</plist>
