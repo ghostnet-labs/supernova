@@ -42,8 +42,8 @@ is_macos=false
 if "$is_macos" && command -v swiftc >/dev/null 2>&1; then
   awk '/^@main$/ { exit } { print }' "$REPO_DIR/apps/codex-bal-bar/CodexBalBar.swift" >"$TMP_ROOT/App.swift"
   swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
-    "$TMP_ROOT/App.swift" "$REPO_DIR/tests/dotfiles/fixtures/codex_balance.swift" -o "$TMP_ROOT/check" || fail_test "Codex Balance app does not compile"
-  "$TMP_ROOT/check" "$TMP_ROOT" || fail_test "Codex Balance behavior checks"
+    "$TMP_ROOT/App.swift" "$REPO_DIR/tests/dotfiles/fixtures/codex_balance.swift" -o "$TMP_ROOT/check-codex-bal-bar" || fail_test "Codex Balance app does not compile"
+  "$TMP_ROOT/check-codex-bal-bar" "$TMP_ROOT" || fail_test "Codex Balance behavior checks"
 fi
 
 bash -n "$CAPTURE" || fail_test "claude-limits-capture has a syntax error"

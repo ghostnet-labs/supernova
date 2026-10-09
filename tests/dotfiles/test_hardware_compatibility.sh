@@ -12,9 +12,9 @@ trap 'rm -rf -- "$tmp"' EXIT
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$tmp/clang-cache}"
 export SWIFT_MODULECACHE_PATH="${SWIFT_MODULECACHE_PATH:-$tmp/swift-cache}"
 app="$repo_root/apps/hardware-planner"
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$tmp/check" \
+swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$tmp/check-hardware-compatibility" \
   "$app/Models.swift" "$app/ProjectFormat.swift" "$app/CompatibilityEngine.swift" "$app/ChangeImpact.swift" \
   "$repo_root/tests/dotfiles/fixtures/hardware_compatibility.swift"
-"$tmp/check"
+"$tmp/check-hardware-compatibility"
 swiftc -typecheck -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
   "$app/Models.swift" "$app/ProjectFormat.swift" "$app/CompatibilityEngine.swift" "$app/ChangeImpact.swift" "$app/CompatibilityView.swift"

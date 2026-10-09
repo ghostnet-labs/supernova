@@ -17,5 +17,5 @@ swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.
   "$root/apps/lib/HardwareReport.swift" "$agent/AgentDatabase.swift" "$agent/HardwareReportStore.swift" \
   "$agent/HardwareReportView.swift" "$hardware/Models.swift" "$hardware/ProjectFormat.swift" \
   "$hardware/CompatibilityEngine.swift" "$hardware/ReportExport.swift" "$hardware/HardwareStore.swift" \
-  "$hardware/PlannerModel.swift" "$root/tests/dotfiles/fixtures/hardware_reports.swift" -lsqlite3 -o "$scratch/check"
-"$scratch/check" "$scratch/data"
+  "$hardware/PlannerModel.swift" "$root/tests/dotfiles/fixtures/hardware_reports.swift" -lsqlite3 -o "$scratch/check-hardware-reports"
+"$scratch/check-hardware-reports" "$scratch/data"
