@@ -422,11 +422,13 @@ status=0
 run_with_timeout 5 sh -c 'exit 3' >/dev/null 2>&1 || status=$?
 assert_equals "$status" 3
 status=0
-timeout_output="$(run_with_timeout 1 bash -c 'sleep 31.7 & wait' 2>&1)" || status=$?
+# A sleep length unique to this run, so another run's copy of this check can't match.
+stuck_sleep="sleep 31.$$"
+timeout_output="$(run_with_timeout 1 bash -c "$stuck_sleep & wait" 2>&1)" || status=$?
 assert_equals "$status" 124
 assert_contains "$timeout_output" 'timed out after 1s; still running:'
-assert_contains "$timeout_output" 'sleep 31.7'
-if pgrep -f 'sleep 31.7' >/dev/null; then fail_test "timed-out check left its processes running"; fi
+assert_contains "$timeout_output" "$stuck_sleep"
+if pgrep -f "$stuck_sleep" >/dev/null; then fail_test "timed-out check left its processes running"; fi
 if [[ "$(uname -s)" == Darwin ]]; then
   sample_file="$(sed -n 's/^Stack samples: //p' <<<"$timeout_output")"
   [[ -s "$sample_file" ]] || fail_test "timed-out check saved no stack samples"
