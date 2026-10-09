@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# setup-help: none (put on PATH by ./setup.sh --test when SETUP_SWIFTC_CACHE is set)
+# Cache swiftc results across test runs and checkouts. A compile is keyed on
+# the compiler, the SDK, each argument, and the contents of every file argument
+# (not its path), so separate checkouts of the same sources share entries. Only
+# successful -o and -typecheck compiles are cached; anything else runs swiftc.
+# Entries live in SETUP_SWIFTC_CACHE, which is pruned to SETUP_SWIFTC_CACHE_MB.
+
+set -euo pipefail
+
+self_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+real=""
+IFS=: read -r -a path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ -n "$dir" && "$(cd -- "$dir" 2>/dev/null && pwd)" != "$self_dir" && -x "$dir/swiftc" ]] || continue
+  real="$dir/swiftc"
+  break
+done
+[[ -n "$real" ]] || { printf 'error: swiftc not found\n' >&2; exit 127; }
+
+cache="${SETUP_SWIFTC_CACHE:-}"
+output=""
+cacheable=false
+previous=""
+for arg in "$@"; do
+  [[ "$previous" == -o ]] && output="$arg"
+  [[ "$arg" == -typecheck ]] && cacheable=true
+  previous="$arg"
+done
+[[ -n "$output" ]] && cacheable=true
+[[ -n "$cache" && "$cacheable" == true ]] || exec "$real" "$@"
+
+hash_stdin() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -c1-64
+}
+
+key="$(
+  {
+    "$real" --version 2>&1
+    printf 'sdk=%s target=%s\n' "${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null || true)}" "${MACOSX_DEPLOYMENT_TARGET:-}"
+    previous=""
+    for arg in "$@"; do
+      if [[ "$previous" == -o ]]; then
+        printf 'output\n'
+      elif [[ -f "$arg" ]]; then
+        printf 'file %s\n' "$(hash_stdin <"$arg")"
+      else
+        printf 'arg %s\n' "$arg"
+      fi
+      previous="$arg"
+    done
+  } | hash_stdin
+)"
+entry="$cache/entries/$key"
+
+if [[ -d "$entry" ]]; then
+  # A clone on APFS: the copy takes no space until the test changes it.
+  if [[ -z "$output" ]] || cp -c "$entry/output" "$output" 2>/dev/null || cp "$entry/output" "$output"; then
+    touch "$entry" 2>/dev/null || true
+    cat "$entry/stderr" >&2 2>/dev/null || true
+    exit 0
+  fi
+fi
+
+mkdir -p "$cache/entries"
+staging="$(mktemp -d "$cache/entries/.new.XXXXXX")"
+trap 'rm -rf -- "$staging"' EXIT
+status=0
+"$real" "$@" 2>"$staging/stderr" || status=$?
+cat "$staging/stderr" >&2
+(( status == 0 )) || exit "$status"
+if [[ -z "$output" ]] || cp -c "$output" "$staging/output" 2>/dev/null || cp "$output" "$staging/output"; then
+  # Another run may have stored the same entry first; either copy is correct,
+  # but mv would put this one inside it, so drop it then.
+  [[ -e "$entry" ]] || mv -- "$staging" "$entry" 2>/dev/null || true
+  rm -rf -- "${entry:?}/${staging##*/}"
+fi
+
+# Keep the cache under its limit by dropping the least recently used entries;
+# a run reading an entry as it goes just compiles again.
+limit_kb=$(( ${SETUP_SWIFTC_CACHE_MB:-2048} * 1024 ))
+used_kb="$(du -sk "$cache" | cut -f1)"
+if (( used_kb > limit_kb )); then
+  # shellcheck disable=SC2045 # entry names are hex digests
+  for old in $(ls -tr "$cache/entries"); do
+    (( used_kb > limit_kb )) || break
+    [[ "$old" != "$key" ]] || continue
+    used_kb=$(( used_kb - $(du -sk "$cache/entries/$old" | cut -f1) ))
+    rm -rf -- "${cache:?}/entries/$old"
+  done
+fi

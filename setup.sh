@@ -67,7 +67,9 @@ Environment:
   SETUP_WORK_ROOT       Override the saved work overlay checkout (WORK_ROOT).
   SETUP_TEST_TIMEOUT    Seconds before a test check is stopped (default: 300).
   SETUP_HELP_TIMEOUT    Seconds before a Help check is stopped (default: 30).
-  SETUP_TEST_JOBS       Test files run at once by --test (default: one per CPU).'
+  SETUP_TEST_JOBS       Test files run at once by --test (default: one per CPU).
+  SETUP_SWIFTC_CACHE    Directory where --test caches Swift compiles (default: none).
+  SETUP_SWIFTC_CACHE_MB Size limit of that cache in MB (default: 2048).'
 }
 
 set_mode() {
@@ -677,6 +679,11 @@ run_test_mode() {
   # commits and config writes on this checkout instead.
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
   cd "$REPO_DIR" || return 1
+  # Share Swift compiles, and the Clang module cache they build, between runs.
+  if [[ -n "${SETUP_SWIFTC_CACHE:-}" ]]; then
+    export SETUP_SWIFTC_CACHE CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$SETUP_SWIFTC_CACHE/modules}"
+    PATH="$REPO_DIR/tests/lib/swiftc-cache:$PATH"
+  fi
   run_repository_tests
   print_test_summary
 }
