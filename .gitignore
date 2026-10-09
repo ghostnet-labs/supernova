@@ -1,0 +1,21 @@
+setup/install.log
+swap-window
+.env*
+*/env.zsh
+.local/*
+!.local/env.zsh.example
+__pycache__
+.DS_Store
+.claude/settings.local.json
+dotfiles/.vim/.netrwhist
+*.zwc
+# Obsidian pane layout; changes whenever a note is opened
+notes/*/.obsidian/workspace*.json
+
+# Toolbox machine-local config, review state, and Work catalogs.
+dotfiles/toolbox/config.json
+dotfiles/toolbox/**/state.sqlite3*
+dotfiles/toolbox/work-*/
+
+# Link to the work overlay Git config, made by setup.sh --fix
+dotfiles/git/work.config
