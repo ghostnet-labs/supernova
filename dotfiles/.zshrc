@@ -99,7 +99,11 @@ fzf_setup() {
             mkdir -p "${_fzf_cache:h}"
             fzf --zsh > "$_fzf_cache"
         fi
-        source "$_fzf_cache"
+        # The key bindings need a terminal: without one (zsh -i -c in CI or a
+        # script), restoring the zle option prints "can't change option: zle".
+        if [[ -t 0 ]]; then
+            source "$_fzf_cache"
+        fi
     else
         echo "⚠️ fzf not found! Consider installing via brew install fzf"
     fi
