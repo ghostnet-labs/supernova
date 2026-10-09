@@ -201,12 +201,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         updateActivationPolicy()
     }
 
+    /// Applies the Dock policy. Window tests replace it so their windows never reach
+    /// the Dock of the person logged in, and check `dockPolicy` instead.
+    static var applyActivationPolicy: (NSApplication.ActivationPolicy) -> Void = { policy in
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+    }
+    /// The policy last chosen: `.regular` while the app belongs in the Dock.
+    private(set) var dockPolicy: NSApplication.ActivationPolicy?
+
     private func updateActivationPolicy() {
         // Hidden and minimized windows are still open. An early URL-open event can also
         // create a window before launch finishes; neither case should remove the Dock icon.
         let keepInDock = !openWindows.isEmpty || (keepsDockIconWhenClosed && (mainWindow != nil || settingsWindow != nil))
         let policy: NSApplication.ActivationPolicy = keepInDock ? .regular : .accessory
-        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
+        dockPolicy = policy
+        Self.applyActivationPolicy(policy)
     }
 
     @objc private func togglePopover() {

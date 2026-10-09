@@ -5,6 +5,10 @@ import SwiftUI
 @main struct UIValidation {
     @MainActor static func main() throws {
         let app = NSApplication.shared
+        // Keep the app out of the Dock of whoever is logged in (CI runs as that user):
+        // the delegate's Dock decisions are recorded in dockPolicy instead of applied.
+        app.setActivationPolicy(.prohibited)
+        AppDelegate.applyActivationPolicy = { _ in }
         let scratch = URL(fileURLWithPath: CommandLine.arguments[1])
         let suite = "AgentControlCenter.UI.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -20,7 +24,7 @@ import SwiftUI
             if !condition { print("FAIL: \(description)"); exit(1) }
         }
         func settle() { RunLoop.main.run(until: Date().addingTimeInterval(0.6)) }
-        check(app.activationPolicy() == .accessory, "quiet startup")
+        check(delegate.dockPolicy == .accessory, "quiet startup")
         check(!app.windows.contains { $0.isVisible && $0.title == "Agent Control Center" }, "no login browser")
         let transcript = scratch.appendingPathComponent("conversation.jsonl")
         let records: [[String: Any]] = [
@@ -51,7 +55,7 @@ import SwiftUI
         store.applyProvider(ProviderSnapshot(source: .claude, health: .unavailable, error: nil, sessions: [], subagents: []), baseline: true)
         store.choose("root")
         delegate.showBrowser(); settle()
-        check(app.activationPolicy() == .regular, "Dock visible with window")
+        check(delegate.dockPolicy == .regular, "Dock visible with window")
         let window = app.windows.first { $0.title == "Agent Control Center" }!
         delegate.showBrowser(); settle()
         check(app.windows.filter { $0.title == "Agent Control Center" }.count == 1, "one browser window")
@@ -87,10 +91,10 @@ import SwiftUI
         delegate.application(app, open: [URL(string: "codex-sessions://session/waiting")!]); settle()
         check(store.selection == "waiting" && !store.showDashboard, "legacy links select and focus")
         window.performClose(nil); settle()
-        check(app.activationPolicy() == .accessory, "closing hides Dock")
+        check(delegate.dockPolicy == .accessory, "closing hides Dock")
         check(!window.isVisible, "browser closed")
         _ = delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false); settle()
-        check(window.isVisible && app.activationPolicy() == .regular, "reopening restores browser")
+        check(window.isVisible && delegate.dockPolicy == .regular, "reopening restores browser")
         window.performClose(nil)
         delegate.applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
         print("PASS: quiet launch, Dock/window lifecycle, single window, links, transcript, and five layout captures")
