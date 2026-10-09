@@ -87,7 +87,16 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1
           echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      # Swift compiles are most of the macOS run; keep them between runs. The
+      # key changes with any Swift source, so a run restores the newest cache
+      # and saves its own; the cache prunes itself to its size limit.
+      - name: Restore the Swift compile cache
+        uses: actions/cache@v6
+        with:
+          path: ~/Library/Caches/setup-swiftc-cache
+          key: swiftc-${{ runner.os }}-${{ hashFiles('apps/**', 'tests/dotfiles/**', 'dotfiles/.bin/**') }}
+          restore-keys: swiftc-${{ runner.os }}-
       - name: Run ./setup.sh --test
         env:
           NO_COLOR: "1"
-        run: ./setup.sh --test
+        run: SETUP_SWIFTC_CACHE="$HOME/Library/Caches/setup-swiftc-cache" ./setup.sh --test
