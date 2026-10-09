@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import os
 from pathlib import Path
+import pwd
 import secrets
 import shlex
 import subprocess
@@ -61,7 +62,14 @@ def sign(bundle, directory):
         saved = identity(directory)
         password = (saved / "password").read_text()
         fingerprint = (saved / "fingerprint").read_text()
-        with tempfile.TemporaryDirectory(prefix="keychain-", dir=directory) as scratch:
+        # The keychain search list is per user, not per state directory: hold a
+        # user-wide lock while it carries the temporary keychain, so two
+        # signings at once can't drop or restore each other's entries.
+        search_lock = Path(pwd.getpwuid(os.getuid()).pw_dir) / "Library/Caches/agent-workspace-signing.lock"
+        search_lock.parent.mkdir(parents=True, exist_ok=True)
+        with search_lock.open("a") as user_lock, \
+                tempfile.TemporaryDirectory(prefix="keychain-", dir=directory) as scratch:
+            fcntl.flock(user_lock, fcntl.LOCK_EX)
             keychain = str(Path(scratch) / "build.keychain-db")
             try:
                 run("/usr/bin/security", "create-keychain", "-p", password, keychain)

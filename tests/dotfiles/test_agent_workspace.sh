@@ -89,7 +89,12 @@ if sign_variant "$scratch/missing.app" "$signing" > "$scratch/signing-failure.lo
 fi
 security list-keychains -d user > "$scratch/keychains-after"
 security default-keychain -d user > "$scratch/default-keychain-after"
-cmp "$scratch/keychains-before" "$scratch/keychains-after" || fail_test 'signing changed keychain search list'
+# Another test run may be signing right now; only this run's keychains must be gone.
+for list in keychains-before keychains-after; do
+  grep -v '/keychain-[^/]*/build.keychain-db' "$scratch/$list" > "$scratch/$list.others" || true
+done
+cmp "$scratch/keychains-before.others" "$scratch/keychains-after.others" || fail_test 'signing changed keychain search list'
+assert_not_contains "$(cat "$scratch/keychains-after")" "$scratch/"
 cmp "$scratch/default-keychain-before" "$scratch/default-keychain-after" || fail_test 'signing changed default keychain'
 [[ "$(stat -f '%Lp' "$signing/identity/identity.p12")" == 600 ]] || fail_test 'signing identity permissions'
 printf 'PASS: persistent signing, changed builds, unrelated-key rejection, and keychain cleanup\n'
