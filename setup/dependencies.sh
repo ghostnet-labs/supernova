@@ -241,6 +241,31 @@ setup_gitleaks_too_old() {
   ! setup_version_at_least "$SETUP_GITLEAKS_VERSION" "$SETUP_GITLEAKS_MIN_VERSION"
 }
 
+# Succeeds when the command $2 for package $1 is installed but lacks what the
+# setup needs, and stores the reason in SETUP_COMMAND_TOO_OLD. fzf and Atuin are
+# tried with the exact options the shell uses, so any build that lacks them
+# fails, whatever its version says.
+setup_command_too_old() {
+  local package="$1" command_path="$2"
+
+  SETUP_COMMAND_TOO_OLD=""
+  case "$package" in
+  gitleaks)
+    setup_gitleaks_too_old "$command_path" || return 1
+    SETUP_COMMAND_TOO_OLD="gitleaks ${SETUP_GITLEAKS_VERSION:-of unknown version} is too old; the pre-commit secret scan needs $SETUP_GITLEAKS_MIN_VERSION or newer"
+    ;;
+  fzf)
+    "$command_path" --zsh >/dev/null 2>&1 && return 1
+    SETUP_COMMAND_TOO_OLD="fzf $("$command_path" --version 2>/dev/null | awk '{print $1; exit}') is too old; the shell's key bindings need fzf --zsh (0.48.0 or newer)"
+    ;;
+  atuin)
+    "$command_path" init zsh --disable-up-arrow --disable-ctrl-r --disable-ai >/dev/null 2>&1 && return 1
+    SETUP_COMMAND_TOO_OLD="$("$command_path" --version 2>/dev/null | head -n 1) is too old; the shell's history search needs atuin init zsh --disable-ai"
+    ;;
+  *) return 1 ;;
+  esac
+}
+
 setup_file_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -436,6 +461,16 @@ setup_cache_brew_prefix() {
   SETUP_BREW_PREFIX_READY=true
 }
 
+# Print the Homebrew copy of command $1, which a brew upgrade replaces, or the
+# active command when Homebrew has none.
+setup_brew_command() {
+  if setup_cache_brew_prefix && [[ -x "$SETUP_BREW_PREFIX/bin/$1" ]]; then
+    printf '%s\n' "$SETUP_BREW_PREFIX/bin/$1"
+  else
+    command -v "$1" 2>/dev/null
+  fi
+}
+
 setup_brew_package_installed() {
   local package="$1"
   local brew_command
@@ -523,8 +558,8 @@ setup_check_dependency() {
         ;;
       esac
     fi
-    if [[ "$check_value" == gitleaks ]] && setup_gitleaks_too_old "$active_command"; then
-      SETUP_DEPENDENCY_FAILURE="gitleaks ${SETUP_GITLEAKS_VERSION:-of unknown version} is too old; the pre-commit secret scan needs $SETUP_GITLEAKS_MIN_VERSION or newer (brew upgrade gitleaks)"
+    if [[ "$check_value" == "$package" ]] && setup_command_too_old "$package" "$active_command"; then
+      SETUP_DEPENDENCY_FAILURE="$SETUP_COMMAND_TOO_OLD (brew upgrade $package)"
       return 1
     fi
     ;;

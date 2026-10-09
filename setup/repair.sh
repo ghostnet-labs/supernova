@@ -643,16 +643,20 @@ install_packages() {
 
   setup_reset_dependency_cache
   local to_install=()
-  local gitleaks_command
+  local package_command
   for package in "${packages[@]}"; do
     if ! setup_brew_package_installed "$package"; then
       to_install+=("$package")
-    elif [[ "$package" == gitleaks ]] &&
-      gitleaks_command="$(command -v gitleaks 2>/dev/null)" &&
-      setup_gitleaks_too_old "$gitleaks_command"; then
-      if ! run_spinner "Upgrading gitleaks $SETUP_GITLEAKS_VERSION to $SETUP_GITLEAKS_MIN_VERSION or newer" \
-        "$brew_command" upgrade gitleaks; then
-        fail "gitleaks upgrade failed; the pre-commit secret scan needs $SETUP_GITLEAKS_MIN_VERSION or newer"
+    elif package_command="$(setup_brew_command "$package")" &&
+      setup_command_too_old "$package" "$package_command"; then
+      # An installed formula that is too old needs an upgrade, not an install.
+      if ! run_spinner "Upgrading $package: $SETUP_COMMAND_TOO_OLD" \
+        "$brew_command" upgrade "$package"; then
+        fail "$package upgrade failed: $SETUP_COMMAND_TOO_OLD"
+      elif setup_command_too_old "$package" "$package_command"; then
+        fail "$package is still too old after the upgrade: $SETUP_COMMAND_TOO_OLD"
+      else
+        pass "$package upgraded"
       fi
     else
       info "$package already installed"

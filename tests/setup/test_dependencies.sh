@@ -238,6 +238,26 @@ TEST_GITLEAKS_VERSION=8.29.0 PATH="$brew_prefix/bin:$TMP_ROOT:/usr/bin:/bin" \
   setup_check_dependency gitleaks command gitleaks "$REPO_DIR" /usr/bin/python3 brew ||
   fail_test "gitleaks 8.29.0 did not pass: $SETUP_DEPENDENCY_FAILURE"
 
+# fzf and Atuin are checked with the options the shell passes them.
+printf '#!/bin/sh\nif [ "$1" = list ]; then printf "fzf\\natuin\\n"; elif [ "$1" = --prefix ]; then printf "%%s\\n" "$TEST_BREW_PREFIX"; fi\nexit 0\n' >"$TMP_ROOT/brew"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "0.44.1 (debian)" && exit 0\n[ "$1" = --zsh ] && [ -z "$TEST_NEW" ] && exit 2\nexit 0\n' >"$brew_prefix/bin/fzf"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "atuin 18.2.0" && exit 0\nfor a; do [ "$a" = --disable-ai ] && [ -z "$TEST_NEW" ] && exit 2; done\nexit 0\n' >"$brew_prefix/bin/atuin"
+chmod +x "$brew_prefix/bin/fzf" "$brew_prefix/bin/atuin"
+for tool in fzf atuin; do
+  setup_reset_dependency_cache
+  if PATH="$brew_prefix/bin:$TMP_ROOT:/usr/bin:/bin" setup_check_dependency "$tool" command "$tool" "$REPO_DIR" /usr/bin/python3 brew; then
+    fail_test "$tool without the options the shell uses passed"
+  fi
+  [[ "$SETUP_DEPENDENCY_SEVERITY" == fail ]] || fail_test "old $tool was not classified as a failure"
+  [[ "$SETUP_DEPENDENCY_FAILURE" == *"is too old"*"(brew upgrade $tool)" ]] ||
+    fail_test "old $tool did not name the upgrade command: $SETUP_DEPENDENCY_FAILURE"
+  TEST_NEW=1 PATH="$brew_prefix/bin:$TMP_ROOT:/usr/bin:/bin" setup_check_dependency "$tool" command "$tool" "$REPO_DIR" /usr/bin/python3 brew ||
+    fail_test "current $tool did not pass: $SETUP_DEPENDENCY_FAILURE"
+done
+setup_command_too_old fzf "$brew_prefix/bin/fzf" || fail_test "old fzf was not reported"
+[[ "$SETUP_COMMAND_TOO_OLD" == "fzf 0.44.1 is too old; the shell's key bindings need fzf --zsh (0.48.0 or newer)" ]] ||
+  fail_test "old fzf message: $SETUP_COMMAND_TOO_OLD"
+
 if PATH="/usr/bin:/bin" setup_check_dependency - command acme-external-tool "$REPO_DIR" /usr/bin/python3 external; then
   fail_test "missing external work prerequisite unexpectedly passed"
 fi

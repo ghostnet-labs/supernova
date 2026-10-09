@@ -63,7 +63,16 @@ telemetry. Fix mode shows the health report and repair plan, requires a typed
 `y` or `yes` in an interactive terminal, and rechecks afterward. It only
 repairs managed state: it installs missing Homebrew or system packages, links
 dotfiles, enables the Git hook, pins shell plugins, and creates work
-scaffolding. It does not upgrade unrelated software.
+scaffolding. It upgrades a Homebrew package only when the installed one lacks
+what setup needs: gitleaks older than 8.29.0, fzf without `--zsh` (0.48.0 or
+newer), Atuin without `init zsh --disable-ai`, or a yq that cannot round-trip
+the Codex TOML. `--check` fails on each of these. It does not upgrade unrelated
+software.
+
+`--check` also warns about links in `~`, `~/.config` and `~/.local/bin` that
+dangle or point into another setup checkout, and counts the
+`~/.config/NAME.bak.TIMESTAMP` backups `--fix` made of replaced configs. It
+never removes them.
 
 After a repair, open a new shell or run `source_zsh`.
 
