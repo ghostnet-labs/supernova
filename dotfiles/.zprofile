@@ -28,5 +28,7 @@ unset brew_command
     local WORK_ENV JOB WORK_ROOT
     [[ -r "$env_file" ]] && source "$env_file"
     [[ "${WORK_ENV:-}" == true && -n "${JOB:-}" && -n "${WORK_ROOT:-}" ]] || return 0
-    [[ -r "$WORK_ROOT/$JOB/zprofile.zsh" ]] && source "$WORK_ROOT/$JOB/zprofile.zsh"
+    if [[ -r "$WORK_ROOT/$JOB/zprofile.zsh" ]]; then
+        source "$WORK_ROOT/$JOB/zprofile.zsh"
+    fi
 }
