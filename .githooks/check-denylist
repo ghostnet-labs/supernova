@@ -19,9 +19,10 @@ grep -vE '^[[:space:]]*(#|$)' "$deny_source" >"$temporary/deny"
 : >"$temporary/allow"
 [ -f "$allow_source" ] && grep -vE '^[[:space:]]*(#|$)' "$allow_source" >"$temporary/allow"
 
-# Print "path: line" for each line a diff adds.
+# Print "path: line" for each line a diff adds. NUL bytes from binary content
+# are dropped first, since BSD awk ends a line at the first one.
 added_lines() {
-  awk '/^\+\+\+ /{ path = substr($0, 7); next } /^\+/{ print path ": " substr($0, 2) }'
+  LC_ALL=C tr -d '\000' | awk '/^\+\+\+ /{ path = substr($0, 7); next } /^\+/{ print path ": " substr($0, 2) }'
 }
 
 mode=$1
