@@ -8,6 +8,10 @@ import SwiftUI
         // the delegate's Dock decisions are recorded in dockPolicy instead of applied.
         app.setActivationPolicy(.prohibited)
         AppDelegate.applyActivationPolicy = { _ in }
+        // Its windows stay invisible and never take focus.
+        AppDelegate.presentWindow = { window in
+            window.alphaValue = 0; window.ignoresMouseEvents = true; window.orderFrontRegardless()
+        }
         let mode = CommandLine.arguments[1]
         let suite = "AgentWorkspace.WindowTests." + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!

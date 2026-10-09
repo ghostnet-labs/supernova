@@ -9,6 +9,10 @@ import SwiftUI
         // the delegate's Dock decisions are recorded in dockPolicy instead of applied.
         app.setActivationPolicy(.prohibited)
         AppDelegate.applyActivationPolicy = { _ in }
+        // Its windows stay invisible and never take focus.
+        AppDelegate.presentWindow = { window in
+            window.alphaValue = 0; window.ignoresMouseEvents = true; window.orderFrontRegardless()
+        }
         let scratch = URL(fileURLWithPath: CommandLine.arguments[1])
         let suite = "AgentControlCenter.UI.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -80,7 +84,8 @@ import SwiftUI
             try capture(window.contentView!, name: "browser-" + name)
         }
         let popoverWindow = NSWindow(contentViewController: NSHostingController(rootView: ControlCenterView(store: store, openWindow: {})))
-        popoverWindow.setContentSize(NSSize(width: 470, height: 720)); popoverWindow.orderFront(nil)
+        popoverWindow.setContentSize(NSSize(width: 470, height: 720))
+        popoverWindow.alphaValue = 0; popoverWindow.ignoresMouseEvents = true; popoverWindow.orderFront(nil)
         store.expandedRoots.insert("root"); settle()
         try capture(popoverWindow.contentView!, name: "popover-expanded")
         popoverWindow.orderOut(nil)

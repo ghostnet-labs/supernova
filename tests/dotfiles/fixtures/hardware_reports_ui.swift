@@ -20,6 +20,7 @@ struct HardwareReportVisuals {
             let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             window.contentView = host; host.frame = NSRect(origin: .zero, size: size)
+            window.alphaValue = 0; window.ignoresMouseEvents = true // never shown to the person logged in
             window.orderFront(nil)
             RunLoop.current.run(until: Date().addingTimeInterval(0.2))
             host.layoutSubtreeIfNeeded()

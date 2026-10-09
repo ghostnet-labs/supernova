@@ -168,6 +168,7 @@ import SwiftUI
                 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
                 window.contentViewController = controller
                 window.setContentSize(NSSize(width: width, height: 820))
+                window.alphaValue = 0; window.ignoresMouseEvents = true // never shown to the person logged in
                 window.orderFront(nil)
                 try await Task.sleep(for: .milliseconds(400))
                 view.layoutSubtreeIfNeeded()
