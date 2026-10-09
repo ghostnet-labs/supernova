@@ -41,12 +41,21 @@ class ShellFixture:
                     raise
                 time.sleep(0.05)
 
-    def shell(self, script, interactive=True):
+    def shell(self, script, interactive=True, terminal=False):
         source = shlex.quote(str(ROOT / "dotfiles/functions/atuin.zsh"))
-        result = subprocess.run(
-            [ZSH, "-dfi" if interactive else "-df", "-c", f"source {source}; {script}"],
-            env=self.environment, text=True, capture_output=True, timeout=15,
-        )
+        # .zshrc loads fzf's key bindings only when stdin is a terminal, which
+        # it is not under CI, so tests that check them attach a pseudo-terminal.
+        primary, secondary = os.openpty() if terminal else (None, None)
+        try:
+            result = subprocess.run(
+                [ZSH, "-dfi" if interactive else "-df", "-c", f"source {source}; {script}"],
+                env=self.environment, text=True, capture_output=True, timeout=15,
+                stdin=secondary,
+            )
+        finally:
+            if terminal:
+                os.close(primary)
+                os.close(secondary)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertNotIn("Error:", result.stderr)
         return result.stdout
@@ -145,7 +154,8 @@ class AtuinTests(ShellFixture, unittest.TestCase):
         (self.directory / ".zshrc").symlink_to(ROOT / "dotfiles/.zshrc")
         output = self.shell('source "$HOME/.zshrc"; source_zsh; source_zsh; '
                             'print -r -- HOOKS:${(j:,:)preexec_functions}; bindkey -M emacs "^R"; '
-                            'SETUP_ATUIN_ENABLED=false; source_zsh; bindkey -M emacs "^R"')
+                            'SETUP_ATUIN_ENABLED=false; source_zsh; bindkey -M emacs "^R"',
+                            terminal=True)
         hooks = next(line for line in output.splitlines() if line.startswith("HOOKS:"))
         self.assertEqual(hooks.count("_atuin_preexec"), 1)
         self.assertIn('"^R" atuin-search', output)
