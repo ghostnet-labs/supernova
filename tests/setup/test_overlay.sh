@@ -102,6 +102,8 @@ test_plan="$(/bin/bash -c '
   source "$1"
   LOCAL_ENV_FILE="$2"
   run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_repository_tests
 ' _ "$REPO_DIR/setup.sh" "$ENV_FILE")"
 assert_contains "$test_plan" 'Syntax: acme tools and tests|'
@@ -155,6 +157,8 @@ off_plan="$(/bin/bash -c '
   source "$1"
   LOCAL_ENV_FILE="$2"
   run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_repository_tests
 ' _ "$REPO_DIR/setup.sh" "$ENV_FILE")"
 assert_not_contains "$off_plan" 'acme'

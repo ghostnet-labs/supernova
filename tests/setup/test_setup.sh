@@ -100,6 +100,8 @@ personal_test_plan="$(/bin/bash -c '
   source "$1"
   CLI_WORK_ENV=false
   run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_repository_tests
 ' _ "$SETUP")"
 assert_contains "$personal_test_plan" 'Tests: Status output'
@@ -123,6 +125,8 @@ full_test_plan="$(/bin/bash -c '
   source "$1"
   CLI_WORK_ENV=""
   run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_repository_tests
 ' _ "$SETUP")"
 assert_contains "$full_test_plan" 'Syntax: acme tools and tests'
@@ -141,6 +145,8 @@ no_overlay_plan="$(SETUP_LOCAL_ENV_FILE="$TMP_ROOT/absent.zsh" /bin/bash -c '
   source "$1"
   CLI_WORK_ENV=""
   run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_repository_tests
 ' _ "$SETUP")"
 assert_contains "$no_overlay_plan" 'Tests: Work overlay hooks'
@@ -162,6 +168,24 @@ assert_contains "$full_test_plan" 'dotfiles/functions/git.zsh'
 row_order="$(printf '%s\n' "$full_test_plan" | cut -d'|' -f1 | grep -nxE 'Syntax: (setup scripts|dotfiles|acme tools and tests)|Tests: (setup.sh commands|Zellij config|Acme fixture overlay)|Help: (setup.sh|home shell functions|acme shell functions)' | cut -d: -f2- | tr '\n' ',')"
 [[ "$row_order" == 'Syntax: setup scripts,Syntax: dotfiles,Syntax: acme tools and tests,Tests: setup.sh commands,Tests: Zellij config,Tests: Acme fixture overlay,Help: setup.sh,Help: home shell functions,Help: acme shell functions,' ]] ||
   fail_test "test rows are out of order: $row_order"
+
+# Queued test files run at the same time, yet their rows keep queue order:
+# the first test passes only once the last has started, and a failure still
+# shows its output.
+queue_dir="$TMP_ROOT/queue"
+mkdir -p "$queue_dir"
+printf '%s\n' 'for _ in $(seq 50); do [ -e "${0%/*}/started" ] && exit 0; sleep 0.1; done; exit 1' >"$queue_dir/test_first.sh"
+printf '%s\n' 'echo "FAIL: middle broke"; exit 3' >"$queue_dir/test_middle.sh"
+printf '%s\n' ': >"${0%/*}/started"' >"$queue_dir/test_last.sh"
+queue_rows="$(SETUP_TEST_JOBS=3 NO_COLOR=1 /bin/bash -c '
+  SETUP_SOURCE_ONLY=true
+  source "$1"
+  for name in first middle last; do queue_test_check "Tests: $name" "$2/test_$name.sh"; done
+  run_queued_test_checks 2>&1
+  printf "failed|%s\n" "${FAILED_CHECK_LABELS[@]}"
+' _ "$SETUP" "$queue_dir")"
+[[ "$queue_rows" == *$'✓  Tests: first\n✗  Tests: middle\n   middle broke\n✓  Tests: last\nfailed|Tests: middle (exit 3)'* ]] ||
+  fail_test "queued tests did not run together in order: $queue_rows"
 
 # Help rows find commands and functions without a list: every executable gets
 # one unless it opts out, and every function with a _NAME_help is checked.
@@ -223,7 +247,8 @@ unlabeled_plan="$(/bin/bash -c '
   source "$1"
   cd "$2"
   CLI_WORK_ENV=""
-  run_test_check() { printf "%s|" "$1"; shift; printf "%s " "$@"; printf "\n"; }
+  queue_test_check() { test_command_for "$2"; printf "%s|%s\n" "$1" "${TEST_COMMAND[*]}"; }
+  run_queued_test_checks() { :; }
   run_discovered_tests
 ' _ "$SETUP" "$TMP_ROOT/discovery")"
 assert_contains "$unlabeled_plan" 'Tests: tests/extra/test_new.sh|/bin/bash tests/extra/test_new.sh'
