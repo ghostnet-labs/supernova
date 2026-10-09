@@ -263,6 +263,9 @@ assert_contains "$unrelated_output" 'unrelated non-empty directory'
 scope_checkout="$TMP_ROOT/scope-checkout"
 scope_overlay="$TMP_ROOT/scope-overlay"
 mkdir -p "$scope_checkout/setup" "$scope_overlay/acme/bin-acme" "$scope_overlay/zeta/bin-zeta" "$scope_overlay/notes"
+# bootstrap reports the overlay as cd and pwd resolve it, without a doubled slash
+# from a TMPDIR that ends in one (as on macOS).
+scope_overlay="$(cd -- "$scope_overlay" && pwd)"
 personal_scope="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$scope_checkout" /bin/bash -c 'source "$1"; bootstrap_select_scope <<<1; printf "%s|%s|%s\n" "$BOOTSTRAP_SCOPE" "$BOOTSTRAP_JOB" "$BOOTSTRAP_RERUN_COMMAND"' _ "$BOOTSTRAP")"
 assert_contains "$personal_scope" 'personal||./setup.sh --fix --personal'
 work_scope="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$scope_checkout" /bin/bash -c 'source "$1"; bootstrap_select_scope <<< "2
