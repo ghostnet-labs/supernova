@@ -51,18 +51,39 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsh
+          sudo apt-get install -y zsh tmux
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1 ruff==0.15.8
           echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
-      # ./setup.sh --test skips lint rows when a linter is missing, so make sure
-      # both are here. The runner image ships ShellCheck and mikefarah yq v4,
+      # Ubuntu's fzf is too old for fzf --zsh, so pinned release binaries are
+      # installed under RUNNER_TEMP, like the secrets job's gitleaks.
+      - name: Install fzf, Atuin and gitleaks
+        env:
+          FZF_VERSION: 0.74.4
+          ATUIN_VERSION: 18.23.0
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" |
+            tar -xz -C "$RUNNER_TEMP/bin" fzf
+          curl -sSfL "https://github.com/atuinsh/atuin/releases/download/v${ATUIN_VERSION}/atuin-x86_64-unknown-linux-gnu.tar.gz" |
+            tar -xz -C "$RUNNER_TEMP/bin" --strip-components=1 atuin-x86_64-unknown-linux-gnu/atuin
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" |
+            tar -xz -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
+      # ./setup.sh --test skips lint rows when a linter is missing, and the
+      # fzf, Atuin, gitleaks and tmux tests skip without their tool, so make sure
+      # all are here. The runner image ships ShellCheck and mikefarah yq v4,
       # which the Codex config tests need.
-      - name: Check ruff, shellcheck and yq are installed
+      - name: Check the test tools are installed
         run: |
           ruff --version
           shellcheck --version
           yq --version | grep -q mikefarah
+          fzf --version
+          atuin --version
+          gitleaks version
+          tmux -V
       - name: Run ./setup.sh --test
         env:
           NO_COLOR: "1"
@@ -81,10 +102,17 @@ jobs:
       # are skipped here.
       - name: Install test dependencies
         run: |
-          brew install yq
+          brew install yq fzf atuin gitleaks tmux
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1
           echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      # The fzf, Atuin, gitleaks and tmux tests skip without their tool.
+      - name: Check the test tools are installed
+        run: |
+          fzf --version
+          atuin --version
+          gitleaks version
+          tmux -V
       # Swift compiles are most of the macOS run; keep them between runs. The
       # key changes with any Swift source, so a run restores the newest cache
       # and saves its own; the cache prunes itself to its size limit.
