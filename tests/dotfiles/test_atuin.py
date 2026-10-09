@@ -2,18 +2,25 @@
 # setup-test: Local Atuin history
 """Use the installed CLI against temporary databases, never the user's history."""
 
+import fcntl
 import os
 from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import tempfile
+import termios
 import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ZSH = shutil.which("zsh")
 ATUIN = shutil.which("atuin")
+
+
+def take_terminal():
+    """Make stdin, a pseudo-terminal, the new session's controlling terminal."""
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
 class ShellFixture:
@@ -43,14 +50,16 @@ class ShellFixture:
 
     def shell(self, script, interactive=True, terminal=False):
         source = shlex.quote(str(ROOT / "dotfiles/functions/atuin.zsh"))
-        # .zshrc loads fzf's key bindings only when stdin is a terminal, which
-        # it is not under CI, so tests that check them attach a pseudo-terminal.
+        # .zshrc loads fzf's key bindings only with a controlling terminal,
+        # which CI does not have, so tests that check them get a
+        # pseudo-terminal as stdin and controlling terminal.
         primary, secondary = os.openpty() if terminal else (None, None)
         try:
             result = subprocess.run(
                 [ZSH, "-dfi" if interactive else "-df", "-c", f"source {source}; {script}"],
                 env=self.environment, text=True, capture_output=True, timeout=15,
-                stdin=secondary,
+                stdin=secondary, start_new_session=terminal,
+                preexec_fn=take_terminal if terminal else None,
             )
         finally:
             if terminal:
