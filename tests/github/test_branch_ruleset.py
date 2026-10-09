@@ -14,10 +14,10 @@ RULESET = json.loads((ROOT / ".github" / "rulesets" / "main.json").read_text())
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 
 
-def job_names() -> set[str]:
+def job_names(workflows: list[Path] = WORKFLOWS) -> set[str]:
     """The name: of every job; GitHub reports each job as a check with that name."""
     names = set()
-    for path in WORKFLOWS:
+    for path in workflows:
         in_jobs = False
         for line in path.read_text().splitlines():
             if re.match(r"^\S", line):
@@ -42,6 +42,12 @@ class BranchRulesetTest(unittest.TestCase):
         required = required_checks()
         self.assertTrue(required)
         self.assertLessEqual(required, job_names())
+
+    def test_every_ci_job_is_required(self):
+        # Every job in ci.yml scans or tests, so a PR merges only when all of them pass.
+        ci_jobs = job_names([ROOT / ".github" / "workflows" / "ci.yml"])
+        self.assertTrue(ci_jobs)
+        self.assertLessEqual(ci_jobs, required_checks())
 
     def test_pr_format_check_is_required(self):
         required = required_checks()
