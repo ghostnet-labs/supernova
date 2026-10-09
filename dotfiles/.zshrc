@@ -101,7 +101,10 @@ fzf_setup() {
         fi
         # The key bindings need a terminal: without one (zsh -i -c in CI or a
         # script), restoring the zle option prints "can't change option: zle".
-        if [[ -t 0 ]]; then
+        # Test the controlling terminal, not stdin: Powerlevel10k's instant
+        # prompt redirects stdin while .zshrc runs, so [[ -t 0 ]] is false
+        # even in a real terminal.
+        if { : >/dev/tty } 2>/dev/null; then
             source "$_fzf_cache"
         fi
     else
