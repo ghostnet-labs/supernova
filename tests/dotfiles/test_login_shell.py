@@ -141,11 +141,11 @@ class LoginShellTests(unittest.TestCase):
         stub.write_text('#!/bin/sh\necho "unknown option: $1" >&2\nexit 2\n')
         stub.chmod(0o755)
         (self.root / "old fzf/.cache/fzf-init.zsh").unlink(missing_ok=True)
-        output = self.login("old fzf", 'print -r -- "STATUS:$?"; print -r -- CACHE:${+commands[fzf]}:$(ls ~/.cache/fzf-init.zsh 2>&1 >/dev/null | wc -l)')
+        output = self.login("old fzf", 'print -r -- "STATUS:$?"; [[ -e ~/.cache/fzf-init.zsh ]]; print -r -- CACHE:${+commands[fzf]}:$?')
         self.assertIn(f"{stub} is too old for the fzf key bindings; run ./setup.sh --fix", output)
         self.assertNotIn("unknown option", output)
         self.assertIn("STATUS:0\n", output)
-        self.assertIn("CACHE:1:1\n", output)
+        self.assertIn("CACHE:1:1\n", output)  # fzf found, no cache file
 
     @unittest.skipUnless(FZF, "fzf required for its key bindings")
     def test_fzf_key_bindings_load_in_a_terminal(self):
