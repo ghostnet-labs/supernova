@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
+# setup-test: PR format check
 # Runs .github/scripts/check_pr.sh against sample PR titles, descriptions, commit messages, and commits.
 set -euo pipefail
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 CHECK="$REPO_DIR/.github/scripts/check_pr.sh"
 TEMPLATE="$(cat "$REPO_DIR/.github/pull_request_template.md")"
-FILLED=$'## What changed\nTests run faster.\n\n## Why\nCI was slow.\n\n## Checked\n- [x] `./test.sh` passes'
+FILLED=$'## What changed\nTests run faster.\n\n## Why\nCI was slow.\n\n## Checked\n- [x] `./setup.sh --test` passes'
 # Git exports GIT_DIR to hooks in linked worktrees; never let it point these fixtures at a real repository.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_PREFIX
 
@@ -74,14 +75,14 @@ expect fail 'fix: placeholders' $'## What changed\nTODO\n\n## Why\nN/A'
 expect fail 'fix: see title' $'## What changed\nSee title.\n\n## Why\nSame as title'
 expect fail 'fix: one word' $'## What changed\nTests run faster.\n\n## Why\nSpeed.'
 expect fail 'fix: Why repeats What' $'## What changed\nTests run faster.\n\n## Why\nTests run faster.'
-expect fail 'fix: checklist as Why' $'## What changed\nTests run faster.\n\n## Why\n- [ ] `./test.sh` passes'
+expect fail 'fix: checklist as Why' $'## What changed\nTests run faster.\n\n## Why\n- [ ] `./setup.sh --test` passes'
 expect fail 'fix: footer as Why' $'## What changed\nTests run faster.\n\n## Why\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)'
 expect fail 'fix: trailer as Why' $'## What changed\nTests run faster.\n\n## Why\nClaude-Session: https://claude.ai/code/session_01'
 expect fail 'fix: link as Why' $'## What changed\nTests run faster.\n\n## Why\nhttps://github.com/ghostnet-labs/supernova/issues/12'
 expect fail 'fix: heading in a fence' $'## What changed\nTests run faster.\n```\n## Why\nCI was slow.\n```'
 expect fail 'fix: unclosed comment' $'## What changed\nTests run faster.\n\n## Why\n<!-- reason\nCI was slow.'
 expect fail 'fix: hint left as text' $'## What changed\nWhat a reader will notice, in a sentence or two.\n\n## Why\nCI was slow.'
-expect fail 'fix: Claude Code layout' $'## Summary\n- Tests run faster.\n\n## Test plan\n- [x] `./test.sh`'
+expect fail 'fix: Claude Code layout' $'## Summary\n- Tests run faster.\n\n## Test plan\n- [x] `./setup.sh --test`'
 
 # The type list lives in check_pr.sh; the PR template comment and AGENTS.md repeat it.
 types="$(sed -n "s/^TYPES='\(.*\)'$/\1/p" "$CHECK")"

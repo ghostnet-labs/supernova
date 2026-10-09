@@ -1,0 +1,2 @@
+# Fixture work aliases for the overlay tests.
+alias acme-alias='print -r -- acme alias'
