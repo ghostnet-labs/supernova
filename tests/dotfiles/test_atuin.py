@@ -161,6 +161,12 @@ class AtuinTests(ShellFixture, unittest.TestCase):
             self.skipTest("fzf required for shell reload checks")
         (self.directory / ".cache").mkdir()
         (self.directory / ".zshrc").symlink_to(ROOT / "dotfiles/.zshrc")
+        # Some CI images have group-writable completion directories, and
+        # compinit would stop at its "insecure directories" question. A
+        # fresh dump makes .zshrc run compinit -C, which skips that audit.
+        subprocess.run([ZSH, "-fc", "autoload -Uz compinit; compinit -u -d "
+                        + shlex.quote(str(self.directory / ".zcompdump"))],
+                       check=True, env=self.environment)
         output = self.shell('source "$HOME/.zshrc"; source_zsh; source_zsh; '
                             'print -r -- HOOKS:${(j:,:)preexec_functions}; bindkey -M emacs "^R"; '
                             'SETUP_ATUIN_ENABLED=false; source_zsh; bindkey -M emacs "^R"',
