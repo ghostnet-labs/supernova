@@ -1,0 +1,919 @@
+#!/usr/bin/env python3
+# toolbox: terminal zellij projects | Pick live Zellij panes or local Git projects with fzf.
+# toolbox-args: [navigate|projects] [--list]
+# toolbox-example: zellij-fzf navigate
+# toolbox-example: zellij-fzf projects
+# toolbox-example: zellij-fzf projects --list
+"""Navigate Zellij panes and launch local projects through fzf."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import selectors
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, replace
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional
+
+
+COMMAND_TIMEOUT = 5
+SESSION_QUERY_TIMEOUT = 1
+MAX_VIEWPORT_EVENT_BYTES = 1024 * 1024
+DEFAULT_PROJECT_ROOT = Path.home() / "dev"
+RADAR_PRESENCE_MAX_AGE = 5 * 60
+RADAR_STATUS_GLYPHS = {
+    "running": "⠋",
+    "pending": "!",
+    "done": ".",
+    "error": "✗",
+    "idle": "💤",
+}
+
+BLUE = "\033[38;2;122;162;247m"
+PURPLE = "\033[38;2;187;154;247m"
+GREEN = "\033[38;2;158;206;106m"
+YELLOW = "\033[38;2;224;175;104m"
+GRAY = "\033[38;2;86;95;137m"
+TEXT = "\033[38;2;192;202;245m"
+RESET = "\033[0m"
+
+FZF_COLORS = (
+    "bg:#1a1b26,preview-bg:#1a1b26,bg+:#24283b,fg:#a9b1d6,fg+:#c0caf5,"
+    "hl:#7aa2f7,hl+:#bb9af7,info:#565f89,prompt:#7aa2f7,"
+    "pointer:#bb9af7,marker:#9ece6a,spinner:#e0af68,"
+    "border:#3b4261,label:#7aa2f7,header:#565f89"
+)
+
+PANE_TABLE_LABELS = ("SESSION", "TAB", "PANE", "COMMAND", "CODEX")
+PROJECT_TABLE_HEADER = f"  {'PROJECT':<38} {'BRANCH':<28} STATE"
+
+
+class ZellijFzfError(Exception):
+    """Raised when discovery or a selected action cannot be completed."""
+
+
+@dataclass(frozen=True)
+class PaneRecord:
+    session: str
+    pane_id: str
+    tab_id: int
+    tab_position: int
+    tab_name: str
+    title: str
+    command: str
+    cwd: Path
+    focused: bool
+    floating: bool
+    codex_state: str = ""
+
+    @property
+    def pane_name(self) -> str:
+        return self.title or self.pane_id.removeprefix("terminal_")
+
+    @property
+    def label(self) -> str:
+        try:
+            executable = shlex.split(self.command)[0]
+        except (ValueError, IndexError):
+            executable = self.command
+        return Path(executable).name or self.title or "-"
+
+
+@dataclass(frozen=True)
+class ProjectRecord:
+    name: str
+    path: Path
+    branch: str
+    panes: tuple[PaneRecord, ...]
+
+
+def help_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="zellij-fzf",
+        usage="zellij-fzf [navigate|projects] [--list]",
+        description="Switch or attach to live Zellij panes, or open Git projects through an fzf interface.",
+        epilog=(
+            "Examples:\n"
+            "  zellij-fzf navigate\n"
+            "  zellij-fzf projects\n"
+            "  zellij-fzf projects --list\n\n"
+            "Environment:\n"
+            "  TW_PROJECT_ROOT      Directory containing projects (default: ~/dev)\n"
+            "  ZELLIJ_PROJECT_ROOT  Zellij-specific project root override"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=("navigate", "projects"),
+        default="navigate",
+        help="navigate existing panes or browse local Git projects",
+    )
+    parser.add_argument("--list", action="store_true", help="Print discovered entries without opening fzf.")
+    return parser
+
+
+@lru_cache(maxsize=None)
+def command_path(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise ZellijFzfError(f"required command is unavailable: {name}")
+    return path
+
+
+def run(
+    command: list[str],
+    *,
+    input_text: Optional[str] = None,
+    timeout: int = COMMAND_TIMEOUT,
+    check: bool = True,
+    environment: Optional[dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        completed = subprocess.run(
+            command,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ZellijFzfError(str(error)) from error
+    if check and completed.returncode:
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        raise ZellijFzfError(detail)
+    return completed
+
+
+def zellij(
+    *arguments: str,
+    session: Optional[str] = None,
+    check: bool = True,
+    timeout: int = COMMAND_TIMEOUT,
+) -> subprocess.CompletedProcess[str]:
+    environment = dict(os.environ)
+    if session:
+        environment["ZELLIJ_SESSION_NAME"] = session
+    return run([command_path("zellij"), *arguments], check=check, timeout=timeout, environment=environment)
+
+
+def clean_field(value: object) -> str:
+    return " ".join(str(value or "").replace("\t", " ").splitlines()).strip()
+
+
+def parse_pane_records(session: str, output: str) -> list[PaneRecord]:
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, list):
+        return []
+
+    records: list[PaneRecord] = []
+    for pane in payload:
+        if not isinstance(pane, dict) or pane.get("is_plugin") or pane.get("exited"):
+            continue
+        pane_id = pane.get("id")
+        cwd = pane.get("pane_cwd")
+        if not isinstance(pane_id, int) or not isinstance(cwd, str) or not cwd:
+            continue
+        records.append(
+            PaneRecord(
+                session=session,
+                pane_id=f"terminal_{pane_id}",
+                tab_id=int(pane.get("tab_id", 0)),
+                tab_position=int(pane.get("tab_position", 0)),
+                tab_name=clean_field(pane.get("tab_name")) or "-",
+                title=clean_field(pane.get("title")),
+                command=clean_field(pane.get("pane_command")),
+                cwd=Path(cwd),
+                focused=bool(pane.get("is_focused")),
+                floating=bool(pane.get("is_floating")),
+            )
+        )
+    return records
+
+
+def session_names() -> list[str]:
+    completed = zellij("list-sessions", "--no-formatting", check=False)
+    if completed.returncode and not completed.stdout:
+        return []
+    sessions: list[str] = []
+    for line in completed.stdout.splitlines():
+        if "(EXITED" in line:
+            continue
+        name = line.split(" [Created ", 1)[0].strip()
+        if name:
+            sessions.append(name)
+    return list(dict.fromkeys(sessions))
+
+
+def list_session_panes(session: str) -> list[PaneRecord]:
+    try:
+        completed = zellij(
+            "action",
+            "list-panes",
+            "--all",
+            "--json",
+            session=session,
+            check=False,
+            timeout=SESSION_QUERY_TIMEOUT,
+        )
+    except ZellijFzfError:
+        return []
+    if completed.returncode:
+        return []
+    return parse_pane_records(session, completed.stdout)
+
+
+def zellij_cache_root() -> Path:
+    configured = os.environ.get("XDG_CACHE_HOME")
+    if configured:
+        return Path(configured).expanduser() / "zellij"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "org.Zellij-Contributors.Zellij"
+    return Path.home() / ".cache" / "zellij"
+
+
+def radar_cache_directories(cache_root: Optional[Path] = None) -> list[Path]:
+    root = cache_root or zellij_cache_root()
+    try:
+        return [path for path in root.glob("**/zj_radar.wasm/plugin_cache") if path.is_dir()]
+    except OSError:
+        return []
+
+
+def read_json_object(path: Path) -> Optional[dict[str, object]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def radar_codex_states(
+    sessions: list[str],
+    *,
+    cache_root: Optional[Path] = None,
+    now: Optional[float] = None,
+) -> dict[tuple[str, str], str]:
+    active_sessions = set(sessions)
+    if not active_sessions:
+        return {}
+
+    current_time = time.time() if now is None else now
+    session_snapshots: dict[str, tuple[float, Path]] = {}
+    presence_pattern = re.compile(r"zj-radar\.presence\.(\d+)\.json")
+    for directory in radar_cache_directories(cache_root):
+        try:
+            presence_files = directory.glob("zj-radar.presence.*.json")
+            for presence_path in presence_files:
+                match = presence_pattern.fullmatch(presence_path.name)
+                if not match:
+                    continue
+                try:
+                    modified = presence_path.stat().st_mtime
+                except OSError:
+                    continue
+                if current_time - modified > RADAR_PRESENCE_MAX_AGE:
+                    continue
+                presence = read_json_object(presence_path)
+                session = presence.get("session_name") if presence else None
+                if not isinstance(session, str) or session not in active_sessions:
+                    continue
+                snapshot_path = directory / f"zj-radar.{match.group(1)}.json"
+                previous = session_snapshots.get(session)
+                if snapshot_path.is_file() and (previous is None or modified > previous[0]):
+                    session_snapshots[session] = (modified, snapshot_path)
+        except OSError:
+            continue
+
+    states: dict[tuple[str, str], str] = {}
+    for session, (_, snapshot_path) in session_snapshots.items():
+        snapshot = read_json_object(snapshot_path)
+        if not snapshot or snapshot.get("v") not in (1, 2, 3):
+            continue
+        observations = snapshot.get("observations", snapshot.get("panes", []))
+        if not isinstance(observations, list):
+            continue
+        for observation in observations:
+            if not isinstance(observation, dict) or observation.get("source") != "codex":
+                continue
+            pane_id = observation.get("pane_id")
+            status = observation.get("status")
+            if not isinstance(pane_id, int) or not isinstance(status, str):
+                continue
+            glyph = RADAR_STATUS_GLYPHS.get(status)
+            if glyph:
+                states[(session, f"terminal_{pane_id}")] = glyph
+    return states
+
+
+def list_panes() -> list[PaneRecord]:
+    sessions = session_names()
+    if not sessions:
+        return []
+    worker_count = min(9, len(sessions) + 1)
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        states_future = executor.submit(radar_codex_states, sessions)
+        groups = executor.map(list_session_panes, sessions)
+        records = [record for group in groups for record in group]
+        states = states_future.result()
+    records = [
+        replace(record, codex_state=states.get((record.session, record.pane_id), ""))
+        if record.label.startswith("codex")
+        else record
+        for record in records
+    ]
+    return sorted(records, key=lambda record: (record.session.lower(), record.tab_position, record.pane_id))
+
+
+def short_path(path: Path) -> str:
+    try:
+        return "~/" + str(path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def table_cell(value: str, width: int) -> str:
+    if len(value) > width:
+        value = value[: width - 1] + "…"
+    return f"{value:<{width}}"
+
+
+def pane_plain_text(record: PaneRecord) -> str:
+    return "\t".join(
+        (record.session, record.tab_name, record.pane_name, record.label, record.codex_state, str(record.cwd))
+    )
+
+
+def pane_table_values(record: PaneRecord) -> tuple[str, str, str, str, str]:
+    return (record.session, record.tab_name, record.pane_name, record.label, record.codex_state)
+
+
+def pane_table_widths(records: list[PaneRecord]) -> tuple[int, int, int, int, int]:
+    widths = list(map(len, PANE_TABLE_LABELS))
+    for record in records:
+        for index, value in enumerate(pane_table_values(record)):
+            widths[index] = max(widths[index], len(value))
+    return (widths[0], widths[1], widths[2], widths[3], widths[4])
+
+
+def pane_widths_from_environment(records: list[PaneRecord]) -> tuple[int, int, int, int, int]:
+    raw_widths = os.environ.get("TW_FZF_PANE_WIDTHS", "")
+    try:
+        widths = tuple(int(value) for value in raw_widths.split(","))
+    except ValueError:
+        widths = ()
+    if len(widths) == len(PANE_TABLE_LABELS) and all(
+        width >= len(label) for width, label in zip(widths, PANE_TABLE_LABELS)
+    ):
+        return (widths[0], widths[1], widths[2], widths[3], widths[4])
+    return pane_table_widths(records)
+
+
+def pane_table_header(widths: tuple[int, int, int, int, int]) -> str:
+    columns = " ".join(f"{label:<{width}}" for label, width in zip(PANE_TABLE_LABELS, widths))
+    return f"  {columns} PATH"
+
+
+def pane_fzf_line(
+    record: PaneRecord,
+    widths: Optional[tuple[int, int, int, int, int]] = None,
+) -> str:
+    marker = f"{GREEN}●{RESET}" if record.focused else f"{GRAY}○{RESET}"
+    floating = f" {YELLOW}floating{RESET}" if record.floating else ""
+    widths = widths or pane_table_widths([record])
+    session_width, tab_width, pane_width, command_width, codex_width = widths
+    session, tab, pane, command, codex = pane_table_values(record)
+    display = (
+        f"{marker} {BLUE}{table_cell(session, session_width)}{RESET} "
+        f"{PURPLE}{table_cell(tab, tab_width)}{RESET} "
+        f"{GREEN}{table_cell(pane, pane_width)}{RESET} "
+        f"{TEXT}{table_cell(command, command_width)}{RESET} "
+        f"{YELLOW}{table_cell(codex, codex_width)}{RESET} "
+        f"{GRAY}{short_path(record.cwd)}{RESET}{floating}"
+    )
+    return f"{record.session}\t{record.pane_id}\t{display}"
+
+
+def project_root() -> Path:
+    configured = os.environ.get("TW_PROJECT_ROOT") or os.environ.get("ZELLIJ_PROJECT_ROOT")
+    root = Path(configured).expanduser() if configured else DEFAULT_PROJECT_ROOT
+    try:
+        resolved = root.resolve()
+    except OSError as error:
+        raise ZellijFzfError(f"project root is unavailable: {root}") from error
+    if not resolved.is_dir():
+        raise ZellijFzfError(f"project root is not a directory: {resolved}")
+    return resolved
+
+
+def discover_project_paths(root: Path) -> list[Path]:
+    try:
+        children = list(root.iterdir())
+    except OSError as error:
+        raise ZellijFzfError(f"could not scan project root: {root}") from error
+    return sorted(
+        (child.resolve() for child in children if child.is_dir() and (child / ".git").exists()),
+        key=lambda path: path.name.lower(),
+    )
+
+
+def git_directory(project: Path) -> Optional[Path]:
+    marker = project / ".git"
+    if marker.is_dir():
+        return marker
+    try:
+        value = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir: "
+    if not value.startswith(prefix):
+        return None
+    git_dir = Path(value[len(prefix) :])
+    return (project / git_dir).resolve() if not git_dir.is_absolute() else git_dir.resolve()
+
+
+def project_branch(project: Path) -> str:
+    git_dir = git_directory(project)
+    if not git_dir:
+        return "-"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "-"
+    prefix = "ref: refs/heads/"
+    return head[len(prefix) :] if head.startswith(prefix) else head[:8]
+
+
+def path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def list_projects(panes: list[PaneRecord]) -> list[ProjectRecord]:
+    projects: list[ProjectRecord] = []
+    for path in discover_project_paths(project_root()):
+        matching = tuple(record for record in panes if path_is_within(record.cwd, path))
+        projects.append(ProjectRecord(path.name, path, project_branch(path), matching))
+    return projects
+
+
+def project_plain_text(record: ProjectRecord) -> str:
+    state = f"OPEN {len(record.panes)}" if record.panes else "closed"
+    return f"{record.name}\t{record.branch}\t{state}\t{record.path}"
+
+
+def project_fzf_line(record: ProjectRecord) -> str:
+    if record.panes:
+        state = f"{GREEN}OPEN {len(record.panes)}{RESET}"
+        marker = f"{GREEN}●{RESET}"
+    else:
+        state = f"{GRAY}closed{RESET}"
+        marker = f"{GRAY}○{RESET}"
+    display = (
+        f"{marker} {BLUE}{table_cell(record.name, 38)}{RESET} "
+        f"{PURPLE}{table_cell(record.branch, 28)}{RESET} {state}"
+    )
+    return f"{record.path}\t{display}"
+
+
+def bottom_preview_window(record_count: int, *, wrap: bool = False) -> str:
+    try:
+        terminal_rows = os.get_terminal_size(sys.stdin.fileno()).lines
+    except (OSError, ValueError):
+        terminal_rows = shutil.get_terminal_size(fallback=(120, 40)).lines
+    preview_rows = terminal_rows - record_count - 7
+    wrap_mode = "wrap" if wrap else "nowrap"
+    if preview_rows < 5:
+        return f"down:50%:{wrap_mode}:border-top:follow:hidden"
+    return f"down:{preview_rows}:{wrap_mode}:border-top:follow"
+
+
+def fzf_base(
+    prompt: str,
+    header: str,
+    preview_command: str,
+    *,
+    preview_window: str,
+) -> list[str]:
+    return [
+        command_path("fzf"),
+        "--ansi",
+        "--delimiter=\t",
+        "--with-nth=3..",
+        "--height=100%",
+        "--layout=reverse",
+        "--border=rounded",
+        "--info=inline",
+        f"--prompt={prompt}",
+        f"--header={header}",
+        f"--preview={preview_command}",
+        f"--preview-window={preview_window}",
+        f"--color={FZF_COLORS}",
+    ]
+
+
+def preview_invocation(command: str, placeholders: str) -> str:
+    script = str(Path(__file__).resolve())
+    return f"{shlex.quote(sys.executable)} -S {shlex.quote(script)} {command} {placeholders}"
+
+
+def pane_reload_invocation(project: Optional[Path] = None) -> str:
+    script = str(Path(__file__).resolve())
+    command = f"{shlex.quote(sys.executable)} -S {shlex.quote(script)} _pane-lines"
+    return f"{command} {shlex.quote(str(project))}" if project else command
+
+
+def selected_key_and_value(output: str) -> tuple[str, str]:
+    lines = output.splitlines()
+    if not lines:
+        return "", ""
+    if len(lines) >= 2 and lines[0] in {"", "ctrl-s", "ctrl-w"}:
+        return lines[0], lines[-1]
+    return "", lines[-1]
+
+
+def choose_pane(
+    records: list[PaneRecord],
+    prompt: str = "pane > ",
+    project: Optional[Path] = None,
+) -> Optional[PaneRecord]:
+    if not records:
+        return None
+    by_key = {(record.session, record.pane_id): record for record in records}
+    enter_action = "switch pane" if os.environ.get("ZELLIJ_SESSION_NAME") else "attach to pane"
+    widths = pane_table_widths(records)
+    table_header = pane_table_header(widths)
+    header = f"Enter: {enter_action}   Delete: close pane   Ctrl-/: preview   Esc: close\n{table_header}"
+    command = fzf_base(
+        prompt,
+        header,
+        preview_invocation("_preview-pane", "{1} {2}"),
+        preview_window=bottom_preview_window(len(records)),
+    )
+    command.append("--bind=ctrl-/:toggle-preview")
+    close = preview_invocation("_close-pane-confirmed", "{1} {2}")
+    reload = pane_reload_invocation(project)
+    restore = f"change-header({header})+unbind(y,n)+rebind(delete,backward-eof,enter)"
+    confirmation = (
+        f"{YELLOW}Close highlighted Zellij pane?  y: confirm   n: cancel   Esc: close{RESET}\n"
+        f"{table_header}"
+    )
+    begin_confirmation = (
+        f"change-header({confirmation})+rebind(y,n)+unbind(delete,backward-eof,enter)"
+    )
+    close_action = f"execute-silent({close})+reload({reload})+{restore}"
+    command.append("--bind=enter:accept,start:unbind(y,n)")
+    command.append(f"--bind=delete:{begin_confirmation},backward-eof:{begin_confirmation}")
+    command.append(f"--bind=y:{close_action},n:{restore}")
+    environment = dict(os.environ)
+    environment["TW_FZF_PANE_WIDTHS"] = ",".join(map(str, widths))
+    completed = run(
+        command,
+        input_text="\n".join(pane_fzf_line(record, widths) for record in records),
+        check=False,
+        timeout=3600,
+        environment=environment,
+    )
+    if completed.returncode not in {0, 1, 130}:
+        raise ZellijFzfError(completed.stderr.strip() or "fzf failed")
+    _, selected = selected_key_and_value(completed.stdout)
+    fields = selected.split("\t", 2)
+    return by_key.get((fields[0], fields[1])) if len(fields) >= 2 else None
+
+
+def preview_pane(session: str, pane_id: str) -> int:
+    if not re.fullmatch(r"terminal_[0-9]+", pane_id):
+        raise ZellijFzfError("invalid pane target")
+    viewport = subscribe_pane_viewport(session, pane_id)
+    if viewport is not None:
+        if viewport:
+            sys.stdout.write("\n".join(viewport) + "\n")
+        return 0
+    completed = zellij("action", "dump-screen", "--pane-id", pane_id, session=session, check=False)
+    if completed.returncode:
+        print("Pane is no longer available.")
+        return 0
+    sys.stdout.write(completed.stdout)
+    return 0
+
+
+def subscribe_pane_viewport(session: str, pane_id: str) -> Optional[list[str]]:
+    environment = dict(os.environ)
+    environment["ZELLIJ_SESSION_NAME"] = session
+    try:
+        process = subprocess.Popen(
+            [command_path("zellij"), "subscribe", "--pane-id", pane_id, "--format", "json"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+        )
+    except OSError:
+        return None
+
+    output = bytearray()
+    selector = selectors.DefaultSelector()
+    try:
+        if process.stdout is None:
+            return None
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + SESSION_QUERY_TIMEOUT
+        while b"\n" not in output and len(output) < MAX_VIEWPORT_EVENT_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                break
+            chunk = os.read(
+                process.stdout.fileno(),
+                min(65536, MAX_VIEWPORT_EVENT_BYTES - len(output)),
+            )
+            if not chunk:
+                break
+            output.extend(chunk)
+    finally:
+        selector.close()
+        if process.stdout:
+            process.stdout.close()
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        else:
+            process.wait()
+
+    first_line = bytes(output).partition(b"\n")[0]
+    if not first_line:
+        return None
+    try:
+        payload = json.loads(first_line.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    viewport = payload.get("viewport")
+    if (
+        payload.get("event") != "pane_update"
+        or payload.get("pane_id") != pane_id
+        or not isinstance(viewport, list)
+        or not all(isinstance(line, str) for line in viewport)
+    ):
+        return None
+    return viewport
+
+
+def active_session() -> str:
+    return os.environ.get("ZELLIJ_SESSION_NAME", "")
+
+
+def attach_session(session: str) -> None:
+    zellij_path = command_path("zellij")
+    try:
+        os.execv(zellij_path, [zellij_path, "attach", session])
+    except OSError as error:
+        raise ZellijFzfError(f"could not attach to Zellij session: {error}") from error
+
+
+def jump_to_pane(record: PaneRecord) -> None:
+    current = active_session()
+    if current == record.session:
+        zellij("action", "go-to-tab-by-id", str(record.tab_id))
+        zellij("action", "focus-pane-id", record.pane_id)
+    elif current:
+        zellij(
+            "action",
+            "switch-session",
+            record.session,
+            "--tab-position",
+            str(record.tab_position),
+            "--pane-id",
+            record.pane_id,
+        )
+    else:
+        zellij("action", "go-to-tab-by-id", str(record.tab_id), session=record.session)
+        zellij("action", "focus-pane-id", record.pane_id, session=record.session)
+        attach_session(record.session)
+
+
+def run_navigator(
+    records: Optional[list[PaneRecord]] = None,
+    prompt: str = "pane > ",
+    project: Optional[Path] = None,
+) -> int:
+    discovered = records if records is not None else list_panes()
+    if not discovered:
+        print("No live Zellij panes. Create or attach with: tw --zellij <session-name>")
+        return 1
+    selected = choose_pane(discovered, prompt, project)
+    if selected:
+        fresh = next(
+            (record for record in list_session_panes(selected.session) if record.pane_id == selected.pane_id),
+            None,
+        )
+        if not fresh:
+            raise ZellijFzfError("selected pane closed before it could be activated")
+        jump_to_pane(fresh)
+    return 0
+
+
+def validated_project(raw_path: str) -> Path:
+    path = Path(raw_path)
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(project_root())
+    except (OSError, ValueError) as error:
+        raise ZellijFzfError("project target is outside TW_PROJECT_ROOT") from error
+    if not resolved.is_dir() or not (resolved / ".git").exists():
+        raise ZellijFzfError("project target is not a Git checkout")
+    return resolved
+
+
+def preview_project(raw_path: str) -> int:
+    project = validated_project(raw_path)
+    panes = [record for record in list_panes() if path_is_within(record.cwd, project)]
+    print(f"{project.name}  [{project_branch(project)}]")
+    print(str(project))
+    if panes:
+        print("\nOpen panes:")
+        for record in panes:
+            print(f"  {record.session:<22} {record.tab_name:<18} {record.label:<16} {short_path(record.cwd)}")
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    status = run(
+        [command_path("git"), "-C", str(project), "status", "--short", "--branch", "--untracked-files=normal"],
+        check=False,
+        environment=environment,
+    )
+    print("\nGit status:")
+    print(status.stdout.rstrip() or "  clean")
+    readme = next((project / name for name in ("README.md", "README.rst", "README") if (project / name).is_file()), None)
+    if readme:
+        print(f"\n{readme.name}:")
+        try:
+            lines = readme.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        print("\n".join(lines[:80]))
+    return 0
+
+
+def session_name_for(project: Path) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", project.name).strip("-") or "project"
+
+
+def open_project_session(project: Path) -> None:
+    session = session_name_for(project)
+    if active_session():
+        zellij("action", "switch-session", session, "--cwd", str(project))
+        return
+    zellij_path = command_path("zellij")
+    try:
+        os.chdir(project)
+        os.execv(zellij_path, [zellij_path, "attach", "-c", session])
+    except OSError as error:
+        raise ZellijFzfError(f"could not open Zellij project session: {error}") from error
+
+
+def open_project_tab(project: Path) -> None:
+    if not active_session():
+        open_project_session(project)
+        return
+    zellij("action", "new-tab", "--cwd", str(project), "--name", project.name)
+
+
+def run_projects() -> int:
+    panes = list_panes()
+    projects = list_projects(panes)
+    by_path = {str(record.path): record for record in projects}
+    enter_action = "jump/open tab" if active_session() else "attach/open project"
+    tab_action = "new tab" if active_session() else "open project session"
+    command = fzf_base(
+        "project > ",
+        (
+            f"Enter: {enter_action}   Ctrl-S: project session   Ctrl-W: {tab_action}   Esc: close\n"
+            f"{PROJECT_TABLE_HEADER}"
+        ),
+        preview_invocation("_preview-project", "{1}"),
+        preview_window=bottom_preview_window(len(projects), wrap=True),
+    )
+    command[3] = "--with-nth=2.."
+    command.append("--expect=ctrl-s,ctrl-w")
+    completed = run(
+        command,
+        input_text="\n".join(project_fzf_line(record) for record in projects),
+        check=False,
+        timeout=3600,
+    )
+    if completed.returncode not in {0, 1, 130}:
+        raise ZellijFzfError(completed.stderr.strip() or "fzf failed")
+    key, selected = selected_key_and_value(completed.stdout)
+    raw_path = selected.split("\t", 1)[0] if selected else ""
+    record = by_path.get(raw_path)
+    if not record:
+        return 0
+    project = validated_project(raw_path)
+    if key == "ctrl-s":
+        open_project_session(project)
+    elif key == "ctrl-w":
+        open_project_tab(project)
+    elif not record.panes:
+        open_project_tab(project) if active_session() else open_project_session(project)
+    elif len(record.panes) == 1:
+        jump_to_pane(record.panes[0])
+    else:
+        run_navigator(list(record.panes), prompt=f"{record.name} > ", project=project)
+    return 0
+
+
+def close_pane(session: str, pane_id: str, *, confirmed: bool = False) -> int:
+    if not re.fullmatch(r"terminal_[0-9]+", pane_id):
+        raise ZellijFzfError("invalid pane target")
+    record = next((pane for pane in list_session_panes(session) if pane.pane_id == pane_id), None)
+    if not record:
+        print("Pane is no longer available.")
+        return 0
+    if not confirmed:
+        try:
+            response = input(
+                f"Close Zellij pane {record.session}/{record.tab_name}/{record.pane_id} ({record.label})? "
+                "This may close its tab or session. [y/N] "
+            )
+        except EOFError:
+            response = ""
+        if response.strip().lower() not in {"y", "yes"}:
+            print("Canceled.")
+            return 0
+    zellij("action", "close-pane", "--pane-id", record.pane_id, session=record.session)
+    return 0
+
+
+def print_pane_lines(raw_project: str = "") -> int:
+    panes = list_panes()
+    if raw_project:
+        project = validated_project(raw_project)
+        panes = [record for record in panes if path_is_within(record.cwd, project)]
+    widths = pane_widths_from_environment(panes)
+    for record in panes:
+        print(pane_fzf_line(record, widths))
+    return 0
+
+
+def print_entries(mode: str) -> int:
+    panes = list_panes()
+    if mode == "navigate":
+        for record in panes:
+            print(pane_plain_text(record))
+    else:
+        for record in list_projects(panes):
+            print(project_plain_text(record))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["_preview-pane"]:
+        if len(argv) != 3:
+            raise ZellijFzfError("preview requires one session and pane ID")
+        return preview_pane(argv[1], argv[2])
+    if argv[:1] == ["_preview-project"]:
+        if len(argv) != 2:
+            raise ZellijFzfError("preview requires one project path")
+        return preview_project(argv[1])
+    if argv[:1] in (["_close-pane"], ["_close-pane-confirmed"]):
+        if len(argv) != 3:
+            raise ZellijFzfError("close requires one session and pane ID")
+        return close_pane(argv[1], argv[2], confirmed=argv[0].endswith("confirmed"))
+    if argv[:1] == ["_pane-lines"]:
+        if len(argv) > 2:
+            raise ZellijFzfError("pane listing accepts at most one project path")
+        return print_pane_lines(argv[1] if len(argv) == 2 else "")
+    parser = help_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.list:
+        return print_entries(arguments.mode)
+    return run_navigator() if arguments.mode == "navigate" else run_projects()
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except ZellijFzfError as error:
+        print(f"zellij-fzf: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,149 @@
+# Portable global settings merged into ~/.codex/config.toml by ./setup.sh --fix.
+# Host-local projects, notices, marketplaces, TUI model state, and desktop paths
+# are intentionally omitted and preserved during each merge. A host-local turn
+# notifier is added during rendering: Computer Use on macOS when available,
+# otherwise the portable terminal bell fallback.
+
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+service_tier = "default"
+approvals_reviewer = "auto_review"
+
+[shell_environment_policy]
+set = { LANG = "en_US.UTF-8", LC_ALL = "en_US.UTF-8" }
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[plugins."spreadsheets@openai-primary-runtime"]
+enabled = true
+
+[plugins."presentations@openai-primary-runtime"]
+enabled = true
+
+[plugins."slack@openai-curated"]
+enabled = true
+
+[plugins."sites@openai-bundled"]
+enabled = true
+
+[plugins."pdf@openai-primary-runtime"]
+enabled = true
+
+[plugins."template-creator@openai-primary-runtime"]
+enabled = true
+
+[plugins."visualize@openai-bundled"]
+enabled = true
+
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "context-remaining", "used-tokens", "project-name", "git-branch", "pull-request-number", "branch-changes", "run-state", "task-progress"]
+theme = "ansi"
+status_line_use_colors = true
+notifications = true
+notification_condition = "always"
+
+# Keep the Zellij agent sidebar synchronized with Codex lifecycle state.
+[[hooks.PermissionRequest]]
+
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.PostToolUse]]
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.SubagentStart]]
+
+[[hooks.SubagentStart.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.SubagentStop]]
+
+[[hooks.SubagentStop.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = "ZJ_RADAR_CODEX_HOOK=v1 zj-radar notify codex"
+timeout = 10
+
+[features]
+goals = true
+memories = true
+prevent_idle_sleep = true
+
+[desktop]
+conversationDetailMode = "STEPS_COMMANDS"
+followUpQueueMode = "queue"
+dock-icon-preference = "app-default"
+preventSleepWhileRunning = true
+avatar-overlay-mascot-width-px = 80
+defaultTerminalLocation = "right"
+show-context-window-usage = true
+notifications-turn-mode = "always"
+appearanceLightCodeThemeId = "github"
+appearanceDarkCodeThemeId = "tokyo-night"
+usePointerCursors = true
+enabled-reasoning-efforts = ["low", "medium", "high", "xhigh", "ultra", "max"]
+show-ultra-in-model-picker-slider = true
+appearanceTheme = "dark"
+
+[desktop.open-in-target-preferences]
+global = "fileManager"
+
+[desktop.appearanceLightChromeTheme]
+accent = "#0969da"
+contrast = 45
+ink = "#1f2328"
+opaqueWindows = false
+surface = "#ffffff"
+
+[desktop.appearanceLightChromeTheme.semanticColors]
+diffAdded = "#1a7f37"
+diffRemoved = "#cf222e"
+skill = "#8250df"
+
+[desktop.appearanceDarkChromeTheme]
+accent = "#3d59a1"
+contrast = 50
+ink = "#a9b1d6"
+opaqueWindows = true
+surface = "#1a1b26"
+
+[desktop.appearanceDarkChromeTheme.fonts]
+code = '"Geist Mono", ui-monospace, "SFMono-Regular"'
+ui = "Geist, Inter"
+
+[desktop.appearanceDarkChromeTheme.semanticColors]
+diffAdded = "#449dab"
+diffRemoved = "#914c54"
+skill = "#9d7cd8"
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"

@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# toolbox: macos setup apps | Rebuild, reinstall, and restart all managed macOS apps or selected apps.
+# toolbox-args: [APP...]
+# toolbox-example: reinstall-apps worktree-manager
+# toolbox-example: reinstall-apps agent-control-center setup-doctor
+# toolbox-example: reinstall-apps
+# Rebuild, reinstall, and restart every macOS app under apps/.
+
+set -euo pipefail
+
+usage() {
+  printf '%s\n' 'Usage:
+  reinstall-apps [--list] [APP...]
+
+Description:
+  Rebuild every macOS app under apps/ (each directory with an Info.plist) and
+  restart it on the new build by running each app'\''s own --install, all in
+  parallel. An install quits the running copy only after its build succeeds,
+  so a failed build leaves the old copy running and its log is printed. The
+  Zellij plugin sources (zellij-tab-picker, zj-radar) are not macOS apps and
+  are skipped. Exits 1 if any app fails. With a work overlay (WORK_ROOT and
+  JOB exported by .zshrc), apps under WORK_ROOT/apps are included too; their
+  installers live in WORK_ROOT/JOB/bin-JOB.
+
+Options:
+  APP           Reinstall only this app, named by its apps/ directory
+                (default: every app).
+  --list        Print each app and its installer instead of reinstalling.
+  -h, --help    Show this help message and exit.
+
+Examples:
+  reinstall-apps
+  reinstall-apps --list
+  reinstall-apps worktree-manager
+  reinstall-apps agent-control-center setup-doctor
+
+Environment:
+  WORK_ROOT, JOB  Work overlay checkout and job whose apps are also rebuilt.'
+}
+
+list=false
+apps=()
+for arg in "$@"; do
+  case "$arg" in
+    -h | --help) usage; exit 0 ;;
+    --list) list=true ;;
+    -*) printf 'error: unknown option: %s\n' "$arg" >&2; usage >&2; exit 2 ;;
+    *) apps+=("$arg") ;;
+  esac
+done
+
+if [[ "$list" != true && "$(uname -s)" != Darwin ]]; then
+  printf 'error: reinstall-apps requires macOS\n' >&2
+  exit 1
+fi
+
+bin_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+readonly bin_dir
+# Each source pairs an apps directory with the directory of its installers.
+app_dirs=("$(cd -- "$bin_dir/../../apps" && pwd)")
+bin_dirs=("$bin_dir")
+if [[ -n "${WORK_ROOT:-}" && -n "${JOB:-}" && -d "$WORK_ROOT/apps" ]]; then
+  app_dirs+=("$WORK_ROOT/apps")
+  bin_dirs+=("$WORK_ROOT/$JOB/bin-$JOB")
+fi
+
+# An app's installer is the command of the same name in its bin directory, or
+# NAME-app when a CLI already has the bare name.
+names=()
+commands=()
+selected=" ${apps[*]-} "
+for i in "${!app_dirs[@]}"; do
+  for plist in "${app_dirs[i]}"/*/Info.plist; do
+    [[ -f "$plist" ]] || continue
+    name="${plist%/Info.plist}"
+    name="${name##*/}"
+    if ((${#apps[@]})) && [[ "$selected" != *" $name "* ]]; then continue; fi
+    command="${bin_dirs[i]}/$name-app"
+    [[ -x "$command" ]] || command="${bin_dirs[i]}/$name"
+    if [[ ! -x "$command" ]]; then
+      printf 'error: no installer in %s for %s\n' "${bin_dirs[i]}" "${plist%/Info.plist}" >&2
+      exit 1
+    fi
+    names+=("$name")
+    commands+=("$command")
+  done
+done
+for name in ${apps[@]+"${apps[@]}"}; do
+  if [[ " ${names[*]-} " != *" $name "* ]]; then
+    printf 'error: not a managed macOS app: %s\n' "$name" >&2
+    exit 2
+  fi
+done
+if ((${#names[@]} == 0)); then
+  printf 'error: no macOS apps found under %s\n' "${app_dirs[*]}" >&2
+  exit 1
+fi
+if [[ "$list" == true ]]; then
+  for i in "${!names[@]}"; do
+    printf '%s\t%s\n' "${names[i]}" "${commands[i]}"
+  done
+  exit 0
+fi
+
+ok='✓' bad='✗'
+if [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
+  ok=$'\e[32m✓\e[0m' bad=$'\e[31m✗\e[0m'
+fi
+
+logs="$(mktemp -d "${TMPDIR:-/tmp}/reinstall-apps.XXXXXX")"
+trap 'rm -rf -- "$logs"' EXIT
+printf '→ Rebuilding %d apps in parallel\n' "${#names[@]}"
+started=$SECONDS
+pids=()
+for i in "${!names[@]}"; do
+  # Each job prints its own row, so rows appear in the order builds finish.
+  (
+    if "${commands[i]}" --install </dev/null >"$logs/${names[i]}" 2>&1; then
+      printf '%s %s (%ds)\n' "$ok" "${names[i]}" "$((SECONDS - started))"
+    else
+      printf '%s %s (%ds)\n' "$bad" "${names[i]}" "$((SECONDS - started))"
+      exit 1
+    fi
+  ) &
+  pids+=("$!")
+done
+
+failed=()
+for i in "${!pids[@]}"; do
+  wait "${pids[i]}" || failed+=("${names[i]}")
+done
+
+if ((${#failed[@]})); then
+  for name in "${failed[@]}"; do
+    printf '\n── %s\n' "$name"
+    cat -- "$logs/$name"
+  done
+  printf '\n%s %d of %d apps failed: %s\n' "$bad" "${#failed[@]}" "${#names[@]}" "${failed[*]}"
+  exit 1
+fi
+printf '\n%s Reinstalled %d apps in %ds\n' "$ok" "${#names[@]}" "$((SECONDS - started))"

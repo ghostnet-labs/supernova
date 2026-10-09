@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# toolbox: agents usage macos | Manage the menu bar app showing Codex and Claude plan usage.
+# toolbox-args: [--status|--start|--stop|--install|--claude-hook|--uninstall]
+# toolbox-example: codex-bal-bar --status
+# toolbox-example: codex-bal-bar --start
+# toolbox-example: codex-bal-bar --install
+# Build, install, and manage the Codex Balance menu bar app.
+
+set -euo pipefail
+
+readonly app_name="Codex Balance"
+readonly executable="CodexBalBar"
+readonly agent_label="local.codex-bal-bar"
+
+usage() {
+  printf '%s\n' 'Usage:
+  codex-bal-bar [ACTION]
+
+Description:
+  Manage the Codex Balance menu bar app, which shows remaining Codex and Claude
+  plan usage in the menu bar and a usage panel when clicked. Install builds the
+  app from apps/codex-bal-bar and registers a login agent. Installation also
+  connects Claude Code'\''s status line to share its plan limits automatically.
+  With no ACTION, show the current status.
+
+Options:
+  --install       Build and install the app, then start it now and at every login.
+  --start         Start the installed app after quitting it from the menu.
+  --stop          Stop the app until the next login or --start.
+  --status        Show install, login agent, running, and Claude hook state (default).
+  --claude-hook   Install the Claude Code status line integration.
+  --uninstall     Stop the app, restore the previous Claude status line, and remove it.
+  -h, --help      Show this help message and exit.
+
+Examples:
+  codex-bal-bar --install
+  codex-bal-bar
+  codex-bal-bar --claude-hook
+  codex-bal-bar --stop
+  codex-bal-bar --uninstall
+
+Environment:
+  CODEX_BIN                  Codex executable for the app (default: codex in PATH).
+  CODEX_BAL_BAR_INTERVAL     Codex refresh interval in seconds, minimum 60 (default: 300).
+  CODEX_BAL_BAR_APP_DIR      Install directory (default: ~/Applications).
+  CODEX_BAL_BAR_CLAUDE_FILE  Saved Claude limits file (default: ~/Library/Application
+                             Support/Codex Balance/claude-rate-limits.json).'
+}
+
+action="--status"
+if (($# > 1)); then
+  usage >&2
+  exit 2
+fi
+if (($# == 1)); then
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --install | --start | --stop | --status | --claude-hook | --uninstall) action="$1" ;;
+    *)
+      printf 'error: unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+fi
+
+if [[ "$(uname -s)" != Darwin ]]; then
+  printf 'error: codex-bal-bar requires macOS\n' >&2
+  exit 1
+fi
+
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/codex-bal-bar" && pwd)"
+readonly app_dir="${CODEX_BAL_BAR_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+readonly agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
+readonly domain="gui/$(id -u)"
+readonly claude_file="${CODEX_BAL_BAR_CLAUDE_FILE:-$HOME/Library/Application Support/$app_name/claude-rate-limits.json}"
+readonly capture_path="$app_path/Contents/Resources/claude-limits-capture"
+
+require() {
+  local command
+  for command in "$@"; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      printf 'error: required command not found: %s\n' "$command" >&2
+      exit 1
+    fi
+  done
+}
+
+xml_escape() {
+  local value="${1//&/&amp;}"
+  value="${value//</&lt;}"
+  printf '%s' "${value//>/&gt;}"
+}
+
+agent_loaded() {
+  launchctl print "$domain/$agent_label" >/dev/null 2>&1
+}
+
+# bootout returns before launchd removes the service, and a kickstart in that window starts nothing.
+stop_agent() {
+  agent_loaded || return 0
+  launchctl bootout "$domain/$agent_label" 2>/dev/null || true
+  local _
+  for _ in {1..100}; do
+    agent_loaded || return 0
+    sleep 0.1
+  done
+  printf 'warning: launchd has not removed %s yet\n' "$agent_label" >&2
+}
+
+start_agent() {
+  if agent_loaded; then
+    launchctl kickstart "$domain/$agent_label"
+  else
+    launchctl bootstrap "$domain" "$agent_plist"
+  fi
+}
+
+build_app() {
+  local bundle="$1"
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+  cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+  cp "$source_dir/claude-limits-capture" "$bundle/Contents/Resources/claude-limits-capture"
+  cp "$source_dir/claude-statusline.py" "$bundle/Contents/Resources/claude-statusline.py"
+  swiftc -O -parse-as-library -swift-version 5 \
+    -target "$(uname -m)-apple-macos14.0" \
+    -o "$bundle/Contents/MacOS/$executable" \
+    "$source_dir/CodexBalBar.swift"
+  codesign --force --sign - "$bundle" >/dev/null 2>&1
+}
+
+write_agent_plist() {
+  local codex_path="$1"
+  local interval="${CODEX_BAL_BAR_INTERVAL:-300}"
+  mkdir -p "${agent_plist%/*}"
+  printf '%s\n' "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+	<key>Label</key>
+	<string>$agent_label</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$(xml_escape "$app_path/Contents/MacOS/$executable")</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>CODEX_BIN</key>
+		<string>$(xml_escape "$codex_path")</string>
+		<key>CODEX_BAL_BAR_INTERVAL</key>
+		<string>$(xml_escape "$interval")</string>
+		<key>PATH</key>
+		<string>$(xml_escape "${codex_path%/*}"):/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>" >"$agent_plist"
+  plutil -lint "$agent_plist" >/dev/null
+}
+
+install_app() {
+  require swiftc codesign launchctl plutil python3
+  local codex_path="${CODEX_BIN:-$(command -v codex || true)}"
+  if [[ -z "$codex_path" || ! -x "$codex_path" ]]; then
+    printf 'error: codex not found; install it or set CODEX_BIN\n' >&2
+    exit 1
+  fi
+
+  # Global so the EXIT trap can still see it after this function returns.
+  build_root="$(mktemp -d "${TMPDIR:-/tmp}/codex-bal-bar.XXXXXX")"
+  trap 'rm -rf -- "$build_root"' EXIT
+  printf '→ Building %s\n' "$app_name"
+  build_app "$build_root/$app_name.app"
+
+  python3 "$source_dir/claude-statusline.py" --install "$app_path/Contents/Resources/claude-statusline.py"
+  stop_agent
+  mkdir -p "$app_dir"
+  rm -rf -- "$app_path"
+  mv "$build_root/$app_name.app" "$app_path"
+  write_agent_plist "$codex_path"
+  start_agent
+  printf '✓ Installed %s and started it at login: %s\n' "$app_name" "$app_path"
+}
+
+# Prints when the status line hook last ran, as epoch seconds, if ever.
+claude_hook_seen() {
+  [[ -f "$claude_file" ]] && sed -n 's/.*"hook_seen_at":\([0-9][0-9]*\).*/\1/p' "$claude_file"
+  return 0
+}
+
+install_claude_hook() {
+  local helper="$app_path/Contents/Resources/claude-statusline.py"
+  if [[ ! -x "$app_path/Contents/MacOS/$executable" || ! -f "$helper" ]]; then
+    printf 'error: install %s first with codex-bal-bar --install\n' "$app_name" >&2
+    exit 1
+  fi
+  python3 "$helper" --install
+}
+
+show_status() {
+  local state="not loaded"
+  local hook_seen
+  if agent_loaded; then
+    state="$(launchctl print "$domain/$agent_label" | awk -F' = ' '/^\tstate = / {print $2; exit}')"
+  fi
+  hook_seen="$(claude_hook_seen)"
+  printf 'App:          %s\n' "$([[ -d "$app_path" ]] && printf '%s' "$app_path" || printf 'not installed')"
+  printf 'Login agent:  %s\n' "$([[ -f "$agent_plist" ]] && printf '%s' "$agent_plist" || printf 'not registered')"
+  printf 'State:        %s\n' "${state:-unknown}"
+  if [[ -n "$hook_seen" ]]; then
+    printf 'Claude hook:  last ran %s\n' "$(date -r "$hook_seen" '+%Y-%m-%d %H:%M')"
+  else
+    printf 'Claude hook:  not seen yet (Claude reports limits after its first response)\n'
+  fi
+}
+
+case "$action" in
+  --install) install_app ;;
+  --start)
+    if [[ ! -f "$agent_plist" ]]; then
+      printf 'error: not installed; run codex-bal-bar --install\n' >&2
+      exit 1
+    fi
+    start_agent
+    ;;
+  --stop) stop_agent ;;
+  --status) show_status ;;
+  --claude-hook) require python3; install_claude_hook ;;
+  --uninstall)
+    stop_agent
+    if [[ -f "$app_path/Contents/Resources/claude-statusline.py" ]]; then
+      python3 "$app_path/Contents/Resources/claude-statusline.py" --uninstall
+    else
+      python3 "$source_dir/claude-statusline.py" --uninstall
+    fi
+    rm -f -- "$agent_plist" "$claude_file"
+    rm -rf -- "$app_path"
+    printf '✓ Removed %s\n' "$app_name"
+    ;;
+esac

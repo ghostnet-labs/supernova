@@ -1,0 +1,855 @@
+#!/usr/bin/env python3
+# toolbox: terminal tmux projects | Pick live tmux panes or local Git projects with fzf.
+# toolbox-args: [navigate|projects] [--list]
+# toolbox-example: tmux-fzf navigate
+# toolbox-example: tmux-fzf projects
+# toolbox-example: tmux-fzf projects --list
+"""Navigate tmux panes and launch local projects through an fzf popup."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+
+COMMAND_TIMEOUT = 5
+DEFAULT_PROJECT_ROOT = Path.home() / "dev"
+PANE_SCROLL_STEP = 5
+CODEX_SPINNER_GLYPHS = "⠹⠸⠼⠴⠦⠧⠇⠏"
+CODEX_SPINNER_TRANSLATION = str.maketrans("⠹⠸⠼⠴⠦⠧⠇⠏", "⢹⢸⣼⣴⣦⣧⡇⡏")
+
+BLUE = "\033[38;2;122;162;247m"
+PURPLE = "\033[38;2;187;154;247m"
+GREEN = "\033[38;2;158;206;106m"
+YELLOW = "\033[38;2;224;175;104m"
+GRAY = "\033[38;2;86;95;137m"
+TEXT = "\033[38;2;192;202;245m"
+RESET = "\033[0m"
+
+FZF_COLORS = (
+    "bg:#1a1b26,preview-bg:#1a1b26,bg+:#24283b,fg:#a9b1d6,fg+:#c0caf5,"
+    "hl:#7aa2f7,hl+:#bb9af7,info:#565f89,prompt:#7aa2f7,"
+    "pointer:#bb9af7,marker:#9ece6a,spinner:#e0af68,"
+    "border:#3b4261,label:#7aa2f7,header:#565f89"
+)
+
+PANE_TABLE_LABELS = ("SESSION", "TAB", "PANE", "COMMAND", "CODEX")
+PROJECT_TABLE_HEADER = f"  {'PROJECT':<38} {'BRANCH':<28} STATE"
+
+
+class TmuxFzfError(Exception):
+    """Raised when discovery or a selected action cannot be completed."""
+
+
+@dataclass(frozen=True)
+class PaneRecord:
+    pane_id: str
+    session: str
+    window_id: str
+    window_index: int
+    window_name: str
+    pane_index: int
+    command: str
+    cwd: Path
+    title: str
+    custom_label: str
+    pane_active: bool
+    window_active: bool
+    session_attached: bool
+
+    @property
+    def target(self) -> str:
+        return f"{self.session}:{self.window_index}.{self.pane_index}"
+
+    @property
+    def pane_name(self) -> str:
+        return self.custom_label or str(self.pane_index)
+
+    @property
+    def label(self) -> str:
+        if self.custom_label:
+            return self.custom_label
+        if self.command.startswith("codex"):
+            return "codex"
+        return self.command or self.title or "-"
+
+
+@dataclass(frozen=True)
+class ProjectRecord:
+    name: str
+    path: Path
+    branch: str
+    panes: tuple[PaneRecord, ...]
+
+
+def help_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tmux-fzf",
+        usage="tmux-fzf [navigate|projects] [--list]",
+        description="Switch or attach to live tmux panes, or open Git projects through an fzf interface.",
+        epilog=(
+            "Examples:\n"
+            "  tmux-fzf navigate\n"
+            "  tmux-fzf projects\n"
+            "  tmux-fzf projects --list\n\n"
+            "Environment:\n"
+            "  TW_PROJECT_ROOT    Directory containing projects (default: ~/dev)\n"
+            "  TMUX_PROJECT_ROOT  Legacy tmux-specific project root override"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "mode",
+        nargs="?",
+        choices=("navigate", "projects"),
+        default="navigate",
+        help="navigate existing panes or browse local Git projects",
+    )
+    parser.add_argument("--list", action="store_true", help="Print discovered entries without opening fzf.")
+    return parser
+
+
+def command_path(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        raise TmuxFzfError(f"required command is unavailable: {name}")
+    return path
+
+
+def run(
+    command: list[str],
+    *,
+    input_text: Optional[str] = None,
+    timeout: int = COMMAND_TIMEOUT,
+    check: bool = True,
+    environment: Optional[dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        completed = subprocess.run(
+            command,
+            input=input_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TmuxFzfError(str(error)) from error
+    if check and completed.returncode:
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        raise TmuxFzfError(detail)
+    return completed
+
+
+def tmux(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return run([command_path("tmux"), *arguments], check=check)
+
+
+def clean_field(value: str) -> str:
+    return " ".join(value.replace("\t", " ").splitlines()).strip()
+
+
+def parse_integer(value: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+
+def list_panes() -> list[PaneRecord]:
+    format_text = "\t".join(
+        (
+            "#{pane_id}",
+            "#{session_name}",
+            "#{window_id}",
+            "#{window_index}",
+            "#{window_name}",
+            "#{pane_index}",
+            "#{pane_current_command}",
+            "#{pane_current_path}",
+            "#{pane_title}",
+            "#{@pane_label}",
+            "#{pane_active}",
+            "#{window_active}",
+            "#{session_attached}",
+        )
+    )
+    completed = tmux("list-panes", "-a", "-F", format_text, check=False)
+    if completed.returncode:
+        return []
+    output = completed.stdout
+    records: list[PaneRecord] = []
+    for line in output.splitlines():
+        fields = line.split("\t", 12)
+        if len(fields) != 13 or not re.fullmatch(r"%[0-9]+", fields[0]):
+            continue
+        cwd = Path(fields[7])
+        records.append(
+            PaneRecord(
+                pane_id=fields[0],
+                session=clean_field(fields[1]),
+                window_id=fields[2],
+                window_index=parse_integer(fields[3]),
+                window_name=clean_field(fields[4]),
+                pane_index=parse_integer(fields[5]),
+                command=clean_field(fields[6]),
+                cwd=cwd,
+                title=clean_field(fields[8]),
+                custom_label=clean_field(fields[9]),
+                pane_active=fields[10] == "1",
+                window_active=fields[11] == "1",
+                session_attached=parse_integer(fields[12]) > 0,
+            )
+        )
+    return records
+
+
+def short_path(path: Path) -> str:
+    home = Path.home()
+    try:
+        return "~/" + str(path.relative_to(home))
+    except ValueError:
+        return str(path)
+
+
+def table_cell(value: str, width: int) -> str:
+    if len(value) > width:
+        value = value[: width - 1] + "…"
+    return f"{value:<{width}}"
+
+
+def pane_codex_state(record: PaneRecord) -> str:
+    if not record.command.startswith("codex") or not record.title:
+        return ""
+    if record.title == record.cwd.name:
+        return "💤"
+    action = re.fullmatch(r"\[ ([!.]) \] Action Required(?: .*)?", record.title)
+    if action:
+        return action.group(1)
+    if record.title[0] in CODEX_SPINNER_GLYPHS:
+        return record.title[0].translate(CODEX_SPINNER_TRANSLATION)
+    return ""
+
+
+def pane_plain_text(record: PaneRecord) -> str:
+    codex = pane_codex_state(record)
+    return "\t".join(
+        (record.session, record.window_name, record.pane_name, record.label, codex, short_path(record.cwd))
+    )
+
+
+def pane_table_values(record: PaneRecord) -> tuple[str, str, str, str, str]:
+    return (record.session, record.window_name, record.pane_name, record.label, pane_codex_state(record))
+
+
+def pane_table_widths(records: list[PaneRecord]) -> tuple[int, int, int, int, int]:
+    widths = list(map(len, PANE_TABLE_LABELS))
+    for record in records:
+        for index, value in enumerate(pane_table_values(record)):
+            widths[index] = max(widths[index], len(value))
+    return (widths[0], widths[1], widths[2], widths[3], widths[4])
+
+
+def pane_widths_from_environment(records: list[PaneRecord]) -> tuple[int, int, int, int, int]:
+    raw_widths = os.environ.get("TW_FZF_PANE_WIDTHS", "")
+    try:
+        widths = tuple(int(value) for value in raw_widths.split(","))
+    except ValueError:
+        widths = ()
+    if len(widths) == len(PANE_TABLE_LABELS) and all(
+        width >= len(label) for width, label in zip(widths, PANE_TABLE_LABELS)
+    ):
+        return (widths[0], widths[1], widths[2], widths[3], widths[4])
+    return pane_table_widths(records)
+
+
+def pane_table_header(widths: tuple[int, int, int, int, int]) -> str:
+    columns = " ".join(f"{label:<{width}}" for label, width in zip(PANE_TABLE_LABELS, widths))
+    return f"  {columns} PATH"
+
+
+def pane_fzf_line(
+    record: PaneRecord,
+    widths: Optional[tuple[int, int, int, int, int]] = None,
+) -> str:
+    marker = f"{GREEN}●{RESET}" if record.pane_active and record.window_active else f"{GRAY}○{RESET}"
+    widths = widths or pane_table_widths([record])
+    session_width, tab_width, pane_width, command_width, codex_width = widths
+    session, tab, pane, command, codex = pane_table_values(record)
+    display = (
+        f"{marker} {BLUE}{table_cell(session, session_width)}{RESET} "
+        f"{PURPLE}{table_cell(tab, tab_width)}{RESET} "
+        f"{GREEN}{table_cell(pane, pane_width)}{RESET} "
+        f"{TEXT}{table_cell(command, command_width)}{RESET} "
+        f"{YELLOW}{table_cell(codex, codex_width)}{RESET} "
+        f"{GRAY}{short_path(record.cwd)}{RESET}"
+    )
+    return f"{record.pane_id}\t{display}"
+
+
+def project_root() -> Path:
+    configured = os.environ.get("TW_PROJECT_ROOT") or os.environ.get("TMUX_PROJECT_ROOT")
+    root = Path(configured).expanduser() if configured else DEFAULT_PROJECT_ROOT
+    try:
+        resolved = root.resolve()
+    except OSError as error:
+        raise TmuxFzfError(f"project root is unavailable: {root}") from error
+    if not resolved.is_dir():
+        raise TmuxFzfError(f"project root is not a directory: {resolved}")
+    return resolved
+
+
+def discover_project_paths(root: Path) -> list[Path]:
+    try:
+        children = list(root.iterdir())
+    except OSError as error:
+        raise TmuxFzfError(f"could not scan project root: {root}") from error
+    return sorted(
+        (child.resolve() for child in children if child.is_dir() and (child / ".git").exists()),
+        key=lambda path: path.name.lower(),
+    )
+
+
+def git_directory(project: Path) -> Optional[Path]:
+    marker = project / ".git"
+    if marker.is_dir():
+        return marker
+    try:
+        value = marker.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    prefix = "gitdir: "
+    if not value.startswith(prefix):
+        return None
+    git_dir = Path(value[len(prefix) :])
+    return (project / git_dir).resolve() if not git_dir.is_absolute() else git_dir.resolve()
+
+
+def project_branch(project: Path) -> str:
+    git_dir = git_directory(project)
+    if not git_dir:
+        return "-"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return "-"
+    prefix = "ref: refs/heads/"
+    return head[len(prefix) :] if head.startswith(prefix) else head[:8]
+
+
+def path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def list_projects(panes: list[PaneRecord]) -> list[ProjectRecord]:
+    projects: list[ProjectRecord] = []
+    for path in discover_project_paths(project_root()):
+        matching = tuple(record for record in panes if path_is_within(record.cwd, path))
+        projects.append(ProjectRecord(path.name, path, project_branch(path), matching))
+    return projects
+
+
+def project_plain_text(record: ProjectRecord) -> str:
+    state = f"OPEN {len(record.panes)}" if record.panes else "closed"
+    return f"{record.name}\t{record.branch}\t{state}\t{record.path}"
+
+
+def project_fzf_line(record: ProjectRecord) -> str:
+    if record.panes:
+        state = f"{GREEN}OPEN {len(record.panes)}{RESET}"
+        marker = f"{GREEN}●{RESET}"
+    else:
+        state = f"{GRAY}closed{RESET}"
+        marker = f"{GRAY}○{RESET}"
+    display = (
+        f"{marker} {BLUE}{table_cell(record.name, 38)}{RESET} "
+        f"{PURPLE}{table_cell(record.branch, 28)}{RESET} {state}"
+    )
+    return f"{record.path}\t{display}"
+
+
+def pane_scroll_state_path(required: bool = False) -> Optional[Path]:
+    raw_path = os.environ.get("TMUX_FZF_SCROLL_STATE", "")
+    if not raw_path:
+        if required:
+            raise TmuxFzfError("pane scroll state is unavailable")
+        return None
+    path = Path(raw_path).resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    if path.parent != temp_root or not path.name.startswith("tmux-fzf-scroll-"):
+        raise TmuxFzfError("invalid pane scroll state path")
+    return path
+
+
+def read_pane_scroll_state(path: Optional[Path], pane_id: str) -> tuple[int, int]:
+    if not path:
+        return 0, 0
+    try:
+        stored_pane, back_text, maximum_text = path.read_text(encoding="utf-8").strip().split("\t")
+        if stored_pane != pane_id:
+            return 0, 0
+        return max(0, int(back_text)), max(0, int(maximum_text))
+    except (OSError, ValueError):
+        return 0, 0
+
+
+def write_pane_scroll_state(path: Optional[Path], pane_id: str, back: int, maximum: int) -> None:
+    if not path:
+        return
+    try:
+        with path.open("r+", encoding="utf-8") as state_file:
+            state_file.write(f"{pane_id}\t{back}\t{maximum}\n")
+            state_file.truncate()
+    except OSError:
+        pass
+
+
+def preview_pane(pane_id: str) -> int:
+    if not re.fullmatch(r"%[0-9]+", pane_id):
+        raise TmuxFzfError("invalid pane target")
+    completed = tmux("capture-pane", "-ep", "-t", pane_id, "-S", "-200", check=False)
+    if completed.returncode:
+        print("Pane is no longer available.")
+        return 0
+    lines = completed.stdout.rstrip("\n").split("\n") if completed.stdout else []
+    try:
+        preview_lines = max(1, int(os.environ.get("FZF_PREVIEW_LINES", "20")))
+    except ValueError:
+        preview_lines = 20
+    state_path = pane_scroll_state_path()
+    back, _ = read_pane_scroll_state(state_path, pane_id)
+    maximum = max(0, len(lines) - preview_lines)
+    back = min(back, maximum)
+    write_pane_scroll_state(state_path, pane_id, back, maximum)
+    end = len(lines) - back
+    visible = lines[max(0, end - preview_lines) : end]
+    output = [""] * max(0, preview_lines - len(visible)) + visible
+    if output:
+        sys.stdout.write("\n".join(output) + "\n")
+    return 0
+
+
+def scroll_pane(pane_id: str, direction: str) -> int:
+    if not re.fullmatch(r"%[0-9]+", pane_id):
+        raise TmuxFzfError("invalid pane target")
+    path = pane_scroll_state_path(required=True)
+    back, maximum = read_pane_scroll_state(path, pane_id)
+    next_back = min(maximum, back + PANE_SCROLL_STEP) if direction == "up" else max(0, back - PANE_SCROLL_STEP)
+    if next_back != back:
+        write_pane_scroll_state(path, pane_id, next_back, maximum)
+        print("refresh-preview")
+    return 0
+
+
+def validated_project(raw_path: str) -> Path:
+    path = Path(raw_path)
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(project_root())
+    except (OSError, ValueError) as error:
+        raise TmuxFzfError("project target is outside TMUX_PROJECT_ROOT") from error
+    if not resolved.is_dir() or not (resolved / ".git").exists():
+        raise TmuxFzfError("project target is not a Git checkout")
+    return resolved
+
+
+def preview_project(raw_path: str) -> int:
+    project = validated_project(raw_path)
+    panes = [record for record in list_panes() if path_is_within(record.cwd, project)]
+    print(f"{project.name}  [{project_branch(project)}]")
+    print(str(project))
+    if panes:
+        print("\nOpen panes:")
+        for record in panes:
+            print(f"  {record.target:<22} {record.label:<18} {short_path(record.cwd)}")
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+    status = run(
+        [command_path("git"), "-C", str(project), "status", "--short", "--branch", "--untracked-files=normal"],
+        check=False,
+        environment=environment,
+    )
+    print("\nGit status:")
+    print(status.stdout.rstrip() or "  clean")
+    readme = next((project / name for name in ("README.md", "README.rst", "README") if (project / name).is_file()), None)
+    if readme:
+        print(f"\n{readme.name}:")
+        try:
+            lines = readme.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        print("\n".join(lines[:80]))
+    return 0
+
+
+def bottom_preview_window(record_count: int, *, wrap: bool = False) -> str:
+    try:
+        terminal_rows = os.get_terminal_size(sys.stdin.fileno()).lines
+    except (OSError, ValueError):
+        terminal_rows = shutil.get_terminal_size(fallback=(120, 40)).lines
+    preview_rows = terminal_rows - record_count - 7
+    wrap_mode = "wrap" if wrap else "nowrap"
+    if preview_rows < 5:
+        return f"down:50%:{wrap_mode}:border-top:follow:hidden"
+    return f"down:{preview_rows}:{wrap_mode}:border-top:follow"
+
+
+def fzf_base(
+    prompt: str,
+    header: str,
+    preview_command: str,
+    *,
+    preview_window: str = "right:60%:wrap:border-left",
+) -> list[str]:
+    return [
+        command_path("fzf"),
+        "--ansi",
+        "--delimiter=\t",
+        "--with-nth=2..",
+        "--height=100%",
+        "--layout=reverse",
+        "--border=rounded",
+        "--info=inline",
+        f"--prompt={prompt}",
+        f"--header={header}",
+        f"--preview={preview_command}",
+        f"--preview-window={preview_window}",
+        f"--color={FZF_COLORS}",
+    ]
+
+
+def preview_invocation(command: str) -> str:
+    script = str(Path(__file__).resolve())
+    return f"{shlex.quote(sys.executable)} -S {shlex.quote(script)} {command} {{1}}"
+
+
+def pane_reload_invocation(project: Optional[Path] = None) -> str:
+    script = str(Path(__file__).resolve())
+    command = f"{shlex.quote(sys.executable)} -S {shlex.quote(script)} _pane-lines"
+    return f"{command} {shlex.quote(str(project))}" if project else command
+
+
+def pane_scroll_bindings() -> str:
+    up = preview_invocation("_scroll-pane-up")
+    down = preview_invocation("_scroll-pane-down")
+    up_action = f"transform({up})"
+    down_action = f"transform({down})"
+    return ",".join(
+        (
+            f"preview-scroll-up:{up_action}",
+            f"preview-scroll-down:{down_action}",
+            f"shift-up:{up_action}",
+            f"shift-down:{down_action}",
+        )
+    )
+
+
+def selected_key_and_value(output: str) -> tuple[str, str]:
+    lines = output.splitlines()
+    if not lines:
+        return "", ""
+    if len(lines) >= 2 and lines[0] in {"", "ctrl-s", "ctrl-w"}:
+        return lines[0], lines[-1]
+    return "", lines[-1]
+
+
+def choose_pane(
+    records: list[PaneRecord],
+    prompt: str = "pane > ",
+    project: Optional[Path] = None,
+) -> Optional[PaneRecord]:
+    if not records:
+        return None
+    by_id = {record.pane_id: record for record in records}
+    enter_action = "switch pane" if os.environ.get("TMUX") else "attach to pane"
+    widths = pane_table_widths(records)
+    table_header = pane_table_header(widths)
+    header = f"Enter: {enter_action}   Delete: close pane   Ctrl-/: preview   Esc: close\n{table_header}"
+    command = fzf_base(
+        prompt,
+        header,
+        preview_invocation("_preview-pane"),
+        preview_window=bottom_preview_window(len(records)),
+    )
+    command.append("--bind=ctrl-/:toggle-preview")
+    command.append(f"--bind={pane_scroll_bindings()}")
+    close = preview_invocation("_close-pane-confirmed")
+    reload = pane_reload_invocation(project)
+    restore = f"change-header({header})+unbind(y,n)+rebind(delete,backward-eof,enter)"
+    confirmation = f"{YELLOW}Close highlighted tmux pane?  y: confirm   n: cancel   Esc: close{RESET}\n{table_header}"
+    begin_confirmation = (
+        f"change-header({confirmation})+rebind(y,n)+unbind(delete,backward-eof,enter)"
+    )
+    close_action = f"execute-silent({close})+reload({reload})+{restore}"
+    command.append("--bind=enter:accept,start:unbind(y,n)")
+    command.append(f"--bind=delete:{begin_confirmation},backward-eof:{begin_confirmation}")
+    command.append(f"--bind=y:{close_action},n:{restore}")
+    with tempfile.NamedTemporaryFile(prefix="tmux-fzf-scroll-", delete=False) as state_file:
+        state_path = Path(state_file.name)
+    environment = dict(os.environ)
+    environment["TMUX_FZF_SCROLL_STATE"] = str(state_path)
+    environment["TW_FZF_PANE_WIDTHS"] = ",".join(map(str, widths))
+    try:
+        completed = run(
+            command,
+            input_text="\n".join(pane_fzf_line(record, widths) for record in records),
+            check=False,
+            timeout=3600,
+            environment=environment,
+        )
+    finally:
+        state_path.unlink(missing_ok=True)
+    if completed.returncode not in {0, 1, 130}:
+        raise TmuxFzfError(completed.stderr.strip() or "fzf failed")
+    _, selected = selected_key_and_value(completed.stdout)
+    pane_id = selected.split("\t", 1)[0] if selected else ""
+    return by_id.get(pane_id)
+
+
+def activate_session(session: str) -> None:
+    if os.environ.get("TMUX"):
+        tmux("switch-client", "-t", session)
+        return
+    tmux_path = command_path("tmux")
+    try:
+        os.execv(tmux_path, [tmux_path, "attach-session", "-t", session])
+    except OSError as error:
+        raise TmuxFzfError(f"could not attach to tmux session: {error}") from error
+
+
+def jump_to_pane(record: PaneRecord) -> None:
+    if os.environ.get("TMUX"):
+        tmux(
+            "switch-client",
+            "-t",
+            record.session,
+            ";",
+            "select-window",
+            "-t",
+            record.window_id,
+            ";",
+            "select-pane",
+            "-t",
+            record.pane_id,
+        )
+        return
+
+    tmux("select-window", "-t", record.window_id, ";", "select-pane", "-t", record.pane_id)
+    activate_session(record.session)
+
+
+def run_navigator(
+    records: Optional[list[PaneRecord]] = None,
+    prompt: str = "pane > ",
+    project: Optional[Path] = None,
+) -> int:
+    selected = choose_pane(records if records is not None else list_panes(), prompt, project)
+    if selected:
+        fresh = next((record for record in list_panes() if record.pane_id == selected.pane_id), None)
+        if not fresh:
+            raise TmuxFzfError("selected pane closed before it could be activated")
+        jump_to_pane(fresh)
+    return 0
+
+
+def session_name_for(project: Path) -> str:
+    name = re.sub(r"[^A-Za-z0-9_-]+", "-", project.name).strip("-") or "project"
+    sessions_output = tmux("list-sessions", "-F", "#{session_name}\t#{@project_root}", check=False).stdout
+    sessions = dict(line.split("\t", 1) if "\t" in line else (line, "") for line in sessions_output.splitlines())
+    for session, root in sessions.items():
+        if root == str(project):
+            return session
+    candidate = name
+    suffix = 2
+    while candidate in sessions:
+        candidate = f"{name}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def open_project_session(project: Path) -> None:
+    session = session_name_for(project)
+    if not tmux("has-session", "-t", session, check=False).returncode:
+        activate_session(session)
+        return
+    command = [
+        "new-session",
+        "-d",
+        "-s",
+        session,
+        "-n",
+        project.name,
+        "-c",
+        str(project),
+        ";",
+        "set-option",
+        "-t",
+        session,
+        "@project_root",
+        str(project),
+    ]
+    if os.environ.get("TMUX"):
+        command.extend((";", "switch-client", "-t", session))
+    tmux(*command)
+    if not os.environ.get("TMUX"):
+        activate_session(session)
+
+
+def open_project_window(project: Path) -> None:
+    if os.environ.get("TMUX"):
+        tmux("new-window", "-c", str(project), "-n", project.name)
+        return
+    session = session_name_for(project)
+    if tmux("has-session", "-t", session, check=False).returncode:
+        open_project_session(project)
+        return
+    window_id = tmux(
+        "new-window",
+        "-d",
+        "-P",
+        "-F",
+        "#{window_id}",
+        "-t",
+        f"{session}:",
+        "-c",
+        str(project),
+        "-n",
+        project.name,
+    ).stdout.strip()
+    if not window_id:
+        raise TmuxFzfError("tmux did not report the new project window")
+    tmux("select-window", "-t", window_id)
+    activate_session(session)
+
+
+def run_projects() -> int:
+    panes = list_panes()
+    projects = list_projects(panes)
+    by_path = {str(record.path): record for record in projects}
+    enter_action = "jump/open window" if os.environ.get("TMUX") else "attach/open project"
+    window_action = "new window" if os.environ.get("TMUX") else "new project window"
+    command = fzf_base(
+        "project > ",
+        (
+            f"Enter: {enter_action}   Ctrl-S: project session   Ctrl-W: {window_action}   Esc: close\n"
+            f"{PROJECT_TABLE_HEADER}"
+        ),
+        preview_invocation("_preview-project"),
+        preview_window=bottom_preview_window(len(projects), wrap=True),
+    )
+    command.append("--expect=ctrl-s,ctrl-w")
+    completed = run(command, input_text="\n".join(project_fzf_line(record) for record in projects), check=False, timeout=3600)
+    if completed.returncode not in {0, 1, 130}:
+        raise TmuxFzfError(completed.stderr.strip() or "fzf failed")
+    key, selected = selected_key_and_value(completed.stdout)
+    raw_path = selected.split("\t", 1)[0] if selected else ""
+    record = by_path.get(raw_path)
+    if not record:
+        return 0
+    project = validated_project(raw_path)
+    if key == "ctrl-s":
+        open_project_session(project)
+    elif key == "ctrl-w":
+        open_project_window(project)
+    elif not record.panes:
+        open_project_window(project) if os.environ.get("TMUX") else open_project_session(project)
+    elif len(record.panes) == 1:
+        jump_to_pane(record.panes[0])
+    else:
+        run_navigator(list(record.panes), prompt=f"{record.name} > ", project=project)
+    return 0
+
+
+def close_pane(pane_id: str, *, confirmed: bool = False) -> int:
+    if not re.fullmatch(r"%[0-9]+", pane_id):
+        raise TmuxFzfError("invalid pane target")
+    record = next((pane for pane in list_panes() if pane.pane_id == pane_id), None)
+    if not record:
+        print("Pane is no longer available.")
+        return 0
+    if not confirmed:
+        try:
+            response = input(
+                f"Close tmux pane {record.target} ({record.label})? "
+                "This may close its window or session. [y/N] "
+            )
+        except EOFError:
+            response = ""
+        if response.strip().lower() not in {"y", "yes"}:
+            print("Canceled.")
+            return 0
+    tmux("kill-pane", "-t", record.pane_id)
+    return 0
+
+
+def print_pane_lines(raw_project: str = "") -> int:
+    panes = list_panes()
+    if raw_project:
+        project = validated_project(raw_project)
+        panes = [record for record in panes if path_is_within(record.cwd, project)]
+    widths = pane_widths_from_environment(panes)
+    for record in panes:
+        print(pane_fzf_line(record, widths))
+    return 0
+
+
+def print_entries(mode: str) -> int:
+    panes = list_panes()
+    if mode == "navigate":
+        for record in panes:
+            print(pane_plain_text(record))
+    else:
+        for record in list_projects(panes):
+            print(project_plain_text(record))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["_preview-pane"]:
+        if len(argv) != 2:
+            raise TmuxFzfError("preview requires one pane ID")
+        return preview_pane(argv[1])
+    if argv[:1] == ["_preview-project"]:
+        if len(argv) != 2:
+            raise TmuxFzfError("preview requires one project path")
+        return preview_project(argv[1])
+    if argv[:1] in (["_close-pane"], ["_close-pane-confirmed"]):
+        if len(argv) != 2:
+            raise TmuxFzfError("close requires one pane ID")
+        return close_pane(argv[1], confirmed=argv[0].endswith("confirmed"))
+    if argv[:1] == ["_pane-lines"]:
+        if len(argv) > 2:
+            raise TmuxFzfError("pane listing accepts at most one project path")
+        return print_pane_lines(argv[1] if len(argv) == 2 else "")
+    if argv[:1] in (["_scroll-pane-up"], ["_scroll-pane-down"]):
+        if len(argv) != 2:
+            raise TmuxFzfError("pane scroll requires one pane ID")
+        direction = "up" if argv[0].endswith("up") else "down"
+        return scroll_pane(argv[1], direction)
+    parser = help_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.list:
+        return print_entries(arguments.mode)
+    return run_navigator() if arguments.mode == "navigate" else run_projects()
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except TmuxFzfError as error:
+        print(f"tmux-fzf: {error}", file=sys.stderr)
+        raise SystemExit(1)

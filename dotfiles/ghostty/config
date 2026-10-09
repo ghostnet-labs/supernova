@@ -1,0 +1,6 @@
+theme = TokyoNight Night
+scrollback-limit = 100000
+keybind = alt+left=csi:1;3D
+keybind = alt+right=csi:1;3C
+desktop-notifications = true
+bell-features = system,border,title,attention

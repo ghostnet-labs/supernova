@@ -1,0 +1,7 @@
+# Global ignore patterns (Git reads ~/.config/git/ignore by default).
+.DS_Store
+*.swp
+*~
+__pycache__/
+.venv/
+.env.local

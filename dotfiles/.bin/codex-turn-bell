@@ -1,0 +1,8 @@
+#!/bin/sh
+# setup-help: none (Codex runs it after each turn)
+# toolbox: internal codex notifications | Internal Codex turn-completion hook that emits a terminal bell.
+# Emit a lightweight foreground cue alongside Codex's OSC 9 notification.
+
+notify_tty="${CODEX_NOTIFY_TTY:-/dev/tty}"
+[ -w "$notify_tty" ] || exit 0
+printf '\a' >"$notify_tty" 2>/dev/null || :

@@ -1,0 +1,15 @@
+#!/bin/sh
+# setup-help: none (opened from the tmux and Zellij git popups)
+# toolbox: internal tmux zellij git | Internal Git status popup that waits for Enter before closing.
+# toolbox-args: [REPOSITORY]
+
+repo_path=${1:-$PWD}
+
+if git -C "$repo_path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$repo_path" status
+else
+    printf 'Not inside a Git repository:\n%s\n' "$repo_path"
+fi
+
+printf '\nPress Enter to close'
+IFS= read -r reply

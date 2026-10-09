@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# toolbox: agents macos | Open and manage the Agent Control Center conversation browser and menu bar app.
+# toolbox-args: [--open|--status|--start|--stop|--install|--uninstall]
+# toolbox-example: agent-control-center --open
+# toolbox-example: agent-control-center --status
+# toolbox-example: agent-control-center --install
+# Build, install, and manage the Agent Control Center menu bar app.
+
+set -euo pipefail
+
+readonly app_name="Agent Control Center"
+readonly executable="AgentControlCenter"
+readonly agent_label="local.agent-control-center"
+
+usage() {
+  printf '%s\n' 'Usage:
+  agent-control-center [ACTION]
+
+Description:
+  Manage the Agent Control Center macOS menu bar app. The app reads
+  codex-sessions and claude-sessions JSON to show live Codex and Claude Code
+  sessions, highlights sessions waiting for input, and jumps to their tmux or
+  Zellij pane (or resumes them in Ghostty) when clicked.
+
+Options:
+  --install       Build and install the app, then start it now and at login.
+  --start         Start the installed app quietly.
+  --open          Open or focus the conversation browser.
+  --stop          Stop the running app until the next login or --start.
+  --status        Show install, login agent, and running state (default).
+  --uninstall     Stop the app and remove it and its login agent.
+  -h, --help      Show this help message and exit.
+
+Examples:
+  agent-control-center --install
+  agent-control-center
+  agent-control-center --start
+  agent-control-center --open
+  agent-control-center --stop
+  agent-control-center --uninstall
+
+Environment:
+  AGENT_CONTROL_APP_DIR              Install directory (default: ~/Applications).
+  AGENT_CONTROL_INTERVAL             Refresh interval in seconds, minimum 2 (default: 5).
+  AGENT_CONTROL_SESSIONS_BIN         Path to codex-sessions when it is not in PATH.
+  AGENT_CONTROL_CLAUDE_SESSIONS_BIN  Path to claude-sessions when it is not in PATH.
+  CODEX_HOME                         Codex state directory (default: ~/.codex).
+  CLAUDE_CONFIG_DIR                  Claude state directory (default: ~/.claude).
+  CODEX_SESSIONS_APP_DIR             Previous browser install directory for migration.'
+}
+
+action="--status"
+if (($# > 1)); then usage >&2; exit 2; fi
+if (($# == 1)); then
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --install|--start|--open|--stop|--status|--uninstall) action="$1" ;;
+    *) printf 'error: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+fi
+
+if [[ "$(uname -s)" != Darwin ]]; then
+  printf 'error: agent-control-center requires macOS\n' >&2
+  exit 1
+fi
+
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/agent-control-center" && pwd)"
+readonly app_dir="${AGENT_CONTROL_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+readonly agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
+readonly domain="gui/$(id -u)"
+readonly retired_path="${CODEX_SESSIONS_APP_DIR:-$app_dir}/Codex Sessions.app"
+source "$source_dir/../lib/quit-app.sh"
+
+agent_loaded() { launchctl print "$domain/$agent_label" >/dev/null 2>&1; }
+# bootout returns before launchd removes the service, and a kickstart in that window starts nothing.
+stop_agent() {
+  agent_loaded || return 0
+  launchctl bootout "$domain/$agent_label" 2>/dev/null || true
+  local _
+  for _ in {1..100}; do agent_loaded || return 0; sleep 0.1; done
+  printf 'warning: launchd has not removed %s yet\n' "$agent_label" >&2
+}
+start_agent() {
+  if agent_loaded; then launchctl kickstart "$domain/$agent_label"
+  else launchctl bootstrap "$domain" "$agent_plist"
+  fi
+}
+
+build_app() {
+  local bundle="$1"
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+  cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+  cp "$source_dir/../lib/octicons/LICENSE" "$bundle/Contents/Resources/Octicons-LICENSE"
+  python3 "$source_dir/install_support.py" manifest "$source_dir" "$bundle"
+  swiftc -O -parse-as-library -swift-version 5 -lsqlite3 \
+    -target "$(uname -m)-apple-macos14.0" \
+    -o "$bundle/Contents/MacOS/$executable" \
+    "$source_dir"/*.swift "$source_dir/../lib/agents"/*.swift "$source_dir/../lib/octicons/Octicons.swift" "$source_dir/../lib/BranchRef.swift" \
+    "$source_dir/../lib/GhosttyLaunch.swift" "$source_dir/../lib/GitStatus.swift" "$source_dir/../lib/TextLine.swift" "$source_dir/../lib/SessionPresentation.swift"
+  python3 "$source_dir/install_support.py" verify "$source_dir" "$bundle"
+  codesign --force --sign - "$bundle" >/dev/null 2>&1
+  codesign --verify --deep --strict "$bundle"
+  "$bundle/Contents/MacOS/$executable" --check-build
+}
+
+write_agent_plist() {
+  mkdir -p "${agent_plist%/*}"
+  python3 "$source_dir/install_support.py" plist "$source_dir" "$app_path" "$agent_plist"
+  plutil -lint "$agent_plist" >/dev/null
+}
+
+cleanup_install() {
+  local result=$?
+  trap - EXIT
+  if [[ "${install_started:-false}" == true && "${install_committed:-false}" != true ]]; then
+    printf 'error: installation failed; restoring previous apps\n' >&2
+    stop_agent
+    quit_app "$app_path/Contents/MacOS/$executable" || true
+    rm -rf -- "$app_path"
+    if [[ -d "$build_root/previous.app" ]]; then mv "$build_root/previous.app" "$app_path"; fi
+    if [[ -d "$build_root/retired.app" ]]; then mv "$build_root/retired.app" "$retired_path"; fi
+    if [[ -f "$build_root/previous.plist" ]]; then
+      cp "$build_root/previous.plist" "$agent_plist"
+      start_agent || true
+    else
+      rm -f -- "$agent_plist"
+    fi
+  fi
+  if [[ -n "${build_root:-}" ]]; then rm -rf -- "$build_root"; fi
+  exit "$result"
+}
+
+install_app() {
+  command -v swiftc >/dev/null || { echo 'error: swiftc not found' >&2; exit 1; }
+  command -v codesign >/dev/null || { echo 'error: codesign not found' >&2; exit 1; }
+  build_root="$(mktemp -d "${TMPDIR:-/tmp}/agent-control-center.XXXXXX")"
+  trap cleanup_install EXIT
+  printf '→ Building %s\n' "$app_name"
+  build_app "$build_root/$app_name.app"
+  # Both old bundles remain installed and running until the replacement validates.
+  if [[ -d "$retired_path" ]]; then
+    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$retired_path/Contents/Info.plist")" == local.codex-sessions ]] || {
+      echo 'error: retired app has an unexpected bundle identity' >&2; exit 1;
+    }
+  fi
+  stop_agent
+  quit_app "$app_path/Contents/MacOS/$executable"
+  quit_app "$retired_path/Contents/MacOS/CodexSessions"
+  mkdir -p "$app_dir"
+  if [[ -f "$agent_plist" ]]; then cp "$agent_plist" "$build_root/previous.plist"; fi
+  install_started=true
+  if [[ -d "$app_path" ]]; then mv "$app_path" "$build_root/previous.app"; fi
+  if [[ -d "$retired_path" ]]; then mv "$retired_path" "$build_root/retired.app"; fi
+  mv "$build_root/$app_name.app" "$app_path"
+  write_agent_plist
+  codesign --verify --deep --strict "$app_path"
+  python3 "$source_dir/install_support.py" verify "$source_dir" "$app_path"
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_path"
+  start_agent
+  local running=false _
+  for _ in {1..50}; do
+    if launchctl print "$domain/$agent_label" 2>/dev/null | grep -q 'state = running'; then running=true; break; fi
+    sleep 0.1
+  done
+  [[ "$running" == true ]] || { echo 'error: installed app did not start' >&2; exit 1; }
+  install_committed=true
+  printf '✓ Installed %s\n' "$app_path"
+}
+
+status() {
+  [[ -d "$app_path" ]] && echo "app: installed" || echo "app: not installed"
+  [[ -f "$agent_plist" ]] && echo "login agent: installed" || echo "login agent: not installed"
+  agent_loaded && echo "running: yes" || echo "running: no"
+}
+
+case "$action" in
+  --install) install_app ;;
+  --start)
+    [[ -f "$agent_plist" ]] || { echo 'error: not installed; run agent-control-center --install' >&2; exit 1; }
+    start_agent
+    ;;
+  --open)
+    [[ -d "$app_path" ]] || { echo 'error: not installed; run agent-control-center --install' >&2; exit 1; }
+    open -a "$app_path" 'agent-control-center://open'
+    ;;
+  --stop) stop_agent; quit_app "$app_path/Contents/MacOS/$executable" ;;
+  --status) status ;;
+  --uninstall)
+    stop_agent
+    quit_app "$app_path/Contents/MacOS/$executable"
+    rm -rf -- "$app_path"
+    rm -f -- "$agent_plist"
+    printf '✓ Uninstalled %s\n' "$app_name"
+    ;;
+esac

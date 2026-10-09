@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# toolbox: git worktrees macos | Open and manage the app for creating, inspecting, and cleaning up Git worktrees.
+# toolbox-args: [--open|--status|--install|--uninstall]
+# toolbox-example: worktree-manager --open
+# toolbox-example: worktree-manager --status
+# toolbox-example: worktree-manager --install
+# Build, install, and manage the Worktree Manager macOS app.
+set -euo pipefail
+readonly app_name="Worktree Manager"
+readonly executable="WorktreeManager"
+usage() {
+printf '%s\n' 'Usage:
+  worktree-manager [ACTION]
+
+Description:
+  Manage the Worktree Manager macOS app for creating, opening, syncing,
+  diffing, pruning, and safely removing Git worktrees with live Codex
+  awareness.
+
+Options:
+  --install     Build and install the app, then quit any running copy and
+                open it.
+  --open        Open the installed app.
+  --status      Show whether the app is installed (default).
+  --uninstall   Remove the installed app.
+  -h, --help    Show this help message and exit.
+
+Examples:
+  worktree-manager --install
+  worktree-manager --open
+  worktree-manager --uninstall
+
+Environment:
+  WORKTREE_MANAGER_APP_DIR       Install directory (default: ~/Applications).
+  WORKTREE_MANAGER_ROOT          Repository root (default: TW_PROJECT_ROOT or ~/dev).
+  WORKTREE_MANAGER_SESSIONS_BIN  Path to codex-sessions.'
+}
+action="--status"
+if (($# > 1)); then usage >&2; exit 2; fi
+if (($# == 1)); then
+ case "$1" in -h|--help) usage; exit 0;; --install|--open|--status|--uninstall) action="$1";; *) usage >&2; exit 2;; esac
+fi
+[[ "$(uname -s)" == Darwin ]] || { echo 'error: worktree-manager requires macOS' >&2; exit 1; }
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/worktree-manager" && pwd)"
+readonly app_dir="${WORKTREE_MANAGER_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+build() {
+ local bundle="$1"; mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"; cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+ cp "$source_dir/../lib/octicons/LICENSE" "$bundle/Contents/Resources/Octicons-LICENSE"
+ # Whole-module optimization builds these sources faster and makes a smaller binary.
+ swiftc -O -wmo -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$bundle/Contents/MacOS/$executable" \
+  "$source_dir/WorktreeManager.swift" "$source_dir/../lib/worktrees"/*.swift "$source_dir/../lib/octicons/Octicons.swift" "$source_dir/../lib/BranchRef.swift" \
+  "$source_dir/../lib/GitStatus.swift" "$source_dir/../lib/TextLine.swift" "$source_dir/../lib/SessionPresentation.swift"
+ codesign --force --sign - "$bundle" >/dev/null 2>&1
+}
+source "$source_dir/../lib/quit-app.sh"
+case "$action" in
+ --install) tmp="$(mktemp -d "${TMPDIR:-/tmp}/worktree-manager.XXXXXX")"; trap 'rm -rf -- "$tmp"' EXIT; build "$tmp/$app_name.app"; quit_app "$app_path/Contents/MacOS/$executable"; mkdir -p "$app_dir"; rm -rf -- "$app_path"; mv "$tmp/$app_name.app" "$app_path"; open "$app_path"; echo "✓ Installed $app_path";;
+ --open) open "$app_path";;
+ --status) [[ -d "$app_path" ]] && echo 'app: installed' || echo 'app: not installed';;
+ --uninstall) quit_app "$app_path/Contents/MacOS/$executable"; rm -rf -- "$app_path"; echo "✓ Uninstalled $app_name";;
+esac

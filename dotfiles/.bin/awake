@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# toolbox: macos power | Open and manage Awake, which keeps the Mac and displays awake.
+# toolbox-args: [--open|--status|--install|--uninstall]
+# toolbox-example: awake --open
+# toolbox-example: awake --status
+# Build, install, and manage the Awake macOS menu bar app.
+set -euo pipefail
+
+readonly app_name="Awake"
+readonly executable="Awake"
+
+usage() {
+  printf '%s\n' 'Usage:
+  awake [ACTION]
+
+Description:
+  Build and install Awake for Apple Silicon Macs running macOS 15 or newer.
+  One toggle keeps the Mac and displays awake; Mouse Jiggle is independent.
+
+Options:
+  --install     Build with the macOS 15 SDK, quit the running copy, and install
+                in ~/Applications, then open the app.
+  --open        Open the installed app.
+  --status      Show whether the app is installed (default).
+  --uninstall   Quit and remove the installed app. Disable Launch at Login
+                in the app before uninstalling.
+  -h, --help    Show this help message and exit.
+
+Examples:
+  awake --install
+  awake --status
+  awake --open
+  reinstall-apps awake
+
+Environment:
+  AWAKE_APP_DIR   Install directory (default: ~/Applications).'
+}
+
+action="--status"
+if (($# > 1)); then usage >&2; exit 2; fi
+if (($# == 1)); then
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --install|--open|--status|--uninstall) action="$1" ;;
+    *) printf 'error: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+fi
+[[ "$(uname -s)" == Darwin ]] || { echo 'error: awake requires macOS' >&2; exit 1; }
+[[ "$(uname -m)" == arm64 ]] || { echo 'error: awake requires Apple Silicon and a native terminal' >&2; exit 1; }
+version="$(sw_vers -productVersion)"
+[[ "${version%%.*}" -ge 15 ]] || { echo 'error: awake requires macOS 15 or newer' >&2; exit 1; }
+
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/awake" && pwd)"
+readonly app_dir="${AWAKE_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+source "$source_dir/../lib/quit-app.sh"
+
+case "$action" in
+  --install)
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/awake.XXXXXX")"
+    trap 'rm -rf -- "$tmp"' EXIT
+    AWAKE_BUILD_DIR="$tmp" bash "$source_dir/build.sh"
+    quit_app "$app_path/Contents/MacOS/$executable"
+    mkdir -p "$app_dir"
+    rm -rf -- "$app_path"
+    mv "$tmp/$app_name.app" "$app_path"
+    open "$app_path"
+    printf '✓ Installed %s\n' "$app_path"
+    ;;
+  --open) [[ -d "$app_path" ]] || { echo 'error: not installed' >&2; exit 1; }; open "$app_path" ;;
+  --status) [[ -d "$app_path" ]] && echo 'app: installed' || echo 'app: not installed' ;;
+  --uninstall)
+    quit_app "$app_path/Contents/MacOS/$executable"
+    rm -rf -- "$app_path"
+    printf '✓ Uninstalled %s\n' "$app_name"
+    ;;
+esac

@@ -1,0 +1,562 @@
+#!/usr/bin/env python3
+# toolbox: agents claude sessions | List local Claude Code sessions and focus or resume a session.
+# toolbox-args: [--limit COUNT] [--live] [--all] [--json] | --jump SESSION_ID
+# toolbox-example: claude-sessions --limit 20
+# toolbox-example: claude-sessions --json --live --all
+# toolbox-example: claude-sessions --jump SESSION_ID
+"""List local Claude Code sessions and jump to the live ones."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, TextIO
+
+
+# Shared with the native app; resolve symlinked PATH launchers back to this checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/agent-control-center"))
+from session_stream import JsonlCache, claude_summary, consume_claude, file_metadata, run_stream  # noqa: E402
+
+
+SUBAGENT_ACTIVE_SECONDS = 300
+LONG_CONTEXT_FAMILIES = {"fable", "mythos"}
+USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+@dataclass(frozen=True)
+class LiveSession:
+    """A running Claude Code process recorded in CLAUDE_CONFIG_DIR/sessions."""
+
+    pid: int
+    session_id: str
+    cwd: str
+    status: str
+    status_updated_at: float
+    started_at: float
+    entrypoint: str
+    name: str
+    name_source: str = ""
+    waiting_for: str = ""
+    zellij_session: str = ""
+    zellij_pane_id: str = ""
+    tmux_socket: str = ""
+    tmux_pane: str = ""
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="claude-sessions",
+        description="List local Claude Code sessions and focus or resume one. Rows use the codex-sessions JSON contract.",
+        epilog=(
+            "Examples:\n"
+            "  claude-sessions\n"
+            "  claude-sessions --limit 20\n"
+            "  claude-sessions --json --live --all\n"
+            "  claude-sessions --jump SESSION_ID\n\n"
+            "Environment:\n"
+            "  CLAUDE_CONFIG_DIR  Override Claude Code home (default: ~/.claude)"
+        ),
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=32),
+    )
+    parser.add_argument("-l", "--limit", metavar="COUNT", type=positive_integer, default=10, help="Number of sessions to show (default: 10).")
+    parser.add_argument("--all", action="store_true", help="Include active subagents of live sessions.")
+    parser.add_argument("--json", action="store_true", help="Emit session data as JSON.")
+    parser.add_argument("--stream-json", action="store_true", help="Stream versioned JSON snapshots of all sessions and subagents, including finished children.")
+    parser.add_argument("--interval", metavar="SECONDS", type=positive_integer, default=5, help="Stream refresh interval (default: 5).")
+    parser.add_argument("--live", action="store_true", help="Include only sessions held by a running Claude Code process.")
+    parser.add_argument("--jump", metavar="SESSION_ID", help="Show a live session's exact Ghostty window, tab, and pane, or resume it.")
+    return parser
+
+
+def positive_integer(value: str) -> int:
+    if not re.fullmatch(r"[1-9][0-9]*", value):
+        raise argparse.ArgumentTypeError("requires a positive integer")
+    return int(value)
+
+
+def claude_home() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def duration_text(seconds: float) -> str:
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    if seconds < 86400:
+        return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+    return f"{seconds // 86400}d{seconds % 86400 // 3600:02d}h"
+
+
+def parse_timestamp(value: object, fallback: float) -> float:
+    if isinstance(value, (int, float)):
+        return value / 1000 if value > 1e11 else float(value)
+    if isinstance(value, str) and value:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            pass
+    return fallback
+
+
+def process_contexts(pids: list[int], ps_output: Optional[str] = None, strict: bool = False) -> dict[int, tuple[str, dict[str, str]]]:
+    """Return start time and environment for each running PID in one ps call."""
+    if not pids:
+        return {}
+    if ps_output is None:
+        try:
+            completed = subprocess.run(
+                ["ps", "eww", "-o", "pid=", "-o", "lstart=", "-o", "command=", "-p", ",".join(map(str, pids))],
+                # Claude records procStart in UTC with the C locale.
+                env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            if strict:
+                raise RuntimeError("Cannot determine live Claude processes") from error
+            return {}
+        if strict and completed.returncode != 0:
+            reported = {int(line.split()[0]) for line in completed.stdout.splitlines() if line.split() and line.split()[0].isdigit()}
+            for pid in set(pids) - reported:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                raise RuntimeError("Cannot determine live Claude processes")
+        ps_output = completed.stdout
+    contexts: dict[int, tuple[str, dict[str, str]]] = {}
+    for line in ps_output.splitlines():
+        parts = line.split(None, 6)
+        if len(parts) < 6 or not parts[0].isdigit():
+            continue
+        environment = dict(re.findall(r"(?:^|\s)([A-Z_][A-Z0-9_]*)=(\S+)", parts[6] if len(parts) > 6 else ""))
+        contexts[int(parts[0])] = (" ".join(parts[1:6]), environment)
+    return contexts
+
+
+def live_sessions(home: Path, ps_output: Optional[str] = None, strict: bool = False) -> dict[str, LiveSession]:
+    """Map session IDs to running Claude Code processes, ignoring stale PID files."""
+    records: list[dict[str, object]] = []
+    for path in (home / "sessions").glob("*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and isinstance(record.get("pid"), int) and record.get("sessionId"):
+            records.append(record)
+    pids = [int(record["pid"]) for record in records]
+    contexts = process_contexts(pids, ps_output, strict=True) if strict else process_contexts(pids, ps_output)
+    live: dict[str, LiveSession] = {}
+    now = time.time()
+    for record in records:
+        pid = int(record["pid"])
+        context = contexts.get(pid)
+        if not context:
+            continue
+        started, environment = context
+        recorded_start = " ".join(str(record.get("procStart") or "").split())
+        if not recorded_start or recorded_start != " ".join(started.split()):
+            continue
+        tmux_value = environment.get("TMUX", "")
+        session = LiveSession(
+            pid=pid,
+            session_id=str(record["sessionId"]),
+            cwd=str(record.get("cwd") or "-"),
+            status=str(record.get("status") or ""),
+            status_updated_at=parse_timestamp(record.get("statusUpdatedAt") or record.get("updatedAt"), now),
+            started_at=parse_timestamp(record.get("startedAt"), now),
+            entrypoint=str(record.get("entrypoint") or ""),
+            name=str(record.get("name") or ""),
+            name_source=str(record.get("nameSource") or ""),
+            waiting_for=str(record.get("waitingFor") or ""),
+            zellij_session=environment.get("ZELLIJ_SESSION_NAME", ""),
+            zellij_pane_id=environment.get("ZELLIJ_PANE_ID", ""),
+            tmux_socket=tmux_value.split(",", 1)[0],
+            tmux_pane=environment.get("TMUX_PANE", ""),
+        )
+        previous = live.get(session.session_id)
+        if not previous or session.started_at > previous.started_at:
+            live[session.session_id] = session
+    return live
+
+
+def context_window(model: str) -> Optional[int]:
+    """Context window Claude Code uses for MODEL: 1M from Opus/Sonnet 4.6 on, 200K before and for Haiku."""
+    if not model:
+        return None
+    if model.endswith("[1m]"):
+        return 1_000_000
+    match = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-|$)", model)
+    if not match:
+        return None
+    family, major, minor = match.group(1), int(match.group(2)), int(match.group(3) or 0)
+    if family in LONG_CONTEXT_FAMILIES or (family in {"opus", "sonnet"} and (major, minor) >= (4, 6)):
+        return 1_000_000
+    return 200_000
+
+
+def stream_context_window(model: str) -> Optional[int]:
+    if model.endswith("[1m]"):
+        return 1_000_000
+    base = re.sub(r"-\d{8}$", "", model.lower())
+    long = {"claude-opus-4-7", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-fable-5", "claude-fable-5-1"}
+    short = {"claude-3-opus", "claude-opus-4", "claude-opus-4-1", "claude-opus-4-5", "claude-3-haiku", "claude-3-5-haiku", "claude-haiku-4-5", "claude-3-sonnet", "claude-3-5-sonnet", "claude-3-7-sonnet"}
+    return 1_000_000 if base in long else 200_000 if base in short else None
+
+
+def user_prompt(record: dict[str, object]) -> str:
+    """Return typed user text, skipping tool results, meta records, and wrappers."""
+    if record.get("isMeta") or record.get("isSidechain"):
+        return ""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, list):
+        texts = [str(item.get("text", "")) for item in content if isinstance(item, dict) and item.get("type") == "text"]
+        content = texts[-1] if texts else ""
+    text = " ".join(str(content or "").split())
+    command = re.search(r"<command-name>(.*?)</command-name>", text)
+    if command:
+        return command.group(1).strip()
+    return "" if text.startswith("<") else text
+
+
+def scan_transcript(path: Path, cache=None) -> dict[str, object]:
+    reader = cache or JsonlCache()
+    try:
+        def visible(record):
+            if record.get("isMeta") or record.get("isSidechain"):
+                return ""
+            message = record.get("message") or {}
+            content = message.get("content") or []
+            if isinstance(content, str):
+                return content
+            return "\n\n".join(str(block.get("text") or {"image": "[Image attachment]", "document": "[Document attachment]"}.get(block.get("type"), "")) for block in content if isinstance(block, dict) and block.get("type") in {"text", "image", "document"})
+        prompt = visible if cache is not None else user_prompt
+        is_subagent = path.parent.name == "subagents"
+        def consume(state, record, offset):
+            # Dedicated child transcripts mark their own messages as sidechains.
+            # Keep excluding embedded sidechains from the parent transcript.
+            if is_subagent and record.get("isSidechain"):
+                record = {**record, "isSidechain": False}
+            consume_claude(state, record, offset, prompt)
+        return reader.read(path, claude_summary, consume)
+    except FileNotFoundError:
+        return claude_summary()
+
+
+def session_status(live: Optional[LiveSession]) -> tuple[str, str]:
+    """Map Claude's session-file status onto codex-sessions liveness/status values."""
+    if not live:
+        return "CLOSED", "CLOSED"
+    # "idle" or a pending prompt needs the user; "busy", "shell", and anything newer is working.
+    return "OPEN", "WAITING" if live.status == "idle" or live.waiting_for else "BUSY"
+
+
+def session_row(path: Path, live: Optional[LiveSession], cache=None) -> dict[str, object]:
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        if not live:
+            raise
+        modified = live.started_at  # A new session has no transcript until its first message.
+    summary = scan_transcript(path, cache)
+    session_id = path.stem
+    liveness, status = session_status(live)
+    state_started = live.status_updated_at if live else modified
+    elapsed = time.time() - state_started
+    user_name = live.name if live and live.name_source == "user" else ""
+    request = summary["last"] or summary["title"] or user_name or "-"
+    return {
+        **file_metadata(path),
+        **{key: summary[key] for key in ("records", "assistant_messages", "reasoning_items", "tool_calls", "task_starts", "task_completes", "aborted_turns", "tokens_cached", "tokens_output")},
+        "archived": False,
+        "started_at": parse_timestamp(summary["started"], live.started_at if live else modified),
+        "cli_version": summary["version"],
+        "context_window_is_estimated": stream_context_window(str(summary["model"])) is not None,
+        "agent": "claude",
+        "session_id": session_id,
+        "root_session_id": session_id,
+        "parent_thread_id": None,
+        "thread_source": "user",
+        "client_type": "APP" if live and live.entrypoint.startswith("claude-desktop") else "CLI",
+        "cwd": (live.cwd if live else "") or summary["cwd"] or "-",
+        "liveness": liveness,
+        "status": status,
+        "state": "open" if status == "BUSY" else "complete",
+        "state_started_at": state_started,
+        "state_elapsed_seconds": elapsed,
+        "state_elapsed": duration_text(elapsed),
+        "last_activity": modified,
+        # A name the user set wins; derived names like "apps-99" say nothing about the work.
+        "title": user_name or summary["custom_title"] or summary["title"] or "-",
+        "first_user_request": summary["first"] or request,
+        "last_user_request": request,
+        "user_turns": summary["user_turns"],
+        "git_branch": summary["branch"] or None,
+        "model": summary["model"] or "-",
+        "tokens_total": summary["tokens"],
+        "context_used_tokens": summary["context"],
+        "context_window_tokens": stream_context_window(str(summary["model"])) if cache is not None else context_window(str(summary["model"])),
+        "reasoning_effort": summary["effort"] or "-",
+        "table_detail": summary["title"] or "-",
+        "transcript_path": str(path),
+        "live_pid": live.pid if live else None,
+        "zellij_session": live.zellij_session if live else "",
+        "zellij_pane_id": live.zellij_pane_id if live else "",
+        "tmux_socket": live.tmux_socket if live else "",
+        "tmux_pane": live.tmux_pane if live else "",
+    }
+
+
+def subagent_rows(root: dict[str, object], now: float, cache=None, include_finished: bool = False) -> list[dict[str, object]]:
+    """Return children of a session, optionally retaining completed child history."""
+    directory = Path(str(root["transcript_path"])).with_suffix("") / "subagents"
+    rows: list[dict[str, object]] = []
+    for path in directory.glob("agent-*.jsonl"):
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            continue
+        summary = scan_transcript(path, cache)
+        live = root["liveness"] == "OPEN" and summary["stop"] != "end_turn"
+        if not live and not include_finished:
+            continue
+        status = ("BUSY" if now - modified <= SUBAGENT_ACTIVE_SECONDS else "IDLE") if live else "CLOSED"
+        try:
+            meta = json.loads(path.with_suffix(".meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+        description = str(meta.get("description") or summary["first"] or "-")
+        agent_type = str(meta.get("agentType") or "subagent")
+        rows.append({
+            **session_row(path, None, cache),
+            **{key: root[key] for key in ("agent", "cwd", "git_branch", "liveness", "zellij_session", "zellij_pane_id", "tmux_socket", "tmux_pane", "live_pid")},
+            "session_id": path.stem.removeprefix("agent-"),
+            "root_session_id": root["session_id"],
+            "parent_thread_id": root["session_id"],
+            "thread_source": "subagent",
+            "client_type": "AGENT",
+            "liveness": "OPEN" if live else "CLOSED",
+            "status": status,
+            "state": "open" if live else "complete",
+            "state_started_at": modified,
+            "state_elapsed_seconds": now - modified,
+            "state_elapsed": duration_text(now - modified),
+            "last_activity": modified,
+            "title": description,
+            "first_user_request": description,
+            "last_user_request": description,
+            "user_turns": summary["user_turns"],
+            "model": summary["model"] or "-",
+            "tokens_total": summary["tokens"],
+            "context_used_tokens": summary["context"],
+            "context_window_tokens": stream_context_window(str(summary["model"])) if cache is not None else context_window(str(summary["model"])),
+            "reasoning_effort": summary["effort"] or "-",
+            "table_detail": agent_type,
+            "transcript_path": str(path),
+        })
+    return rows
+
+
+def collect_rows(home: Path, live_only: bool, include_subagents: bool, limit: Optional[int], cache=None,
+                 strict: bool = False, include_finished: bool = False) -> list[dict[str, object]]:
+    live = live_sessions(home, strict=True) if strict else live_sessions(home)
+    projects = home / "projects"
+    paths = [] if live_only else list(projects.glob("*/*.jsonl"))
+    for session_id, session in live.items():
+        found = list(projects.glob(f"*/{session_id}.jsonl"))
+        if found:
+            paths += found if live_only else []
+        else:
+            # Where Claude will write the transcript: the cwd with non-alphanumerics as "-".
+            paths.append(projects / re.sub(r"[^A-Za-z0-9]", "-", session.cwd) / f"{session_id}.jsonl")
+    stamped: list[tuple[float, Path]] = []
+    for path in paths:
+        try:
+            stamped.append((path.stat().st_mtime, path))
+        except OSError:
+            if path.stem in live:
+                stamped.append((live[path.stem].started_at, path))
+    stamped.sort(reverse=True)
+    rows: list[dict[str, object]] = []
+    seen = set()
+    now = time.time()
+    for _, path in stamped[:limit]:
+        if path.stem in seen:
+            continue
+        seen.add(path.stem)
+        try:
+            row = session_row(path, live.get(path.stem), cache)
+        except OSError:
+            continue
+        rows.append(row)
+        if include_subagents and (row["liveness"] == "OPEN" or include_finished):
+            rows.extend(subagent_rows(row, now, cache, include_finished=include_finished))
+    return rows
+
+
+def render_table(rows: list[dict[str, object]], stream: TextIO) -> None:
+    print(f"{'STATUS':<8} {'ELAPSED':>8}  {'PROJECT':<22} {'SESSION':<36}  REQUEST", file=stream)
+    width = shutil.get_terminal_size((120, 20)).columns
+    for row in rows:
+        project = Path(str(row["cwd"])).name or str(row["cwd"])
+        line = f"{row['status']:<8} {row['state_elapsed']:>8}  {project[:22]:<22} {row['session_id']:<36}  {row['last_user_request']}"
+        print(line[:width], file=stream)
+
+
+def fail(message: str) -> None:
+    print(f"claude-sessions: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def command_path(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        fail(f"{name} is not on PATH")
+    return str(path)
+
+
+def show_terminal(pid: int, cwd: str) -> None:
+    """Raise the exact Ghostty window/tab/split showing PID, or at least Ghostty."""
+    if sys.platform != "darwin":
+        return
+    helper = Path(__file__).resolve().with_name("ghostty-focus")
+    try:
+        found = subprocess.run([str(helper), "--pid", str(pid), "--cwd", cwd], capture_output=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        found = None
+    if not found or found.returncode:
+        subprocess.run(["/usr/bin/open", "-a", "Ghostty"], check=False)
+
+
+def resolve_session(home: Path, session_id: str) -> tuple[str, list[Path]]:
+    """Return the root session ID and transcripts for a session or subagent ID."""
+    paths = list((home / "projects").glob(f"*/{session_id}.jsonl"))
+    if paths:
+        return session_id, paths
+    # projects/PROJECT/ROOT_ID/subagents/agent-ID.jsonl belongs to projects/PROJECT/ROOT_ID.jsonl.
+    roots = [path.parents[1].with_suffix(".jsonl") for path in (home / "projects").glob(f"*/*/subagents/agent-{session_id}.jsonl")]
+    return (roots[0].stem, roots) if roots else (session_id, [])
+
+
+def jump_to_session(session_id: str) -> int:
+    """Focus a live multiplexer pane for SESSION_ID, or resume it in Ghostty."""
+    home = claude_home()
+    session_id, paths = resolve_session(home, session_id)
+    live = live_sessions(home).get(session_id)
+    if not paths and not live:
+        fail(f"session not found: {session_id}")
+    if live and live.zellij_pane_id:
+        environment = dict(os.environ)
+        if live.zellij_session:
+            environment["ZELLIJ_SESSION_NAME"] = live.zellij_session
+        pane_id = f"terminal_{live.zellij_pane_id}" if live.zellij_pane_id.isdigit() else live.zellij_pane_id
+        completed = subprocess.run(
+            [command_path("zellij"), "action", "focus-pane-id", pane_id],
+            capture_output=True, text=True, timeout=5, check=False, env=environment,
+        )
+        if completed.returncode:
+            fail(completed.stderr.strip() or "could not focus Zellij pane")
+        show_terminal(live.pid, live.cwd)
+        return 0
+    if live and live.tmux_socket and live.tmux_pane:
+        uid = os.getuid()
+        if not live.tmux_socket.startswith((f"/private/tmp/tmux-{uid}/", f"/tmp/tmux-{uid}/")):
+            fail("tmux socket is outside this user's tmux directory")
+        try:
+            socket_stat = Path(live.tmux_socket).stat()
+        except OSError:
+            fail("tmux socket is unavailable")
+        if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != uid:
+            fail("tmux socket is not an owned socket")
+        completed = subprocess.run(
+            [command_path("tmux"), "-S", live.tmux_socket, "select-window", "-t", live.tmux_pane, ";", "select-pane", "-t", live.tmux_pane],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        if completed.returncode:
+            fail(completed.stderr.strip() or "could not focus tmux pane")
+        show_terminal(live.pid, live.cwd)
+        return 0
+    if live and live.entrypoint.startswith("claude-desktop"):
+        if sys.platform == "darwin":
+            subprocess.run(["/usr/bin/open", "-a", "Claude"], check=False)
+        return 0
+    if live:
+        show_terminal(live.pid, live.cwd)
+        return 0
+    cwd = Path(scan_transcript(paths[0])["cwd"] or "")
+    if not cwd.is_absolute() or not cwd.is_dir():
+        fail(f"recorded working directory is unavailable: {cwd}")
+    claude = command_path("claude")
+    if sys.platform == "darwin":
+        shell = os.environ.get("SHELL", "/bin/zsh")
+        resume = f"cd {shlex.quote(str(cwd))} && exec {shlex.quote(claude)} --resume {shlex.quote(session_id)}"
+        # --command= would rerun the resume in every later window and tab of this Ghostty instance.
+        subprocess.run([
+            "/usr/bin/open", "-na", "Ghostty.app", "--args", "--window-save-state=never",
+            "--quit-after-last-window-closed=true", f"--working-directory={cwd}", f"--initial-command={shlex.quote(shell)} -lic {shlex.quote(resume)}",
+        ], check=True)
+        return 0
+    return subprocess.run([claude, "--resume", session_id], cwd=cwd, check=False).returncode
+
+
+def main(argv: list[str]) -> int:
+    options = build_parser().parse_args(argv)
+    if options.jump:
+        if len(argv) > 2:
+            fail("--jump is a standalone action and cannot be combined with report options")
+        if not re.fullmatch(r"[A-Za-z0-9-]+", options.jump):
+            fail(f"invalid session ID: {options.jump}")
+        return jump_to_session(options.jump)
+    home = claude_home()
+    if options.stream_json:
+        if options.json or options.live or options.jump:
+            fail("--stream-json cannot be combined with other output modes")
+        # Rebuild summaries cached before dedicated sidechain transcripts were parsed.
+        cache = JsonlCache.persistent("claude", home, version=3)
+        def snapshot():
+            if not home.is_dir():
+                return {"health": "unavailable", "sessions": [], "active_subagents": []}
+            rows = collect_rows(home, False, True, None, cache, strict=True, include_finished=True)
+            for row in rows:
+                if row["title"] == "-":
+                    row["title"] = " ".join(str(row["first_user_request"]).split())[:180] if row["first_user_request"] != "-" else "Claude Code session"
+            cache.retain({Path(str(row["transcript_path"])) for row in rows})
+            children = [row for row in rows if row["thread_source"] != "user"]
+            return {"health": "ok", "sessions": [row for row in rows if row["thread_source"] == "user"],
+                    "active_subagents": [row for row in children if row["liveness"] == "OPEN"], "subagents": children}
+        return run_stream("claude", options.interval, snapshot)
+    if not (home / "projects").is_dir():
+        print(f"Error: Claude Code projects directory not found at {home / 'projects'}", file=sys.stderr)
+        return 1
+    rows = collect_rows(home, options.live, options.all, options.limit)
+    if options.json:
+        json.dump(rows, sys.stdout, indent=2)
+        print()
+        return 0
+    if not rows:
+        print("No Claude Code sessions found.", file=sys.stderr)
+        return 1
+    render_table(rows, sys.stdout)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -1,0 +1,33 @@
+# Shared Git settings. setup.sh --fix links ~/.config/git to this directory.
+# Identity, credentials, and machine-specific settings belong in ~/.gitconfig,
+# which Git reads after this file, so its values win. setup.sh keeps that file
+# present so `git config --global` never writes into this tracked file.
+[init]
+	defaultBranch = main
+[fetch]
+	prune = true
+[pull]
+	ff = only
+[push]
+	autoSetupRemote = true
+[rebase]
+	autoStash = true
+[merge]
+	conflictStyle = diff3
+[diff]
+	algorithm = histogram
+	colorMoved = default
+[rerere]
+	enabled = true
+[branch]
+	sort = -committerdate
+[alias]
+	st = status -sb
+	lg = log --oneline --decorate --graph -20
+	last = log -1 --stat
+	unstage = restore --staged
+# Work overlay settings (SSH host aliases, includeIf rules). setup.sh --fix links
+# work.config here to WORK_ROOT/JOB/git/config when the overlay has one; Git
+# skips the include when the link is absent.
+[include]
+	path = work.config
