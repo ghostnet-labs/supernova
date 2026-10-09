@@ -61,6 +61,14 @@ class BranchRulesetTest(unittest.TestCase):
         for kind in ("required_linear_history", "non_fast_forward", "deletion"):
             rule(kind)
 
+    def test_pull_requests_need_no_approval(self):
+        # Justin is the only reviewer and cannot approve his own pull requests,
+        # so any approval requirement, including GitHub's extra approval for
+        # commits a coding agent authored, would block auto-merge on every one.
+        parameters = rule("pull_request")["parameters"]
+        self.assertEqual(parameters["required_approving_review_count"], 0)
+        self.assertIs(parameters["require_extra_approval_for_unattributed_changes"], False)
+
 
 if __name__ == "__main__":
     unittest.main()
