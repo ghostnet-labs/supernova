@@ -1,0 +1,29 @@
+#!/bin/bash
+# Save Claude plan rate limits from Claude Code status line JSON (stdin) for the
+# Codex Balance menu bar app. Called in the background by a status line hook;
+# see `codex-bal-bar --claude-hook`.
+
+command -v jq >/dev/null 2>&1 || exit 0
+
+file="${CODEX_BAL_BAR_CLAUDE_FILE:-$HOME/Library/Application Support/Codex Balance/claude-rate-limits.json}"
+dir="${file%/*}"
+mkdir -p "$dir" || exit 0
+
+# Keep the last reported limits: a new session sends none until its first
+# response, and that must not erase the previous reading.
+previous='{}'
+if [[ -s "$file" ]] && jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+  previous="$(<"$file")"
+fi
+
+tmp="$(mktemp "$dir/.claude-rate-limits.XXXXXX")" || exit 0
+if jq -c --argjson now "$(date +%s)" --argjson saved "$previous" '
+  ($saved + {hook_seen_at: $now}) as $base
+  | if (.rate_limits | type) == "object" and (.rate_limits | length) > 0
+    then $base + {rate_limits: .rate_limits, captured_at: $now}
+    else $base
+    end' >"$tmp" 2>/dev/null; then
+  mv -f "$tmp" "$file"
+else
+  rm -f "$tmp"
+fi

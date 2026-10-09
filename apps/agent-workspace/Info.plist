@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Agent Workspace</string>
+	<key>CFBundleExecutable</key>
+	<string>AgentWorkspace</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.agent-workspace</string>
+	<key>CFBundleName</key>
+	<string>Agent Workspace</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>local.agent-workspace.session</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>agent-workspace</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Agent Workspace brings the exact Ghostty window, tab, and pane running a Codex or Claude Code session to the front.</string>
+</dict>
+</plist>
