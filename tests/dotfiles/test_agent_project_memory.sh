@@ -17,5 +17,5 @@ swiftc -O -parse-as-library -swift-version 5 -lsqlite3 \
   "$repo_dir/apps/agent-control-center/ProjectMemoryStore.swift" \
   "$repo_dir/apps/agent-control-center/MemoryIndex.swift" \
   "$repo_dir/apps/agent-control-center/MemoryImport.swift" \
-  "$repo_dir/tests/dotfiles/fixtures/agent_project_memory.swift" -o "$scratch/check"
-"$scratch/check" "$scratch"
+  "$repo_dir/tests/dotfiles/fixtures/agent_project_memory.swift" -o "$scratch/check-agent-project-memory"
+"$scratch/check-agent-project-memory" "$scratch"

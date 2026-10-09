@@ -50,7 +50,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
   # Compile the production declarations with a fixture runner instead of the GUI entry point.
   swiftc "$root/apps/lib/TextLine.swift" -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
     -module-cache-path "${CLANG_MODULE_CACHE_PATH:-$tmp/module-cache}" \
-    "$root/apps/lib/worktrees/"*.swift "$root/apps/lib/octicons/Octicons.swift" "$root/apps/lib/BranchRef.swift" "$root/apps/lib/GitStatus.swift" "$root/apps/lib/SessionPresentation.swift" "$root/tests/dotfiles/worktree_manager_cases.swift" -o "$tmp/check"
+    "$root/apps/lib/worktrees/"*.swift "$root/apps/lib/octicons/Octicons.swift" "$root/apps/lib/BranchRef.swift" "$root/apps/lib/GitStatus.swift" "$root/apps/lib/SessionPresentation.swift" "$root/tests/dotfiles/worktree_manager_cases.swift" -o "$tmp/check-worktree-manager"
   printf '%s\n' 'import os
 from pathlib import Path
 import subprocess
@@ -59,6 +59,6 @@ env = os.environ.copy()
 env["WORKTREE_MANAGER_ROOT"] = str(Path(sys.argv[2]).resolve())
 env["WORKTREE_MANAGER_SESSIONS_BIN"] = env["WORKTREE_MANAGER_ROOT"] + "/sessions"
 env["WORKTREE_MANAGER_CLAUDE_SESSIONS_BIN"] = env["WORKTREE_MANAGER_ROOT"] + "/claude-sessions"
-subprocess.run([sys.argv[1]], env=env, check=True, timeout=120)' | python3 - "$tmp/check" "$tmp/root"
+subprocess.run([sys.argv[1]], env=env, check=True, timeout=120)' | python3 - "$tmp/check-worktree-manager" "$tmp/root"
 fi
 printf 'PASS: Worktree Manager\n'

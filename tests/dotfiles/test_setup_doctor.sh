@@ -15,7 +15,7 @@ if [[ "$(uname -s)" == Darwin ]]; then
   trap 'rm -rf -- "$tmp"' EXIT
   awk '/^@main$/ { exit } { print }' "$src" >"$tmp/SetupDoctor.swift"
   swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
-    "$tmp/SetupDoctor.swift" "$root/apps/lib/GhosttyLaunch.swift" "$root/tests/dotfiles/fixtures/setup_doctor.swift" -o "$tmp/check"
-  "$tmp/check" "$tmp"
+    "$tmp/SetupDoctor.swift" "$root/apps/lib/GhosttyLaunch.swift" "$root/tests/dotfiles/fixtures/setup_doctor.swift" -o "$tmp/check-setup-doctor"
+  "$tmp/check-setup-doctor" "$tmp"
 fi
 printf 'PASS: Setup Doctor\n'

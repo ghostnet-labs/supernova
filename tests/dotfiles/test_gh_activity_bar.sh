@@ -510,7 +510,7 @@ printf '%s\n' '[
   {"type":"PushEvent"}
 ]' >"$TMP_ROOT/events.json"
 swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
-  -o "$TMP_ROOT/check" "$TMP_ROOT/App.swift" "$REPO_DIR/apps/lib/octicons/Octicons.swift" "$TMP_ROOT/Check.swift" 2>"$TMP_ROOT/build.log" ||
+  -o "$TMP_ROOT/check-gh-activity-bar" "$TMP_ROOT/App.swift" "$REPO_DIR/apps/lib/octicons/Octicons.swift" "$TMP_ROOT/Check.swift" 2>"$TMP_ROOT/build.log" ||
   fail_test "GitHub Activity app does not build: $(cat "$TMP_ROOT/build.log")"
 # Repository case differs on purpose: search and events name repos alike, but keys ignore case.
 printf '%s\n' '{"total_count":3,"items":[
@@ -518,7 +518,7 @@ printf '%s\n' '{"total_count":3,"items":[
   {"number":9,"title":"Unrelated","repository_url":"https://api.github.com/repos/acme/website"},
   {"title":"No number","repository_url":"https://api.github.com/repos/acme/rocket"}
 ]}' >"$TMP_ROOT/search.json"
-parsed="$("$TMP_ROOT/check" "$TMP_ROOT/events.json" "$TMP_ROOT/search.json")" || fail_test "event parsing check failed"
+parsed="$("$TMP_ROOT/check-gh-activity-bar" "$TMP_ROOT/events.json" "$TMP_ROOT/search.json")" || fail_test "event parsing check failed"
 
 expected="titles:acme/rocket#7=[BUG-12][fix] Retry failed uploads,acme/website#9=Unrelated
 alice|rocket|pushed|main|https://github.com/acme/rocket/commit/abc123|https://github.com/alice|person|symbols

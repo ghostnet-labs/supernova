@@ -24,5 +24,5 @@ swiftc -O -parse-as-library -swift-version 5 -lsqlite3 \
   "$repo_dir/apps/agent-control-center/TaskStore.swift" \
   "$repo_dir/apps/agent-control-center/TaskWorktrees.swift" \
   "$repo_dir/apps/agent-control-center/Coordinator.swift" \
-  "$repo_dir/tests/dotfiles/fixtures/agent_task_coordinator.swift" -o "$scratch/check"
-"$scratch/check" "$scratch" "$scratch/repository"
+  "$repo_dir/tests/dotfiles/fixtures/agent_task_coordinator.swift" -o "$scratch/check-agent-task-coordinator"
+"$scratch/check-agent-task-coordinator" "$scratch" "$scratch/repository"

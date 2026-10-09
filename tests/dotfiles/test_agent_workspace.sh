@@ -28,10 +28,10 @@ swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" 
   "$root/apps/agent-workspace/Workspace.swift" "$root/apps/agent-workspace/WorkspaceViews.swift" "$root/apps/agent-workspace/CreateWorktree.swift" \
   "$root/apps/lib/GhosttyLaunch.swift" "$root/apps/lib/agents/"*.swift "$root/apps/lib/worktrees/"*.swift \
   "$root/apps/lib/"{BranchRef,GitStatus,SessionPresentation,TextLine}.swift "$root/apps/lib/octicons/Octicons.swift" \
-  "$root/tests/dotfiles/fixtures/agent_workspace.swift" -o "$scratch/check"
+  "$root/tests/dotfiles/fixtures/agent_workspace.swift" -o "$scratch/check-agent-workspace"
 args=()
 if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then args+=(--render); fi
-"$scratch/check" "$scratch" ${args[@]+"${args[@]}"}
+"$scratch/check-agent-workspace" "$scratch" ${args[@]+"${args[@]}"}
 if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then
   mkdir -p "$AGENT_WORKSPACE_TEST_ARTIFACTS"
   cp "$scratch/"*.png "$AGENT_WORKSPACE_TEST_ARTIFACTS/"

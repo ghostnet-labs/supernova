@@ -12,7 +12,7 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/shared-session-tests.XXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 scratch="$(cd "$scratch" && pwd -P)"
 shared="$repo_root/apps/lib"
-swiftc -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$scratch/check" \
+swiftc -swift-version 5 -target "$(uname -m)-apple-macos14.0" -o "$scratch/check-shared-session-details" \
   "$shared/GitStatus.swift" "$shared/SessionPresentation.swift" "$shared/BranchRef.swift" \
   "$shared/octicons/Octicons.swift" "$repo_root/tests/dotfiles/fixtures/shared_session_details.swift"
 
@@ -33,6 +33,6 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >> "$GIT_STATUS_CALLS"' \
   'exec "$GIT_STATUS_REAL" "$@"' > "$scratch/bin/git"
 chmod +x "$scratch/bin/git"
 PATH="$scratch/bin:$PATH" GIT_STATUS_CALLS="$scratch/calls" GIT_STATUS_REAL="$real_git" \
-  "$scratch/check" "$scratch/repo" "$scratch/repo/nested/deep" "$scratch/worktree" "$scratch/non-repo" \
+  "$scratch/check-shared-session-details" "$scratch/repo" "$scratch/repo/nested/deep" "$scratch/worktree" "$scratch/non-repo" \
   || fail_test 'Shared session detail checks failed'
 assert_equals 2 "$(wc -l < "$scratch/calls" | tr -d ' ')" 'one Git status per checkout'
