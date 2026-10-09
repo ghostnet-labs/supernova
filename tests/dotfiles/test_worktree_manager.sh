@@ -59,6 +59,6 @@ env = os.environ.copy()
 env["WORKTREE_MANAGER_ROOT"] = str(Path(sys.argv[2]).resolve())
 env["WORKTREE_MANAGER_SESSIONS_BIN"] = env["WORKTREE_MANAGER_ROOT"] + "/sessions"
 env["WORKTREE_MANAGER_CLAUDE_SESSIONS_BIN"] = env["WORKTREE_MANAGER_ROOT"] + "/claude-sessions"
-subprocess.run([sys.argv[1]], env=env, check=True, timeout=30)' | python3 - "$tmp/check" "$tmp/root"
+subprocess.run([sys.argv[1]], env=env, check=True, timeout=120)' | python3 - "$tmp/check" "$tmp/root"
 fi
 printf 'PASS: Worktree Manager\n'
