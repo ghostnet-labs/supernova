@@ -3,7 +3,7 @@
 One macOS app for live Codex and Claude Code agents, their conversations, and local history. The compact menu bar popover and full conversation browser share one session store, Git status cache, and notification system.
 
 For a step-by-step introduction to project memory, coordinator conversations,
-and delegation, see [Your tooling guide](../../docs/tooling-guide.md).
+delegation, and hardware reports, see [Your tooling guide](../../docs/tooling-guide.md).
 
 Reusable Swift components live in `../lib/agents/` and are also compiled by
 [Agent Workspace](../agent-workspace/README.md). This app retains its own entrypoint,
@@ -35,7 +35,7 @@ Keyboard shortcuts: `⌘1` dashboard, `⌘K` session search, `⌘F` transcript s
 
 ## Project memory
 
-**Project workspace** opens a separate Conversation / Tasks / Memory workspace while preserving the existing conversation browser. Add a directory explicitly, then choose **Index recent history** (the 50 most recent matching sessions) or **Backfill all project history**. Indexing pauses when the workspace closes or the selected project changes; starting an indexing action again continues from durable byte checkpoints. Coverage shows indexed sources and bytes, unavailable sources, and oversized or invalid records excluded. Quiet browsing never scans the entire transcript corpus.
+**Project workspace** opens a separate Conversation / Tasks / Memory / Hardware workspace while preserving the existing conversation browser. Add a directory explicitly, then choose **Index recent history** (the 50 most recent matching sessions) or **Backfill all project history**. Indexing pauses when the workspace closes or the selected project changes; starting an indexing action again continues from durable byte checkpoints. Coverage shows indexed sources and bytes, unavailable sources, and oversized or invalid records excluded. Quiet browsing never scans the entire transcript corpus.
 
 Projects have app-owned UUIDs. Git worktrees resolve through their canonical common Git directory within a scope; unrelated repositories never merge by name. Personal is the default. Work projects require an explicit job selection and have a separate project list and search boundary. A missing directory retains its history and supports **Relink**. This scope controls memory association; it does not source shell environments or grant agent execution authority.
 
@@ -104,6 +104,10 @@ CLI providers own identities, saved titles, lifecycle, live-process attribution,
 Native readers only load the selected conversation and tool payloads; they do not discover sessions or override provider metadata. Quiet menu bar operation does not load any transcript. Provider failure retains the last successful state, marked stale. Malformed output or child exit triggers a bounded 1–30 second exponential restart backoff. Missing state directories are normal unavailable states.
 
 ## Performance and local data
+
+The project Hardware tab accepts explicit `hardware-planner-report` v1 JSON exports. Each attachment retains its report/project/assembly/source IDs, export and import times, schema version, original filename and canonical SHA-256 fingerprint. Choose a report in the Coordinator context picker to include its bounded excerpt with the next new coordinator turn; imported reports are disabled as context by default. The full report remains available locally, including checks, unknowns, coverage and source citations. Context is untrusted evidence and cannot authorize actions. Steer messages during an active turn retain that turn's earlier context; send a new turn to supply a newly selected report.
+
+Open assembly/source links to inspect the exact records in Hardware Planner. Missing local project data requires importing the matching lossless Planner project JSON. The coordinator may propose cited changes, but only Hardware Planner's explicit deterministic preview and acceptance saves them. Reports are immutable snapshots, not live compatibility status. Personal and Work project attachments remain separate; no Hardware Planner database or global hardware corpus is indexed.
 
 Providers retain compact summaries rather than transcript contents. Complete appended JSONL records are processed incrementally; incomplete final lines wait for their newline. Inode, size, timestamp, and boundary fingerprints detect replacement, truncation, and truncate/regrow operations.
 

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# toolbox: hardware planning | Manage native projects, part revisions and purchasing BOMs.
+# toolbox-args: [--open|--status|--install|--uninstall] | --build BUNDLE
+# toolbox-example: hardware-planner --open
+# toolbox-example: hardware-planner --status
+# toolbox-example: hardware-planner --build /tmp/HardwarePlanner.app
+set -euo pipefail
+readonly app_name='Hardware Planner'
+readonly executable='HardwarePlanner'
+usage() {
+  printf '%s\n' 'Usage:
+  hardware-planner [ACTION]
+  hardware-planner --build BUNDLE
+
+Description:
+  Build and manage the native macOS hardware project and BOM planner.
+  Projects, evidence and revision history stay in local Application Support.
+  Installation opens the app on demand; no login service is created.
+
+Options:
+  --install       Build, validate, replace the installed app, and open it.
+  --open          Open the installed app.
+  --status        Report installation and source/signature state (default).
+  --uninstall     Quit and remove the app, preserving all project data.
+  --build BUNDLE  Build a new isolated .app bundle without installing/opening.
+  -h, --help      Show this help message and exit.
+
+Examples:
+  hardware-planner --install
+  hardware-planner --open
+  hardware-planner --build /tmp/HardwarePlanner.app
+  hardware-planner --status
+  hardware-planner --uninstall
+
+Environment:
+  HARDWARE_PLANNER_APP_DIR   Install directory (default: ~/Applications).
+  HARDWARE_PLANNER_DATA_DIR  App data directory (default: Application Support/Hardware Planner).
+  CLANG_MODULE_CACHE_PATH   Optional writable compiler cache directory.'
+}
+action=--status
+destination=''
+if (($#)); then
+  action="$1"
+  case "$action" in
+    -h|--help) usage; exit 0 ;;
+    --install|--open|--status|--uninstall) (($# == 1)) || { usage >&2; exit 2; } ;;
+    --build) (($# == 2)) || { usage >&2; exit 2; }; destination="$2" ;;
+    *) usage >&2; exit 2 ;;
+  esac
+fi
+[[ "$(uname -s)" == Darwin ]] || { printf 'error: hardware-planner requires macOS\n' >&2; exit 1; }
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/hardware-planner" && pwd)"
+readonly app_dir="${HARDWARE_PLANNER_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+source "$source_dir/../lib/quit-app.sh"
+
+build_app() {
+  local bundle="$1"
+  [[ "$bundle" == *.app && ! -e "$bundle" ]] || { printf 'error: build destination must be a new .app path\n' >&2; return 1; }
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+  cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+  cp "$source_dir/../lib/octicons/LICENSE" "$bundle/Contents/Resources/Octicons-LICENSE"
+  swiftc -O -wmo -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
+    -o "$bundle/Contents/MacOS/$executable" "$source_dir"/*.swift "$source_dir/../lib/octicons/Octicons.swift" "$source_dir/../lib/HardwareReport.swift" -lsqlite3
+  python3 "$source_dir/install_support.py" manifest "$source_dir" "$bundle"
+  codesign --force --sign - "$bundle" >/dev/null 2>&1
+  codesign --verify --deep --strict "$bundle"
+  "$bundle/Contents/MacOS/$executable" --check-build
+}
+
+cleanup_install() {
+  local result=$?
+  trap - EXIT
+  if [[ "${install_started:-false}" == true && "${install_committed:-false}" != true ]]; then
+    printf 'error: installation failed; restoring the previous bundle\n' >&2
+    quit_app "$app_path/Contents/MacOS/$executable" || true
+    rm -rf -- "$app_path"
+    if [[ -d "$build_root/previous.app" ]]; then mv "$build_root/previous.app" "$app_path"; fi
+  fi
+  [[ -z "${build_root:-}" ]] || rm -rf -- "$build_root"
+  exit "$result"
+}
+
+case "$action" in
+  --build) build_app "$destination" ;;
+  --install)
+    build_root="$(mktemp -d "${TMPDIR:-/tmp}/hardware-planner.XXXXXX")"
+    trap cleanup_install EXIT
+    printf '→ Building %s\n' "$app_name"
+    build_app "$build_root/$app_name.app"
+    quit_app "$app_path/Contents/MacOS/$executable"
+    mkdir -p "$app_dir"
+    install_started=true
+    if [[ -d "$app_path" ]]; then mv "$app_path" "$build_root/previous.app"; fi
+    mv "$build_root/$app_name.app" "$app_path"
+    codesign --verify --deep --strict "$app_path"
+    python3 "$source_dir/install_support.py" verify "$source_dir" "$app_path"
+    open "$app_path"
+    install_committed=true
+    printf '✓ Installed %s\n' "$app_path"
+    ;;
+  --open)
+    [[ -d "$app_path" ]] || { printf 'error: not installed; run hardware-planner --install\n' >&2; exit 1; }
+    open "$app_path"
+    ;;
+  --status)
+    if [[ -d "$app_path" ]]; then
+      printf 'app: installed\n'
+      if codesign --verify --deep --strict "$app_path" >/dev/null 2>&1; then printf 'signature: valid\n'; else printf 'signature: invalid\n'; fi
+      if python3 "$source_dir/install_support.py" verify "$source_dir" "$app_path" >/dev/null 2>&1; then printf 'sources: current\n'; else printf 'sources: rebuild required\n'; fi
+    else printf 'app: not installed\n'; fi
+    ;;
+  --uninstall)
+    quit_app "$app_path/Contents/MacOS/$executable"
+    rm -rf -- "$app_path"
+    printf '✓ Uninstalled %s; project data preserved\n' "$app_name"
+    ;;
+esac

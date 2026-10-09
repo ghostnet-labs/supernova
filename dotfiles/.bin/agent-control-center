@@ -97,7 +97,7 @@ build_app() {
     -target "$(uname -m)-apple-macos14.0" \
     -o "$bundle/Contents/MacOS/$executable" \
     "$source_dir"/*.swift "$source_dir/../lib/agents"/*.swift "$source_dir/../lib/octicons/Octicons.swift" "$source_dir/../lib/BranchRef.swift" \
-    "$source_dir/../lib/GhosttyLaunch.swift" "$source_dir/../lib/GitStatus.swift" "$source_dir/../lib/TextLine.swift" "$source_dir/../lib/SessionPresentation.swift"
+    "$source_dir/../lib/GhosttyLaunch.swift" "$source_dir/../lib/GitStatus.swift" "$source_dir/../lib/TextLine.swift" "$source_dir/../lib/SessionPresentation.swift" "$source_dir/../lib/HardwareReport.swift"
   python3 "$source_dir/install_support.py" verify "$source_dir" "$bundle"
   codesign --force --sign - "$bundle" >/dev/null 2>&1
   codesign --verify --deep --strict "$bundle"

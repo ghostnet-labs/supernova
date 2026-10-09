@@ -1,12 +1,13 @@
 # Your tooling guide
 
-This guide explains the Toolbox, history, and Agent Control Center tools, how to use them,
+This guide explains the Toolbox, history, Agent Control Center, and Hardware Planner tools, how to use them,
 and what happens to your data. Start with the first two sections; use the rest
 when you need a particular workflow.
 
 Jump to [terminal history](#toolbox-and-atuin-what-is-automatic),
 [the shell functions](#the-shell-functions),
 [project memory and tasks](#agent-control-center-remember-and-coordinate-a-project),
+[hardware planning](#hardware-planner-parts-boms-compatibility-and-changes),
 [storage and Git](#what-is-in-git-and-what-stays-on-the-machine), or
 [updates and other machines](#updates-and-other-machines).
 
@@ -18,14 +19,17 @@ Jump to [terminal history](#toolbox-and-atuin-what-is-automatic),
 | **Atuin** | Find something you previously typed in a terminal | **Ctrl+R** |
 | **Shell functions** | Do a common job with a short command and normal arguments | For example, `glog` or `rfind TODO` |
 | **Agent Control Center** | Browse agent chats, remember project decisions, and coordinate delegated work | `agent-control-center --open` |
+| **Hardware Planner** | Record exact parts, build a bill of materials, check documented compatibility, and compare changes | `hardware-planner --open` |
 
 Toolbox and Atuin overlap deliberately. Atuin supplies searchable local command
 history. Toolbox reads that history and also knows about the helpers currently
 loaded in your shell, available managed commands, and optional saved recipes.
 A function is the actual reusable command; Toolbox helps you discover it.
 
-The memory, managed conversation, and delegation features described here are in
-the **Agent Control Center** app. **Agent Workspace** remains a separate app.
+Agent Control Center and Hardware Planner are separate macOS apps. They exchange
+hardware report snapshots when you explicitly export and attach one. The memory,
+managed conversation, and delegation features described here are in the existing
+**Agent Control Center** app. **Agent Workspace** remains a separate app.
 
 ## Start here
 
@@ -55,6 +59,7 @@ On macOS, open the apps with:
 
 ```zsh
 agent-control-center --open
+hardware-planner --open
 ```
 
 If an app is absent or needs rebuilding from your current checkout, use its
@@ -205,7 +210,7 @@ See the [catalog reference](../dotfiles/toolbox/README.md) for optional workflow
    **Open Work projects**.
 4. Click **Add project…**, select its working directory, then select the project.
 
-The workspace has **Conversation**, **Tasks**, and **Memory** tabs.
+The workspace has **Conversation**, **Tasks**, **Memory**, and **Hardware** tabs.
 Use **Back to conversations** to return to the existing session browser.
 Git worktrees of the same repository share a project within a scope. Use
 **Relink…** if a folder moves. Project scope separates memory; it does not switch
@@ -296,7 +301,115 @@ interrupt owned work before exiting. `agent-control-center --stop` stops the
 app; reconcile unfinished work after restarting.
 
 The coordinator receives bounded project context, not every historical message.
-Steering an already active turn retains that turn's earlier context.
+A newly selected hardware report is supplied with a new turn; steering an
+already active turn retains that turn's earlier context.
+
+## Hardware Planner: parts, BOMs, compatibility, and changes
+
+Hardware Planner requires macOS 14 or newer.
+
+A **part revision** is an exact recorded version of a component. An **assembly**
+selects part revisions, quantities, offers, and connections. Its **BOM** (bill of
+materials) is the list to purchase. **Compatibility** checks the recorded facts
+and evidence about that assembly. A costed BOM alone does not prove a build works.
+
+### Build your first assembly
+
+1. Run `hardware-planner --open`, click **New project**, give it a name, and click
+   **Create**.
+2. In **Project → Edit project and evidence**, add requirements. Under
+   **New source observation**, record document URLs or use **Attach document…**,
+   including the revision, page/section, retrieval date, and confidence. Click
+   **Add source to project**, then **Save**.
+3. In **Parts → Add part**, record each component's exact **Board revision**,
+   interfaces, power rails, software support, and linked evidence. Click
+   **Save revision**. Leave unknown values blank.
+4. Optionally use **Record offer** for a dated seller, currency, price,
+   availability, and minimum quantity.
+5. In **Assemblies → New assembly**, use **Add selected part**. Choose the exact
+   **Part revision**, **Quantity**, **Role / reference**, and **Price observation**.
+   Use **Add connection** to link real From/To interfaces and specify required
+   protocol and lanes. Click **Save assembly**.
+6. Open **BOM**. It uses the selected assembly and offers. Unpriced lines stay
+   unknown, currencies have separate subtotals, and tax/shipping stay separate.
+7. Open **Compatibility**, inspect the checks, and click **Save check** to retain
+   that run. Use **Recheck** to assess current evidence and **Saved checks** to
+   revisit previous runs.
+
+For a generic controller/sensor/power-supply project, record the actual connector,
+voltage, protocol, pin mapping, and peak power evidence before expecting a pass.
+The optional field-node worksheet contains chat-derived candidates, not verified
+purchase choices. The app does not fetch specifications or prices automatically.
+
+### Understand the result
+
+| Result | Meaning |
+| --- | --- |
+| **Compatible** | The evaluated rules have sufficient evidence and pass |
+| **Conditional** | Recorded conditions, such as software or adapter requirements, still apply |
+| **Incompatible** | A recorded fact violates an evaluated rule |
+| **Unknown** | Required facts or suitable evidence are missing, ambiguous, or stale |
+
+Coverage reports how many checks have sufficient inputs and evidence. The engine
+checks documented connector details, voltage ranges, protocols, pins, mating
+dimensions, port/lane capacity, software support, power supply paths, peak power,
+headroom, and adapter transformations. Evidence must meet the recorded source
+requirements; the default freshness window is 365 days. Chat candidates cannot
+substitute for manufacturer or measured evidence.
+
+These results depend on the facts you enter. They do not authenticate a document
+or certify a physical build. Enclosure clearance, electrical transients, RF,
+thermal behavior, battery endurance, and field performance need appropriate
+separate analysis or testing. The engine specifically requires **measured
+evidence** for RF, thermal, battery/runtime, and field requirement checks;
+analysis alone does not satisfy those checks. See the [compatibility reference](../apps/hardware-planner/COMPATIBILITY.md)
+for exact rules.
+
+### Compare a replacement without changing the original
+
+Use **Alternatives** for a side-by-side comparison; it does not change the
+assembly. To assess and accept a replacement:
+
+1. Add the replacement as a part revision.
+2. In **Compatibility**, click **Preview change…**.
+3. Select **Assembly item**, **Replacement revision**, **Quantity**, and **Offer**.
+4. Map every used interface with the **Map …** selectors.
+5. Click **Calculate impact**. Inspect changed checks, dependent items,
+   connections, requirements, adapters, quantities, and costs.
+6. Choose **Accept new revision** to save it, or **Cancel** to leave the project
+   unchanged.
+
+The original assembly remains available. Hardware changes reset affected
+requirement assessments to **Unknown**; price-only changes preserve hardware
+assessments. **Record override…** adds an author and reason beside a finding;
+it does not change the machine result or coverage. **Changes** is revision
+history, not the location of the change-preview action.
+
+### Export, share, and connect to the coordinator
+
+| Export choice | Use it for |
+| --- | --- |
+| **Project JSON (lossless)** | Transfer a whole project with exact revisions, evidence, and attachment bytes |
+| **Purchasing BOM CSV** | Purchasing rows; it does not preserve the complete connection graph |
+| **Review report Markdown** | BOM, costs, requirements, sources, and saved findings; save a current check first |
+| **Compatibility → Export report…** | The currently displayed check, including an older saved check if selected |
+| **Coordinator report JSON** | A fresh check and bounded evidence for the selected assembly |
+| **Back up database** | A consistent backup of the full local database |
+
+To discuss an assembly with an agent:
+
+1. Select it in Hardware Planner and choose **Export → Coordinator report JSON**.
+2. In Agent Control Center, select the intended project, open **Hardware**, and
+   click **Attach report…**.
+3. Select that report under **Coordinator context**; the default is **None**.
+4. Send a new coordinator message about the assembly.
+
+Attaching alone does not send a report to the coordinator. Use **View report**,
+**Open assembly in Planner**, and cited source links to inspect it. The report is
+an immutable snapshot. After an assembly changes, export and attach a fresh one.
+Coordinator prose cannot edit the Planner project; accept changes through the
+Planner's explicit preview. On another Mac, import the lossless project JSON
+before expecting assembly/source links to resolve.
 
 ## What is in Git, and what stays on the machine?
 
@@ -312,6 +425,7 @@ Steering an already active turn retains that turn's earlier context.
 | Work recipes and optional review state | `~/.local/share/toolbox/SCOPE/` | No |
 | Optional catalog-location configuration | `~/.config/toolbox/config.json` | No |
 | Agent projects, decisions, tasks, and imports | `~/Library/Application Support/local.agent-control-center/` | No |
+| Hardware projects and attachments | `~/Library/Application Support/Hardware Planner/` | No |
 
 `SCOPE` is `personal` or `work-JOB`. `XDG_DATA_HOME` and `XDG_CONFIG_HOME` can
 override the terminal-tool defaults above. Work catalogs and local state remain
@@ -329,7 +443,9 @@ Use **Back up project data** in Agent Control Center for its `projects.sqlite`
 database. Preserve the separate `imports/` directory when transferring imported
 sources; that database backup alone does not copy those files. Task checkouts
 live separately under `task-worktrees/` and should be preserved if needed.
-The app does not automatically synchronize projects across machines.
+Hardware Planner's **Back up database** and lossless project JSON include its
+stored attachment data. Neither app automatically synchronizes projects across
+machines.
 
 ## Updates and other machines
 
@@ -352,11 +468,12 @@ On each machine where you want these features:
    `./setup.sh --fix --dry-run` previews repairs; `./setup.sh --fix` applies them
    after its interactive confirmation. Use `--personal` for a Personal machine.
 3. Open a new shell or run `source_zsh` after updating functions.
-4. On macOS, use `agent-control-center --install` when its installed build
-   needs updating.
+4. On macOS, use `agent-control-center --install` and/or
+   `hardware-planner --install` when their installed builds need updating.
 
 Functions and tracked Personal recipes travel with Git. Old raw history,
-one-time helper-name imports, local Work recipes, and project memory do not. A fresh machine can discover functions in Toolbox immediately
+one-time helper-name imports, local Work recipes, project memory, and hardware
+projects do not. A fresh machine can discover functions in Toolbox immediately
 after loading them; Atuin learns their invocations as you use them. Old history
 requires an explicit import into the intended scope. Never automatically treat
 a mixed legacy history file as Personal history.
@@ -374,6 +491,8 @@ a mixed legacy history file as Personal history.
 | Project memory search is empty | Select the correct project/scope and explicitly start an indexing action or import |
 | An old citation cannot open | Its source may have moved, changed, or disappeared; inspect coverage and rebuild its index |
 | A coordinator/task outcome is unknown | Reconcile before creating replacement work |
+| Compatibility is Unknown | Supply the missing exact specifications and suitable evidence shown by the findings |
+| A hardware report differs from the current assembly | It is a snapshot; export a fresh report from the selected revision |
 | An app still has the old interface | Check its `--status`, then rebuild with `--install` from the intended checkout |
 
 Setting `SETUP_ATUIN_ENABLED=false` before reloading disables Atuin recording and
@@ -381,5 +500,6 @@ its Ctrl+R integration. It does not erase history; Toolbox can still read the
 existing scoped databases. Set it back to `true` and reload to resume recording.
 
 For deeper details, see the [repository setup guide](../README.md),
-[Toolbox catalog reference](../dotfiles/toolbox/README.md), and
-[Agent Control Center reference](../apps/agent-control-center/README.md).
+[Toolbox catalog reference](../dotfiles/toolbox/README.md),
+[Agent Control Center reference](../apps/agent-control-center/README.md), and
+[Hardware Planner reference](../apps/hardware-planner/README.md).
