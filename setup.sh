@@ -66,7 +66,8 @@ Environment:
   SETUP_LOCAL_ENV_FILE  Override the saved local setup configuration.
   SETUP_WORK_ROOT       Override the saved work overlay checkout (WORK_ROOT).
   SETUP_TEST_TIMEOUT    Seconds before a test check is stopped (default: 300).
-  SETUP_HELP_TIMEOUT    Seconds before a Help check is stopped (default: 30).'
+  SETUP_HELP_TIMEOUT    Seconds before a Help check is stopped (default: 30).
+  SETUP_TEST_JOBS       Test files run at once by --test (default: one per CPU).'
 }
 
 set_mode() {
@@ -320,13 +321,28 @@ check_timeout_seconds() {
   esac
 }
 
+# Print a finished check's row from its exit status and captured output.
+finish_test_check() {
+  local label="$1"
+  local status="$2"
+  local output_file="$3"
+  local details
+
+  if [[ "$status" == 0 ]]; then
+    setup_status_pass "$label"
+  else
+    details="$(extract_actionable_details "$output_file")"
+    record_check_failure "$label" "$status" "$details"
+    print_captured_failure_output "$output_file" >&2
+  fi
+}
+
 # Every check gets empty stdin and a time limit, so one stalled command fails
 # its own row instead of stalling the whole run.
 run_test_check() {
   local label="$1"
   local output_file
-  local status
-  local details
+  local status=0
   shift
 
   setup_status_start "$label"
@@ -334,14 +350,8 @@ run_test_check() {
     record_check_failure "$label" 1 'test output could not be captured'
     return
   }
-  if run_with_timeout "$(check_timeout_seconds "$label")" "$@" >"$output_file" 2>&1 </dev/null; then
-    setup_status_pass "$label"
-  else
-    status=$?
-    details="$(extract_actionable_details "$output_file")"
-    record_check_failure "$label" "$status" "$details"
-    print_captured_failure_output "$output_file" >&2
-  fi
+  run_with_timeout "$(check_timeout_seconds "$label")" "$@" >"$output_file" 2>&1 </dev/null || status=$?
+  finish_test_check "$label" "$status" "$output_file"
   rm -f -- "$output_file"
 }
 
@@ -448,13 +458,98 @@ test_header_value() {
   return 1
 }
 
+# How many test files run at once: SETUP_TEST_JOBS, or one per CPU.
+test_job_limit() {
+  local jobs="${SETUP_TEST_JOBS:-}"
+  if [[ ! "$jobs" =~ ^[1-9][0-9]*$ ]]; then
+    jobs="$(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null)" || jobs=1
+  fi
+  printf '%s\n' "$jobs"
+}
+
+# Set TEST_COMMAND to the command that runs one test file.
+test_command_for() {
+  case "$1" in
+    *.sh) TEST_COMMAND=(/bin/bash "$1") ;;
+    *.zsh) TEST_COMMAND=(zsh -f "$1") ;;
+    *.py) TEST_COMMAND=(env PYTHONDONTWRITEBYTECODE=1 python3 "$1") ;;
+    *) return 1 ;;
+  esac
+}
+
+# Run LABEL's check in the background with run_test_check's stdin and time
+# limit; DIR/status appears once it finishes, next to its DIR/output.
+start_background_check() {
+  local dir="$1"
+  local label="$2"
+  shift 2
+  (
+    status=0
+    run_with_timeout "$(check_timeout_seconds "$label")" "$@" >"$dir/output" 2>&1 </dev/null || status=$?
+    printf '%s\n' "$status" >"$dir/status.tmp" && mv -f -- "$dir/status.tmp" "$dir/status"
+  ) &
+  BACKGROUND_CHECK_PIDS+=("$!")
+}
+
+stop_background_checks() {
+  local pid
+  for pid in ${BACKGROUND_CHECK_PIDS[@]+"${BACKGROUND_CHECK_PIDS[@]}"}; do
+    stop_process_tree "$pid"
+  done
+}
+
+# Add one test file to the queue run_queued_test_checks runs.
+queue_test_check() {
+  QUEUED_TEST_LABELS+=("$1")
+  QUEUED_TEST_FILES+=("$2")
+}
+
+# Run the queued test files, up to test_job_limit at once: each test keeps its
+# state in its own temporary directory. Rows print in queue order, each as
+# soon as it and every row above it have finished.
+run_queued_test_checks() {
+  local root limit
+  local -i index next=0 shown=0 running total=${#QUEUED_TEST_FILES[@]}
+  (( total > 0 )) || return 0
+  root="$(mktemp -d "${TMPDIR:-/tmp}/setup-tests.XXXXXX")" || {
+    record_check_failure "Tests" 1 'test output could not be captured'
+    return
+  }
+  limit="$(test_job_limit)"
+  BACKGROUND_CHECK_PIDS=()
+  trap 'stop_background_checks; rm -rf -- "$root"; exit 130' INT TERM
+  while (( shown < total )); do
+    running=0
+    for (( index = shown; index < next; index++ )); do
+      [[ -e "$root/$index/status" ]] || running+=1
+    done
+    if (( next < total && running < limit )); then
+      mkdir "$root/$next"
+      test_command_for "${QUEUED_TEST_FILES[$next]}"
+      start_background_check "$root/$next" "${QUEUED_TEST_LABELS[$next]}" "${TEST_COMMAND[@]}"
+      next+=1
+    elif [[ -e "$root/$shown/status" ]]; then
+      finish_test_check "${QUEUED_TEST_LABELS[$shown]}" "$(<"$root/$shown/status")" "$root/$shown/output"
+      shown+=1
+    else
+      [[ "$SETUP_STATUS_ACTIVE" == true ]] || setup_status_start "${QUEUED_TEST_LABELS[$shown]}"
+      sleep 0.1
+    fi
+  done
+  wait
+  trap - INT TERM
+  rm -rf -- "$root"
+  QUEUED_TEST_LABELS=()
+  QUEUED_TEST_FILES=()
+}
+
 # Run every tests/*/test_* file, then the work overlay's
 # WORK_ROOT/tests/JOB/test_* files. Each test names itself with a
 # "# setup-test: LABEL" header and marks Work-scope coverage with
 # "# setup-test-scope: work"; every overlay test is Work scope.
 run_discovered_tests() {
   local file label scope
-  local -a command files=(tests/setup/test_* tests/dotfiles/test_*)
+  local -a files=(tests/setup/test_* tests/dotfiles/test_*)
   # Setup first and the work overlay last, matching the Syntax and Help rows.
   for file in tests/*/test_*; do
     case "$file" in
@@ -463,23 +558,17 @@ run_discovered_tests() {
     esac
   done
   [[ -n "$TEST_JOB" ]] && files+=("$TEST_WORK_ROOT/tests/$TEST_JOB"/test_*)
+  QUEUED_TEST_LABELS=()
+  QUEUED_TEST_FILES=()
   for file in "${files[@]}"; do
-    [[ -f "$file" ]] || continue
-    case "$file" in
-      *.sh) command=(/bin/bash "$file") ;;
-      *.zsh) command=(zsh -f "$file") ;;
-      *.py) command=(env PYTHONDONTWRITEBYTECODE=1 python3 "$file") ;;
-      *) continue ;;
-    esac
+    [[ -f "$file" ]] && test_command_for "$file" || continue
     label="Tests: $(test_header_value "$file" setup-test || printf '%s' "$file")"
     scope="$(test_header_value "$file" setup-test-scope)" || scope=personal
     [[ -n "$TEST_JOB" && "$file" == "$TEST_WORK_ROOT"/* ]] && scope=work
-    if [[ "$scope" == work ]]; then
-      run_work_test_check "$label" "${command[@]}"
-    else
-      run_test_check "$label" "${command[@]}"
-    fi
+    [[ "$scope" == work && "$CLI_WORK_ENV" == false ]] && continue
+    queue_test_check "$label" "$file"
   done
+  run_queued_test_checks
 }
 
 # Run COMMAND --help and require a zero exit and a usage section.
