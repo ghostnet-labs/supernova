@@ -262,9 +262,10 @@ struct WorktreeManagerCases {
         let agent = try record("agent")
         try check(agent.safeToRemove, "a clean worktree with no agent is safe to remove: \(agent.badgeHelp)")
         try fm.createDirectory(atPath: (agentBin as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        try fm.copyItem(atPath: "/bin/sleep", toPath: agentBin)
-        // A copied system binary must be signed again before macOS lets it run.
-        _ = try GitTool.run(["--force", "--sign", "-", agentBin], executable: "/usr/bin/codesign")
+        // Build the fake agent: macOS kills a re-signed copy of the arm64e /bin/sleep at launch.
+        try "#include <stdlib.h>\n#include <unistd.h>\nint main(int c, char **v) { sleep(c > 1 ? atoi(v[1]) : 60); return 0; }\n"
+            .write(toFile: root + "/sleeper.c", atomically: true, encoding: .utf8)
+        _ = try GitTool.run([root + "/sleeper.c", "-o", agentBin], executable: "/usr/bin/cc")
         let fake = Process()
         fake.executableURL = URL(fileURLWithPath: agentBin)
         fake.arguments = ["60"]
