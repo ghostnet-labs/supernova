@@ -72,6 +72,35 @@ assert_in_order "$dispatch_output" shell fzf
 assert_in_order "$dispatch_output" fzf apps
 assert_in_order "$dispatch_output" apps fonts
 
+# An installed formula whose command lacks what the shell needs is upgraded,
+# not left in place: fzf without --zsh, Atuin without --disable-ai.
+upgrade_root="$TMP_ROOT/upgrade"
+mkdir -p "$upgrade_root/prefix/bin"
+printf '%s\n' '#!/bin/sh' 'case "$1" in' \
+  "list) printf 'fzf\\natuin\\njq\\n' ;;" \
+  "--prefix) printf '%s\\n' \"\$UPGRADE_PREFIX\" ;;" \
+  "upgrade) printf '%s\\n' \"\$2\" >>\"\$UPGRADE_PREFIX/upgraded\"; printf '#!/bin/sh\\nexit 0\\n' >\"\$UPGRADE_PREFIX/bin/\$2\" ;;" \
+  'esac' >"$upgrade_root/brew"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "0.44.1 (debian)" && exit 0\n[ "$1" = --zsh ] && echo "unknown option: --zsh" >&2 && exit 2\nexit 0\n' >"$upgrade_root/prefix/bin/fzf"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "atuin 18.2.0" && exit 0\nfor a; do [ "$a" = --disable-ai ] && exit 2; done\nexit 0\n' >"$upgrade_root/prefix/bin/atuin"
+printf '#!/bin/sh\nexit 0\n' >"$upgrade_root/prefix/bin/jq"
+chmod +x "$upgrade_root/brew" "$upgrade_root"/prefix/bin/*
+upgrade_output="$(UPGRADE_PREFIX="$upgrade_root/prefix" PATH="$upgrade_root/prefix/bin:/usr/bin:/bin" /bin/bash -c '
+  source "$1"
+  test_brew="$2"
+  activate_brew() { BREW_BIN="$test_brew"; SETUP_BREW_BIN="$test_brew"; }
+  setup_resolve_brew() { SETUP_BREW_BIN="$test_brew"; }
+  run_spinner() { printf "%s\n" "$1"; shift; "$@"; }
+  pass() { printf "PASS %s\n" "$1"; }
+  SETUP_BREW_PACKAGES=(fzf atuin jq)
+  install_packages
+' _ "$REPAIR" "$upgrade_root/brew" 2>&1)" || fail_test "package stage failed: $upgrade_output"
+assert_contains "$upgrade_output" "Upgrading fzf: fzf 0.44.1 is too old; the shell's key bindings need fzf --zsh (0.48.0 or newer)"
+assert_contains "$upgrade_output" "Upgrading atuin: atuin 18.2.0 is too old; the shell's history search needs atuin init zsh --disable-ai"
+assert_contains "$upgrade_output" "fzf upgraded"
+assert_contains "$upgrade_output" "atuin upgraded"
+[[ "$(cat "$upgrade_root/prefix/upgraded")" == $'fzf\natuin' ]] || fail_test "expected only fzf and atuin to be upgraded"
+
 # The hooks repair sets core.hooksPath in the checkout, previews in dry-run
 # mode, and is a no-op once configured.
 hooks_repo="$TMP_ROOT/hooks-repo"

@@ -132,6 +132,21 @@ class LoginShellTests(unittest.TestCase):
         self.assertIn("STATUS:0\n", output)
         self.assertIn("WORK:true\n", output)
 
+    def test_old_fzf_gets_one_clear_warning(self):
+        # Ubuntu's apt fzf 0.44 has no --zsh. The shell names the fix instead
+        # of printing fzf's error and sourcing an empty cache.
+        self.login("old fzf", ":")
+        stub = self.root / "old fzf/.local/bin/fzf"
+        stub.parent.mkdir(parents=True)
+        stub.write_text('#!/bin/sh\necho "unknown option: $1" >&2\nexit 2\n')
+        stub.chmod(0o755)
+        (self.root / "old fzf/.cache/fzf-init.zsh").unlink(missing_ok=True)
+        output = self.login("old fzf", 'print -r -- "STATUS:$?"; print -r -- CACHE:${+commands[fzf]}:$(ls ~/.cache/fzf-init.zsh 2>&1 >/dev/null | wc -l)')
+        self.assertIn(f"{stub} is too old for the fzf key bindings; run ./setup.sh --fix", output)
+        self.assertNotIn("unknown option", output)
+        self.assertIn("STATUS:0\n", output)
+        self.assertIn("CACHE:1:1\n", output)
+
     @unittest.skipUnless(FZF, "fzf required for its key bindings")
     def test_fzf_key_bindings_load_in_a_terminal(self):
         # The first shell writes Powerlevel10k's instant prompt cache, when

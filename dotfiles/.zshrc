@@ -97,14 +97,18 @@ fzf_setup() {
         if [[ ! -f "$_fzf_cache" || "$fzf_bin" -nt "$_fzf_cache" ]]; then
             # A fresh home has no ~/.cache yet.
             mkdir -p "${_fzf_cache:h}"
-            fzf --zsh > "$_fzf_cache"
+            if ! fzf --zsh > "$_fzf_cache" 2>/dev/null; then
+                # Older fzf, such as Ubuntu's apt package, has no --zsh.
+                command rm -f -- "$_fzf_cache"
+                echo "⚠️ $fzf_bin is too old for the fzf key bindings; run ./setup.sh --fix"
+            fi
         fi
         # The key bindings need a terminal: without one (zsh -i -c in CI or a
         # script), restoring the zle option prints "can't change option: zle".
         # Test the controlling terminal, not stdin: Powerlevel10k's instant
         # prompt redirects stdin while .zshrc runs, so [[ -t 0 ]] is false
         # even in a real terminal.
-        if { : >/dev/tty } 2>/dev/null; then
+        if [[ -s "$_fzf_cache" ]] && { : >/dev/tty } 2>/dev/null; then
             source "$_fzf_cache"
         fi
     else
