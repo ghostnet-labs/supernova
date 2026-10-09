@@ -698,8 +698,10 @@ _toolbox_render() {
   local helper="${functions_source[toolbox]:A:h:h}/lib/toolbox.py"
   local setup_root="${SETUP_DIR:-${functions_source[toolbox]:A:h:h:h}}"
   (( ${+commands[python3]} )) || { print -u2 'toolbox: python3 is required'; return 1; }
+  # Options go before the mode: Python 3.12.3 (Ubuntu 24.04) rejects
+  # "MODE --option VALUE -- FILTER" as unrecognized arguments.
   _toolbox_snapshot | WORK_ENV="${WORK_ENV:-false}" JOB="${JOB:-}" SETUP_DIR="$setup_root" \
-    command python3 -I -S "$helper" "$1" "${@:3}" -- "$2"
+    command python3 -I -S "$helper" "${@:3}" "$1" -- "$2"
 }
 
 _toolbox_catalog() {
