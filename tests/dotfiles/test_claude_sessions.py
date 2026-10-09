@@ -261,6 +261,22 @@ class ClaudeSessionsTests(unittest.TestCase):
         self.assertEqual([row["session_id"] for row in rows], [ROOT_ID, OTHER_ID])
         self.assertTrue(all(row["status"] == "CLOSED" for row in rows))
 
+    def test_desktop_archived_cowork_session_reports_archived(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            claude = ClaudeHome(Path(temporary))
+            desktop_home = Path(temporary) / "Desktop"
+            session_dir = desktop_home / "claude-code-sessions" / "proj-id" / "window-id"
+            session_dir.mkdir(parents=True)
+            (session_dir / f"local_{ROOT_ID}.json").write_text(json.dumps({"cliSessionId": ROOT_ID, "isArchived": True}))
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(claude.home), "CLAUDE_DESKTOP_HOME": str(desktop_home)}), \
+                 mock.patch.dict(SCRIPT_GLOBALS, {"process_contexts": lambda pids, _=None: {}}):
+                stream = io.StringIO()
+                with redirect_stdout(stream):
+                    self.assertEqual(MAIN(["--json", "--limit", "5"]), 0)
+            rows = {row["session_id"]: row for row in json.loads(stream.getvalue())}
+            self.assertTrue(rows[ROOT_ID]["archived"])
+            self.assertFalse(rows[OTHER_ID]["archived"])
+
     def test_jump_resumes_closed_session_only_in_the_first_ghostty_window(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             claude = ClaudeHome(Path(temporary))

@@ -41,7 +41,10 @@ conversation, and the context menu retains session actions.
 Claude desktop and Claude Code sessions both show expandable subagents, including
 finished children marked Closed. Unfinished children stay visible as Idle after
 five minutes without transcript activity. Only live children count toward running
-agents and worktree protection; unchanged transcripts reuse cached summaries.
+agents and worktree protection; unchanged transcripts reuse cached summaries. A
+Cowork session archived from inside the Claude desktop app is read as archived
+here too, the same as an archived Codex session, though only Codex sessions can
+be archived or unarchived from this app.
 
 The top header's **Refresh** updates sessions, reloads the open conversation, and
 refreshes repositories, worktrees, and pull requests. Session, repository, and worktree

@@ -65,7 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
             "  claude-sessions --json --live --all\n"
             "  claude-sessions --jump SESSION_ID\n\n"
             "Environment:\n"
-            "  CLAUDE_CONFIG_DIR  Override Claude Code home (default: ~/.claude)"
+            "  CLAUDE_CONFIG_DIR   Override Claude Code home (default: ~/.claude)\n"
+            "  CLAUDE_DESKTOP_HOME Override the Claude desktop app's support directory, read for\n"
+            "                      Cowork session archive status (default: ~/Library/Application Support/Claude)"
         ),
         formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=32),
     )
@@ -87,6 +89,24 @@ def positive_integer(value: str) -> int:
 
 def claude_home() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+
+
+def claude_desktop_home() -> Path:
+    """Where the Claude desktop app keeps its own session metadata, separate from CLAUDE_CONFIG_DIR."""
+    return Path(os.environ.get("CLAUDE_DESKTOP_HOME") or Path.home() / "Library/Application Support/Claude")
+
+
+def desktop_archive_flags(home: Path) -> dict[str, bool]:
+    """Map cliSessionId -> isArchived from the desktop app's Cowork session metadata, if present."""
+    flags: dict[str, bool] = {}
+    for path in (home / "claude-code-sessions").glob("*/*/*.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and isinstance(record.get("cliSessionId"), str) and isinstance(record.get("isArchived"), bool):
+            flags[record["cliSessionId"]] = record["isArchived"]
+    return flags
 
 
 def duration_text(seconds: float) -> str:
@@ -267,7 +287,7 @@ def session_status(live: Optional[LiveSession]) -> tuple[str, str]:
     return "OPEN", "WAITING" if live.status == "idle" or live.waiting_for else "BUSY"
 
 
-def session_row(path: Path, live: Optional[LiveSession], cache=None) -> dict[str, object]:
+def session_row(path: Path, live: Optional[LiveSession], cache=None, archived: bool = False) -> dict[str, object]:
     try:
         modified = path.stat().st_mtime
     except OSError:
@@ -284,7 +304,7 @@ def session_row(path: Path, live: Optional[LiveSession], cache=None) -> dict[str
     return {
         **file_metadata(path),
         **{key: summary[key] for key in ("records", "assistant_messages", "reasoning_items", "tool_calls", "task_starts", "task_completes", "aborted_turns", "tokens_cached", "tokens_output")},
-        "archived": False,
+        "archived": archived,
         "started_at": parse_timestamp(summary["started"], live.started_at if live else modified),
         "cli_version": summary["version"],
         "context_window_is_estimated": stream_context_window(str(summary["model"])) is not None,
@@ -395,6 +415,7 @@ def collect_rows(home: Path, live_only: bool, include_subagents: bool, limit: Op
             if path.stem in live:
                 stamped.append((live[path.stem].started_at, path))
     stamped.sort(reverse=True)
+    archive_flags = desktop_archive_flags(claude_desktop_home())
     rows: list[dict[str, object]] = []
     seen = set()
     now = time.time()
@@ -403,7 +424,7 @@ def collect_rows(home: Path, live_only: bool, include_subagents: bool, limit: Op
             continue
         seen.add(path.stem)
         try:
-            row = session_row(path, live.get(path.stem), cache)
+            row = session_row(path, live.get(path.stem), cache, archived=archive_flags.get(path.stem, False))
         except OSError:
             continue
         rows.append(row)
