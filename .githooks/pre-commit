@@ -1,7 +1,12 @@
 #!/bin/sh
-# Block commits that add secrets. Enable with: git config core.hooksPath .githooks
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "pre-commit: gitleaks is not installed; secret scan skipped" >&2
-  exit 0
+# Block commits without a successful scan. setup.sh --fix sets core.hooksPath.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "pre-commit: python3 is not installed; required secret scan cannot run" >&2
+  exit 1
 fi
-exec gitleaks git --pre-commit --staged --redact --no-banner --log-level warn --verbose
+hook_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+repo_dir=$(git rev-parse --show-toplevel) || exit 1
+# Keep terms listed in the untracked .local/denylist out of the commit.
+"$hook_dir/check-denylist" --staged || exit 1
+# Use the installed hook's implementation, never executable content from index.
+exec python3 -I -S "$hook_dir/../dotfiles/lib/toolbox_secrets.py" --staged "$repo_dir"

@@ -1,0 +1,56 @@
+#!/bin/sh
+# Keep private terms out of a public repository. Fails, naming each file and
+# line, when content matches a pattern in the untracked .local/denylist (one
+# case-insensitive extended regex per line; blank lines and # comments are
+# skipped). Lines that also match .local/denylist.allow are accepted. Does
+# nothing when .local/denylist is missing.
+#   check-denylist --staged          lines added in the index (pre-commit)
+#   check-denylist --commits ARGS... lines added by those commits (pre-push)
+#   check-denylist --tree            every tracked file
+repo_dir=$(git rev-parse --show-toplevel) || exit 1
+deny_source="$repo_dir/.local/denylist"
+allow_source="$repo_dir/.local/denylist.allow"
+[ -s "$deny_source" ] || exit 0
+
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/denylist.XXXXXX") || exit 1
+trap 'rm -rf -- "$temporary"' EXIT INT TERM
+grep -vE '^[[:space:]]*(#|$)' "$deny_source" >"$temporary/deny"
+[ -s "$temporary/deny" ] || exit 0
+: >"$temporary/allow"
+[ -f "$allow_source" ] && grep -vE '^[[:space:]]*(#|$)' "$allow_source" >"$temporary/allow"
+
+# Print "path: line" for each line a diff adds.
+added_lines() {
+  awk '/^\+\+\+ /{ path = substr($0, 7); next } /^\+/{ print path ": " substr($0, 2) }'
+}
+
+mode=$1
+[ $# -gt 0 ] && shift
+case $mode in
+  --staged) git -C "$repo_dir" diff --cached -U0 --no-color --no-ext-diff --text | added_lines >"$temporary/content" ;;
+  --commits) git -C "$repo_dir" log -p -U0 --no-color --no-ext-diff --text --format= "$@" | added_lines >"$temporary/content" ;;
+  --tree)
+    git -C "$repo_dir" grep -n -I -i -E -f "$temporary/deny" >"$temporary/content"
+    # Binary files are named rather than printed.
+    git -C "$repo_dir" grep -l -I -i -E -f "$temporary/deny" >"$temporary/text-files"
+    git -C "$repo_dir" grep -l --text -i -E -f "$temporary/deny" | grep -v -x -F -f "$temporary/text-files" |
+      while IFS= read -r path; do
+        printf '%s: binary file matches: %s\n' "$path" "$(LC_ALL=C grep -a -o -i -E -f "$temporary/deny" "$repo_dir/$path" | sort -u | tr '\n' ' ')"
+      done >>"$temporary/content"
+    ;;
+  *)
+    echo "Usage: check-denylist --staged | --commits GIT-LOG-ARGS... | --tree" >&2
+    exit 2
+    ;;
+esac
+
+grep -a -i -E -f "$temporary/deny" "$temporary/content" >"$temporary/hits"
+if [ -s "$temporary/allow" ]; then
+  grep -a -v -i -E -f "$temporary/allow" "$temporary/hits" >"$temporary/left"
+else
+  cp "$temporary/hits" "$temporary/left"
+fi
+[ -s "$temporary/left" ] || exit 0
+echo "Private terms from .local/denylist found:" >&2
+tr -d '\000' <"$temporary/left" | sed 's/^/  /' >&2
+exit 1

@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 0
       - name: Install gitleaks
         env:
-          GITLEAKS_VERSION: 8.28.0
+          GITLEAKS_VERSION: 8.30.1
         run: |
           curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" |
             tar -xz -C /usr/local/bin gitleaks
@@ -41,18 +41,53 @@ jobs:
           fi
           gitleaks git --redact --no-banner --verbose --log-opts="$range"
 
-  test:
+  test-linux:
     name: Lint and test on Ubuntu
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      # ./test.sh skips the lint row when ShellCheck is missing; the runner image
-      # ships it, so fail here if that ever changes.
-      - name: Check shellcheck is installed
-        run: shellcheck --version
-      - name: Run ./test.sh
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1 ruff==0.15.8
+          echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      # ./setup.sh --test skips lint rows when a linter is missing, so make sure
+      # both are here. The runner image ships ShellCheck and mikefarah yq v4,
+      # which the Codex config tests need.
+      - name: Check ruff, shellcheck and yq are installed
+        run: |
+          ruff --version
+          shellcheck --version
+          yq --version | grep -q mikefarah
+      - name: Run ./setup.sh --test
         env:
           NO_COLOR: "1"
-        run: ./test.sh
+        run: ./setup.sh --test
+
+  test-macos:
+    name: Test on macOS
+    # macOS minutes cost 10x on private repositories; run anyway so macOS-only
+    # failures show up on the pull request instead of after merge. Skip it on
+    # pushes to main: those commits are rebased pull requests it already tested.
+    if: github.event_name != 'push'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+      # Ruff and ShellCheck are left out: the Ubuntu job lints, so the lint rows
+      # are skipped here.
+      - name: Install test dependencies
+        run: |
+          brew install yq
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1
+          echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      - name: Run ./setup.sh --test
+        env:
+          NO_COLOR: "1"
+        run: ./setup.sh --test
