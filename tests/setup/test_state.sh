@@ -213,6 +213,24 @@ assert_contains "$linked_output" "✓  zj-radar is installed at pinned version $
 assert_contains "$linked_output" "✓  Codex config includes the managed portable settings"
 assert_contains "$linked_output" "✓  Codex accepted the active config in strict mode"
 HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LOCAL_ENV_FILE="$doctor_env_file" run_state --strict >/dev/null || fail_test "complete dependency contract failed strict state scan"
+assert_contains "$linked_output" "✓  no dangling or legacy links in ~, ~/.config, or ~/.local/bin"
+
+# Links left by an older setup are reported, never repaired: a dangling one
+# and one into another setup checkout, such as an old ~/.bin.
+legacy_checkout="$TMP_ROOT/legacy-setup"
+mkdir -p "$legacy_checkout/dotfiles/.bin"
+: >"$legacy_checkout/setup.sh"
+# The report names the physical path; macOS TMPDIR runs through a symlink.
+legacy_checkout="$(cd -- "$legacy_checkout" && pwd -P)"
+ln -s "$legacy_checkout/dotfiles/.bin" "$TMP_ROOT/.bin"
+ln -s "$TMP_ROOT/no-such-tool" "$TMP_ROOT/.config/old-tool"
+stray_output="$(HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LOCAL_ENV_FILE="$doctor_env_file" run_state 2>&1)" || true
+assert_contains "$stray_output" "~/.bin points into another setup checkout ($legacy_checkout)"
+assert_contains "$stray_output" "~/.config/old-tool is a dangling link to $TMP_ROOT/no-such-tool"
+assert_not_contains "$stray_output" "~/.zshrc points into another"
+[[ -L "$TMP_ROOT/.bin" && -L "$TMP_ROOT/.config/old-tool" ]] || fail_test "state scan changed stray links"
+rm -f -- "$TMP_ROOT/.bin" "$TMP_ROOT/.config/old-tool"
+rm -rf -- "$legacy_checkout"
 hooks_output="$(HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LOCAL_ENV_FILE="$doctor_env_file" TEST_HOOKS_PATH= run_state 2>&1)" || true
 assert_contains "$hooks_output" "!  Git hooks path is unset; expected .githooks"
 
