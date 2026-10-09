@@ -148,6 +148,54 @@ check_managed_links() {
   fi
 }
 
+# The root of the setup checkout (a directory with setup.sh and dotfiles/)
+# that holds PATH, or nothing.
+setup_checkout_root() {
+  local directory="$1"
+
+  while [[ -n "$directory" && "$directory" != / ]]; do
+    if [[ -f "$directory/setup.sh" && -d "$directory/dotfiles" ]]; then
+      printf '%s\n' "$directory"
+      return 0
+    fi
+    directory="${directory%/*}"
+  done
+  return 1
+}
+
+# Warns about links in ~, ~/.config, and ~/.local/bin that this checkout does
+# not manage and that are dangling or point into another setup checkout, such
+# as an old ~/.bin left behind by an earlier setup. It only reports them.
+check_stray_links() {
+  local link name target directory root this_root found=0
+
+  setup_state_check "stray home links"
+  this_root="$(cd -- "$REPO_DIR" && pwd -P)"
+  for link in "$HOME"/.[!.]* "$HOME"/.config/* "$HOME"/.local/bin/*; do
+    [[ -L "$link" ]] || continue
+    name="${link#"$HOME"/}"
+    # check_managed_links already reports the links this checkout manages.
+    if [[ "$name" == .config/* ]]; then
+      [[ " ${SETUP_CONFIG_LINKS[*]} " == *" ${name#.config/} "* ]] && continue
+    else
+      [[ " ${SETUP_HOME_LINKS[*]} " == *" $name "* ]] && continue
+    fi
+    target="$(readlink "$link")"
+    if [[ ! -e "$link" ]]; then
+      setup_state_warn "~/$name is a dangling link to $target; remove it if nothing uses it"
+      found=1
+      continue
+    fi
+    directory="$(cd -- "$(dirname -- "$link")" && cd -- "$(dirname -- "$target")" 2>/dev/null && pwd -P)" || continue
+    root="$(setup_checkout_root "$directory")" || continue
+    if [[ "$root" != "$this_root" ]]; then
+      setup_state_warn "~/$name points into another setup checkout ($root); remove it if nothing uses it"
+      found=1
+    fi
+  done
+  ((found)) || setup_state_complete "no dangling or legacy links in ~, ~/.config, or ~/.local/bin"
+}
+
 check_codex_config() {
   local current_platform="$1"
   local source_file="$REPO_DIR/$SETUP_CODEX_CONFIG_SOURCE"
@@ -702,6 +750,7 @@ setup_state_scan() {
   check_install_metadata "$SETUP_STATE_PLATFORM"
   SETUP_STATE_ACTION="links"
   check_managed_links
+  check_stray_links
   SETUP_STATE_ACTION="paths"
   check_path_entries
 
