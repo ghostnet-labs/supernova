@@ -2,13 +2,17 @@
 
 This file provides guidance to coding agents (Codex, Claude Code) working in this repository.
 
+## Project overview
+There is no project code yet: the repository holds only `README.md`, this file, `CLAUDE.md` (which points Claude Code here), and the tooling below. Update this file and `README.md` when real code lands.
+
 ## Layout
-- `test.sh` — Runs every repository check: shell syntax, ShellCheck (error severity, when installed), then each `tests/*/test_*.sh` and `tests/*/test_*.py`. It fails when no tests are found. Add new checks here or as test files, not as separate workflow steps, so local runs and CI stay the same
+- `test.sh` — Runs every repository check: `bash -n` syntax on every tracked or new, unignored file whose shebang names bash or sh, ShellCheck (error severity, when installed), then each `tests/*/test_*.sh` (with bash) and `tests/*/test_*.py` (with python3; there is no Python lint). Every check runs before the summary, and it fails when no tests are found. Add new checks here or as test files, not as separate workflow steps, so local runs and CI stay the same
 - `tests/` — Tests discovered by `./test.sh`; shell tests source `tests/lib/assert.sh` for `fail_test`, `assert_contains`, `assert_not_contains`, and `assert_equals`. `tests/github/` covers `.github/scripts/`
-- `.github/workflows/ci.yml` — CI for every push to `main` and every pull request: gitleaks on new commits, then `./test.sh` on Ubuntu
+- `.github/workflows/ci.yml` — CI for every push to `main` and every pull request: gitleaks on new commits, then `./test.sh` on Ubuntu, whose runner image ships ShellCheck
 - `.github/workflows/pr-format.yml` — Runs `.github/scripts/check_pr.sh` on every PR except Dependabot's to check the title, description, and commits, and on every push to `main` to check the pushed commits. It runs as `pull_request_target`, so the check comes from the default branch
-- `.githooks/` — `pre-commit` runs `gitleaks` on staged changes; `commit-msg` and `pre-push` check commit messages through `.github/scripts/check_pr.sh`. Enable them once per clone with `git config core.hooksPath .githooks`
-- `.github/dependabot.yml` — Monthly Dependabot PR that bumps GitHub Actions versions
+- `.githooks/` — `pre-commit` runs `gitleaks` on staged changes (skipped with a warning when gitleaks is not installed); `commit-msg` and `pre-push` check commit messages through `.github/scripts/check_pr.sh`. Enable them once per clone with `git config core.hooksPath .githooks`
+- `.github/dependabot.yml` — Monthly Dependabot PR that bumps GitHub Actions versions, titled with the `ci` prefix
+- `.github/pull_request_template.md` — Pre-fills new PR descriptions with `What changed`, `Why`, and an optional `Checked` list
 
 ## Common commands
 - Run all checks: `./test.sh`
