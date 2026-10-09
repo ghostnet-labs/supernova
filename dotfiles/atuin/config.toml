@@ -1,0 +1,19 @@
+# Managed by setup: local Atuin history.
+# Edit this tracked template; scoped copies refresh when a shell initializes.
+data_dir = "$ATUIN_DATA_DIR"
+db_path = "$ATUIN_DATA_DIR/history.db"
+record_store_path = "$ATUIN_DATA_DIR/records.db"
+key_path = "$ATUIN_DATA_DIR/key"
+auto_sync = false
+update_check = false
+enter_accept = false
+search_mode = "fuzzy"
+filter_mode = "global"
+inline_height = 20
+
+[daemon]
+enabled = false
+autostart = false
+
+[pty_proxy]
+enabled = false

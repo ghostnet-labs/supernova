@@ -1,0 +1,173 @@
+#!/bin/sh
+# setup-help: none (runs in the tmux status bar)
+# toolbox: internal tmux git | Internal renderer for Git repository details in the tmux status bar.
+# toolbox-args: [REPOSITORY]
+
+repo_root=$(GIT_OPTIONAL_LOCKS=0 git -C "${1:-.}" rev-parse --show-toplevel 2>/dev/null) || exit 0
+repo_name=${repo_root##*/}
+
+render_status() {
+  GIT_OPTIONAL_LOCKS=0 git -C "$repo_root" status \
+    --porcelain=v2 --branch --show-stash --untracked-files=normal 2>/dev/null |
+  awk -v repo="$repo_name" '
+    $1 == "#" && $2 == "branch.oid"  { oid = substr($3, 1, 7) }
+    $1 == "#" && $2 == "branch.head" { branch = $3; next }
+    $1 == "#" && $2 == "stash"       { stashes = $3; next }
+    $1 == "#" && $2 == "branch.ab" {
+      ahead = substr($3, 2)
+      behind = substr($4, 2)
+      next
+    }
+    $1 == "?" { untracked++; next }
+    $1 == "u" { conflicted++; next }
+    $1 == "2" { renamed++; next }
+    $1 == "1" {
+      if (index($2, "D") > 0) deleted++
+      else if (index($2, "A") > 0) added++
+      else modified++
+      next
+    }
+    END {
+      if (branch == "(detached)") branch = oid
+      if (branch != "") {
+        printf "%s:%s", repo, branch
+        if (modified > 0) printf " M%d", modified
+        if (added > 0) printf " A%d", added
+        if (deleted > 0) printf " D%d", deleted
+        if (renamed > 0) printf " R%d", renamed
+        if (conflicted > 0) printf " U%d", conflicted
+        if (untracked > 0) printf " ?%d", untracked
+        if (stashes > 0) printf " S%d", stashes
+        if (ahead > 0) printf " ↑%d", ahead
+        if (behind > 0) printf " ↓%d", behind
+      }
+    }
+  '
+}
+
+cache_ttl=${TMUX_GIT_STATUS_CACHE_TTL:-2}
+case $cache_ttl in
+  ''|*[!0-9]*) cache_ttl=2 ;;
+esac
+
+if [ "$cache_ttl" -eq 0 ]; then
+  render_status
+  exit 0
+fi
+
+if [ -n "${TMUX_GIT_STATUS_CACHE_DIR:-}" ]; then
+  cache_base=$TMUX_GIT_STATUS_CACHE_DIR
+else
+  runtime_dir=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}
+  cache_base="${runtime_dir%/}/tmux-git-status-$(id -u)"
+fi
+
+case $cache_base in
+  /*) ;;
+  *) render_status; exit 0 ;;
+esac
+
+cache_dir="${cache_base%/}${repo_root}"
+cache_file="$cache_dir/status"
+lock_file="$cache_file.lock"
+cache_loaded=0
+cached_at=
+cached_output=
+
+load_cache() {
+  [ -r "$cache_file" ] || return 1
+  {
+    IFS= read -r cached_at || return 1
+    IFS= read -r cached_output || :
+  } < "$cache_file"
+  case $cached_at in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  cache_loaded=1
+}
+
+now=$(date +%s 2>/dev/null) || now=
+if load_cache && [ -n "$now" ]; then
+  cache_age=$((now - cached_at))
+  if [ "$cache_age" -ge 0 ] && [ "$cache_age" -lt "$cache_ttl" ]; then
+    printf '%s' "$cached_output"
+    exit 0
+  fi
+fi
+
+umask 077
+if ! mkdir -p "$cache_dir" 2>/dev/null; then
+  render_status
+  exit 0
+fi
+
+rmdir "$lock_file" 2>/dev/null || :
+# Link a pre-timestamped candidate so interruption cannot leave an empty lock.
+lock_candidate="$lock_file.$$"
+if ! printf '%s\n' "${now:-0}" > "$lock_candidate"; then
+  render_status
+  exit 0
+fi
+
+acquired_lock=0
+if ln "$lock_candidate" "$lock_file" 2>/dev/null; then
+  acquired_lock=1
+elif [ -n "$now" ] && [ -r "$lock_file" ]; then
+  IFS= read -r lock_started < "$lock_file" || lock_started=
+  case $lock_started in
+    ''|*[!0-9]*) ;;
+    *)
+      lock_age=$((now - lock_started))
+      if [ "$lock_age" -ge 30 ]; then
+        rm -f "$lock_file"
+        if ln "$lock_candidate" "$lock_file" 2>/dev/null; then
+          acquired_lock=1
+        fi
+      fi
+      ;;
+  esac
+fi
+
+if [ "$acquired_lock" -eq 0 ]; then
+  rm -f "$lock_candidate"
+  # Keep the badge stable while the lock owner refreshes an expired entry.
+  if [ "$cache_loaded" -eq 1 ]; then
+    printf '%s' "$cached_output"
+    exit 0
+  fi
+
+  attempts=0
+  while [ "$attempts" -lt 10 ]; do
+    sleep 0.05
+    if load_cache; then
+      printf '%s' "$cached_output"
+      exit 0
+    fi
+    attempts=$((attempts + 1))
+  done
+
+  render_status
+  exit 0
+fi
+
+temp_file="$cache_file.$$"
+
+cleanup_cache_write() {
+  rm -f "$temp_file" "$lock_file" "$lock_candidate"
+}
+
+trap cleanup_cache_write 0
+trap 'exit 1' HUP INT TERM
+rm -f "$lock_candidate"
+
+status_output=$(render_status)
+written_at=$(date +%s 2>/dev/null) || written_at=
+if [ -n "$written_at" ] &&
+   printf '%s\n%s\n' "$written_at" "$status_output" > "$temp_file" &&
+   mv -f "$temp_file" "$cache_file"; then
+  :
+fi
+
+cleanup_cache_write
+trap - 0 HUP INT TERM
+printf '%s' "$status_output"

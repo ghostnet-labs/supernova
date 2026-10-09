@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# toolbox: setup macos diagnostics | Open and manage the app showing setup health, drift, and repair previews.
+# toolbox-args: [--open|--status|--install|--uninstall]
+# toolbox-example: setup-doctor --open
+# toolbox-example: setup-doctor --status
+# toolbox-example: setup-doctor --install
+# Build, install, and manage the Setup Doctor macOS app.
+set -euo pipefail
+
+readonly app_name="Setup Doctor"
+readonly executable="SetupDoctor"
+
+usage() {
+  printf '%s\n' 'Usage:
+  setup-doctor [ACTION]
+
+Description:
+  Build, install, open, or remove the Setup Doctor macOS app. The app presents
+  ./setup.sh --check results, drift from the previous scan, and repair previews.
+
+Options:
+  --install     Build and install the app in ~/Applications, then quit any
+                running copy and open it.
+  --open        Open the installed app.
+  --status      Show whether the app is installed (default).
+  --uninstall   Remove the installed app.
+  -h, --help    Show this help message and exit.
+
+Examples:
+  setup-doctor --install
+  setup-doctor --open
+  setup-doctor --status
+  setup-doctor --uninstall
+
+Environment:
+  SETUP_DOCTOR_APP_DIR   Install directory (default: ~/Applications).
+  SETUP_DOCTOR_SETUP_SH  Explicit path to setup.sh for the app to inspect.'
+}
+
+action="--status"
+if (($# > 1)); then usage >&2; exit 2; fi
+if (($# == 1)); then
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --install|--open|--status|--uninstall) action="$1" ;;
+    *) printf 'error: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+fi
+[[ "$(uname -s)" == Darwin ]] || { echo 'error: setup-doctor requires macOS' >&2; exit 1; }
+
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/setup-doctor" && pwd)"
+readonly app_dir="${SETUP_DOCTOR_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+
+build_app() {
+  local bundle="$1"
+  mkdir -p "$bundle/Contents/MacOS"
+  cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+  swiftc -O -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
+    -o "$bundle/Contents/MacOS/$executable" "$source_dir/SetupDoctor.swift" "$source_dir/../lib/GhosttyLaunch.swift"
+  codesign --force --sign - "$bundle" >/dev/null 2>&1
+}
+
+source "$source_dir/../lib/quit-app.sh"
+
+case "$action" in
+  --install)
+    command -v swiftc >/dev/null || { echo 'error: swiftc not found' >&2; exit 1; }
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/setup-doctor.XXXXXX")"
+    trap 'rm -rf -- "$tmp"' EXIT
+    build_app "$tmp/$app_name.app"
+    quit_app "$app_path/Contents/MacOS/$executable"
+    mkdir -p "$app_dir"
+    rm -rf -- "$app_path"
+    mv "$tmp/$app_name.app" "$app_path"
+    open "$app_path"
+    printf '✓ Installed %s\n' "$app_path"
+    ;;
+  --open) [[ -d "$app_path" ]] || { echo 'error: not installed' >&2; exit 1; }; open "$app_path" ;;
+  --status) [[ -d "$app_path" ]] && echo 'app: installed' || echo 'app: not installed' ;;
+  --uninstall) quit_app "$app_path/Contents/MacOS/$executable"; rm -rf -- "$app_path"; printf '✓ Uninstalled %s\n' "$app_name" ;;
+esac

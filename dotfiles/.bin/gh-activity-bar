@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# toolbox: github macos | Manage the menu bar app showing recent GitHub organization activity.
+# toolbox-args: [--status|--start|--stop|--install|--uninstall] | --org NAME
+# toolbox-example: gh-activity-bar --status
+# toolbox-example: gh-activity-bar --org my-org
+# toolbox-example: gh-activity-bar --start
+# Build, install, and manage the GitHub Activity menu bar app.
+
+set -euo pipefail
+
+readonly app_name="GitHub Activity"
+readonly executable="GhActivityBar"
+readonly agent_label="local.gh-activity-bar"
+
+usage() {
+  printf '%s\n' 'Usage:
+  gh-activity-bar [ACTION]
+  gh-activity-bar --root PATH
+
+Description:
+  Manage the GitHub Activity menu bar app, which combines the 50 most recent
+  events from GitHub repositories cloned in your project folder. Worktrees
+  and duplicate clones count once. The Feed, Summary, and PRs tabs all follow
+  those repositories. Saved gh logins provide access to private repos; a
+  personal repository uses its owner account when saved, otherwise the
+  active account. Install builds the app and registers a login agent.
+  With no ACTION, show the current status.
+  Automatic, panel-open, wake, and manual checks share a 15-minute cooldown
+  by default. Rate-limited requests pause until GitHub permits retries.
+
+Options:
+  --install       Build and install the app, then start it now and at every login.
+  --root PATH     Follow GitHub clones directly inside PATH and restart the app.
+  --start         Start the installed app after quitting it from the menu.
+  --stop          Stop the app until the next login or --start.
+  --status        Show install, login agent, running, and clone folder state (default).
+  --uninstall     Stop the app and remove it, its login agent, and its settings.
+  -h, --help      Show this help message and exit.
+
+Examples:
+  gh-activity-bar --install
+  gh-activity-bar --root "$HOME/dev"
+  gh-activity-bar
+  gh-activity-bar --stop
+  gh-activity-bar --uninstall
+
+Environment:
+  GH_ACTIVITY_BAR_ROOT       Clone folder before --root is chosen (default: ~/dev).
+  WORKTREE_MANAGER_ROOT      Fallback clone folder, then TW_PROJECT_ROOT.
+  GH_ACTIVITY_BAR_INTERVAL   Refresh cooldown in seconds, minimum 60 (default: 900).
+  GH_ACTIVITY_BAR_APP_DIR    Install directory (default: ~/Applications).'
+}
+
+action="--status"
+clone_root=""
+case "$#:${1:-}" in
+  0:) ;;
+  1:-h | 1:--help)
+    usage
+    exit 0
+    ;;
+  1:--install | 1:--start | 1:--stop | 1:--status | 1:--uninstall) action="$1" ;;
+  2:--root)
+    action="--root"
+    clone_root="$2"
+    ;;
+  1:--root)
+    printf 'error: --root needs a directory\n' >&2
+    exit 2
+    ;;
+  *)
+    if (($# == 1)); then
+      printf 'error: unknown option: %s\n' "$1" >&2
+    fi
+    usage >&2
+    exit 2
+    ;;
+esac
+if [[ "$action" == --root ]]; then
+  if [[ ! -d "$clone_root" ]]; then
+    printf 'error: clone directory not found: %s\n' "$clone_root" >&2
+    exit 2
+  fi
+  clone_root="$(cd -- "$clone_root" && pwd -P)"
+fi
+
+if [[ "$(uname -s)" != Darwin ]]; then
+  printf 'error: gh-activity-bar requires macOS\n' >&2
+  exit 1
+fi
+
+readonly source_dir="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/../../apps/gh-activity-bar" && pwd)"
+readonly app_dir="${GH_ACTIVITY_BAR_APP_DIR:-$HOME/Applications}"
+readonly app_path="$app_dir/$app_name.app"
+readonly agent_plist="$HOME/Library/LaunchAgents/$agent_label.plist"
+readonly domain="gui/$(id -u)"
+
+require() {
+  local command
+  for command in "$@"; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      printf 'error: required command not found: %s\n' "$command" >&2
+      exit 1
+    fi
+  done
+}
+
+xml_escape() {
+  local value="${1//&/&amp;}"
+  value="${value//</&lt;}"
+  printf '%s' "${value//>/&gt;}"
+}
+
+agent_loaded() {
+  launchctl print "$domain/$agent_label" >/dev/null 2>&1
+}
+
+# bootout returns before launchd removes the service, and a kickstart in that window starts nothing.
+stop_agent() {
+  agent_loaded || return 0
+  launchctl bootout "$domain/$agent_label" 2>/dev/null || true
+  local _
+  for _ in {1..100}; do
+    agent_loaded || return 0
+    sleep 0.1
+  done
+  printf 'warning: launchd has not removed %s yet\n' "$agent_label" >&2
+}
+
+start_agent() {
+  if agent_loaded; then
+    launchctl kickstart "$domain/$agent_label"
+  else
+    launchctl bootstrap "$domain" "$agent_plist"
+  fi
+}
+
+build_app() {
+  local bundle="$1"
+  mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
+  cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
+  cp "$source_dir/../lib/octicons/LICENSE" "$bundle/Contents/Resources/Octicons-LICENSE"
+  swiftc -O -parse-as-library -swift-version 5 \
+    -target "$(uname -m)-apple-macos14.0" \
+    -o "$bundle/Contents/MacOS/$executable" \
+    "$source_dir/GhActivityBar.swift" "$source_dir/../lib/octicons/Octicons.swift"
+  codesign --force --sign - "$bundle" >/dev/null 2>&1
+}
+
+write_agent_plist() {
+  local interval="${GH_ACTIVITY_BAR_INTERVAL:-900}"
+  local root="${GH_ACTIVITY_BAR_ROOT:-${WORKTREE_MANAGER_ROOT:-${TW_PROJECT_ROOT:-$HOME/dev}}}"
+  mkdir -p "${agent_plist%/*}"
+  printf '%s\n' "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+	<key>Label</key>
+	<string>$agent_label</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>$(xml_escape "$app_path/Contents/MacOS/$executable")</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>GH_ACTIVITY_BAR_INTERVAL</key>
+		<string>$(xml_escape "$interval")</string>
+		<key>GH_ACTIVITY_BAR_ROOT</key>
+		<string>$(xml_escape "$root")</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>" >"$agent_plist"
+  plutil -lint "$agent_plist" >/dev/null
+}
+
+install_app() {
+  require swiftc codesign launchctl plutil
+
+  # Global so the EXIT trap can still see it after this function returns.
+  build_root="$(mktemp -d "${TMPDIR:-/tmp}/gh-activity-bar.XXXXXX")"
+  trap 'rm -rf -- "$build_root"' EXIT
+  printf '→ Building %s\n' "$app_name"
+  build_app "$build_root/$app_name.app"
+
+  stop_agent
+  mkdir -p "$app_dir"
+  rm -rf -- "$app_path"
+  mv "$build_root/$app_name.app" "$app_path"
+  write_agent_plist
+  start_agent
+  printf '✓ Installed %s and started it at login: %s\n' "$app_name" "$app_path"
+}
+
+# The chosen folder, else the one the login agent starts with.
+current_root() {
+  defaults read "$agent_label" repositoryRoot 2>/dev/null ||
+    plutil -extract EnvironmentVariables.GH_ACTIVITY_BAR_ROOT raw "$agent_plist" 2>/dev/null ||
+    printf '%s\n' "$HOME/dev"
+}
+
+switch_root() {
+  if [[ ! -f "$agent_plist" ]]; then
+    printf 'error: not installed; run gh-activity-bar --install\n' >&2
+    exit 1
+  fi
+  stop_agent
+  defaults write "$agent_label" repositoryRoot -string "$clone_root"
+  start_agent
+  printf '✓ %s now follows clones in %s\n' "$app_name" "$clone_root"
+}
+
+show_status() {
+  local state="not loaded" root_name
+  if agent_loaded; then
+    state="$(launchctl print "$domain/$agent_label" | awk -F' = ' '/^\tstate = / {print $2; exit}')"
+  fi
+  root_name="$(current_root)"
+  printf 'App:           %s\n' "$([[ -d "$app_path" ]] && printf '%s' "$app_path" || printf 'not installed')"
+  printf 'Login agent:   %s\n' "$([[ -f "$agent_plist" ]] && printf '%s' "$agent_plist" || printf 'not registered')"
+  printf 'State:         %s\n' "${state:-unknown}"
+  printf 'Clone folder:  %s\n' "${root_name:-not chosen}"
+}
+
+case "$action" in
+  --install) install_app ;;
+  --root) switch_root ;;
+  --start)
+    if [[ ! -f "$agent_plist" ]]; then
+      printf 'error: not installed; run gh-activity-bar --install\n' >&2
+      exit 1
+    fi
+    start_agent
+    ;;
+  --stop) stop_agent ;;
+  --status) show_status ;;
+  --uninstall)
+    stop_agent
+    rm -f -- "$agent_plist"
+    rm -rf -- "$app_path"
+    defaults delete "$agent_label" >/dev/null 2>&1 || true
+    printf '✓ Removed %s\n' "$app_name"
+    ;;
+esac

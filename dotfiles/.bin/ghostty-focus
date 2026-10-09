@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+# toolbox: terminal ghostty | Focus the Ghostty window, tab, and split displaying a process or terminal.
+# toolbox-args: --pid PID [--cwd DIR] [--dry-run] | --tty TTY [--cwd DIR]
+# toolbox-example: ghostty-focus --pid 48213 --dry-run
+# toolbox-example: ghostty-focus --pid 48213 --cwd ~/dev/project
+# toolbox-example: ghostty-focus --tty /dev/ttys003
+# Bring the exact Ghostty window, tab, and split showing a process to the front.
+
+set -euo pipefail
+
+usage() {
+  printf '%s\n' 'Usage:
+  ghostty-focus --pid PID [--cwd DIR]
+  ghostty-focus --tty TTY [--cwd DIR]
+  ghostty-focus --pid PID --dry-run
+
+Description:
+  Focus the Ghostty terminal (window, tab, and split) that displays a process.
+  For a process inside tmux or Zellij, the attached client'\''s terminal is used.
+  The terminal is found by briefly reporting a unique working directory
+  (OSC 7) on its TTY, then the terminal'\''s previous directory is restored.
+  Exits 1 without side effects when the process is not shown in Ghostty.
+
+Options:
+  --pid PID       Process to show, such as a Codex or Claude Code agent.
+  --tty TTY       Terminal device to show directly, such as /dev/ttys003.
+  --cwd DIR       Directory to restore if Ghostty had none (default: none).
+  --dry-run       Print the TTY that would be focused and change nothing.
+  -h, --help      Show this help message and exit.
+
+Examples:
+  ghostty-focus --pid 48213
+  ghostty-focus --pid 48213 --cwd ~/dev/project
+  ghostty-focus --tty /dev/ttys003
+  ghostty-focus --pid 48213 --dry-run'
+}
+
+pid="" tty="" cwd="" dry_run=0
+while (($#)); do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) dry_run=1; shift ;;
+    --pid|--tty|--cwd)
+      (($# >= 2)) || { printf 'error: %s requires a value\n' "$1" >&2; exit 2; }
+      printf -v "${1#--}" '%s' "$2"
+      shift 2
+      ;;
+    *) printf 'error: unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+if { [[ -z "$pid" ]] && [[ -z "$tty" ]]; } || { [[ -n "$pid" ]] && [[ -n "$tty" ]]; }; then
+  printf 'error: pass exactly one of --pid or --tty\n' >&2
+  exit 2
+fi
+[[ -z "$pid" || "$pid" =~ ^[1-9][0-9]*$ ]] || { printf 'error: invalid pid: %s\n' "$pid" >&2; exit 2; }
+
+# Print one variable from a process's environment (macOS ps shows our own processes' env).
+process_env() {
+  { ps eww -o command= -p "$1" 2>/dev/null || true; } | tr ' ' '\n' | sed -n "s/^$2=//p" | head -n 1
+}
+
+process_tty() {
+  local name
+  name="$({ ps -o tty= -p "$1" 2>/dev/null || true; } | tr -d ' ')"
+  [[ -n "$name" && "$name" != "??" ]] && printf '/dev/%s\n' "$name"
+}
+
+# tmux: the most recently active client attached to the session that owns the pane.
+tmux_client_pid() {
+  local socket="${1%%,*}" pane="$2" session
+  session="$(tmux -S "$socket" display-message -p -t "$pane" '#{session_name}' 2>/dev/null)" || return 1
+  tmux -S "$socket" list-clients -t "$session" -F '#{client_activity} #{client_pid}' 2>/dev/null |
+    sort -rn | awk 'NR == 1 { print $2 }'
+}
+
+# Zellij: a client process attached to the named session. Clients started with a
+# plain `zellij` do not name their session, so one unnamed client is the fallback.
+zellij_client_pid() {
+  local session="$1" named="" unnamed="" count=0 client_pid command program
+  while read -r client_pid command; do
+    program="${command%% *}"
+    program="${program#-}" # login shells prefix argv[0] with "-"
+    [[ "$program" == */zellij || "$program" == zellij ]] || continue
+    [[ "$command" == *--server* ]] && continue
+    [[ -n "$(process_tty "$client_pid")" ]] || continue
+    if [[ " $command " =~ \ (attach|a|-s|--session)\ ([^ ]+)\  ]]; then
+      [[ "${BASH_REMATCH[2]}" == "$session" ]] && named="${named:-$client_pid}"
+    else
+      unnamed="$client_pid"
+      count=$((count + 1))
+    fi
+  done < <(ps -ax -o pid= -o command=)
+  if [[ -n "$named" ]]; then printf '%s\n' "$named"
+  elif ((count == 1)); then printf '%s\n' "$unnamed"
+  else return 1
+  fi
+}
+
+if [[ -n "$pid" ]]; then
+  display_pid="$pid"
+  tmux_value="$(process_env "$pid" TMUX)"
+  tmux_pane="$(process_env "$pid" TMUX_PANE)"
+  zellij_session="$(process_env "$pid" ZELLIJ_SESSION_NAME)"
+  if [[ -n "$tmux_value" && -n "$tmux_pane" ]]; then
+    display_pid="$(tmux_client_pid "$tmux_value" "$tmux_pane")" || display_pid=""
+  elif [[ -n "$zellij_session" ]]; then
+    display_pid="$(zellij_client_pid "$zellij_session")" || display_pid=""
+  fi
+  [[ -n "$display_pid" ]] || { printf 'error: no attached terminal client for pid %s\n' "$pid" >&2; exit 1; }
+  # Only write the OSC 7 marker to terminals that are Ghostty.
+  term_program="$(process_env "$display_pid" TERM_PROGRAM)"
+  [[ -z "$term_program" || "$term_program" == ghostty ]] || {
+    printf 'error: pid %s is shown in %s, not Ghostty\n' "$pid" "$term_program" >&2
+    exit 1
+  }
+  tty="$(process_tty "$display_pid")" || true
+fi
+if ((dry_run)); then
+  [[ -n "$tty" ]] || { printf 'error: pid %s has no terminal\n' "$display_pid" >&2; exit 1; }
+  printf '%s\n' "$tty"
+  exit 0
+fi
+
+[[ "$(uname -s)" == Darwin ]] || { printf 'error: ghostty-focus requires macOS\n' >&2; exit 1; }
+[[ "$tty" =~ ^/dev/ttys[0-9]+$ && -c "$tty" && -O "$tty" && -w "$tty" ]] || {
+  printf 'error: not a writable terminal owned by this user: %s\n' "${tty:-none}" >&2
+  exit 1
+}
+# Every Ghostty process: `open -na Ghostty` starts extra instances, and AppleScript
+# by name reaches only one of them. (pgrep would skip a Ghostty we run inside.)
+# shellcheck disable=SC2207 # PIDs never contain whitespace; bash 3.2 lacks mapfile.
+ghostty_pids=($(ps -ax -o pid= -o comm= | awk '$2 ~ /\/Ghostty\.app\/Contents\/MacOS\/ghostty$/ { print $1 }'))
+((${#ghostty_pids[@]})) || { printf 'error: Ghostty is not running\n' >&2; exit 1; }
+
+marker="/tmp/ghostty-focus-$$-$RANDOM$RANDOM"
+# One osascript run: snapshot directories, mark the TTY, find the marked terminal in
+# whichever Ghostty process shows it, restore its directory, then focus it. Raw Apple
+# Events (codes from Ghostty.sdef) are used because they can target a process ID.
+printf '%s\n' 'ObjC.import("AppKit");
+const D = $.NSAppleEventDescriptor;
+const code = (text) => ((text.charCodeAt(0) << 24) | (text.charCodeAt(1) << 16) | (text.charCodeAt(2) << 8) | text.charCodeAt(3)) >>> 0;
+
+function specifier(want, form, selector, container) {
+  const record = D.recordDescriptor;
+  record.setDescriptorForKeyword(D.descriptorWithTypeCode(code(want)), code("want"));
+  record.setDescriptorForKeyword(D.descriptorWithEnumCode(code(form)), code("form"));
+  record.setDescriptorForKeyword(selector, code("seld"));
+  record.setDescriptorForKeyword(container || D.nullDescriptor, code("from"));
+  return record.coerceToDescriptorType(code("obj "));
+}
+
+function send(pid, eventClass, eventID, direct) {
+  const event = D.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(
+    code(eventClass), code(eventID), D.descriptorWithProcessIdentifier(pid), -1, 0);
+  event.setParamDescriptorForKeyword(direct, code("----"));
+  const error = $();
+  const reply = event.sendEventWithOptionsTimeoutError($.NSAppleEventSendWaitForReply, 3, error);
+  if (reply.isNil()) throw new Error(ObjC.unwrap(error.localizedDescription));
+  const failure = reply.paramDescriptorForKeyword(code("errn"));
+  if (!failure.isNil()) throw new Error("Apple Event error " + failure.int32Value);
+  return reply.paramDescriptorForKeyword(code("----"));
+}
+
+const everyTerminal = specifier("Gtrm", "indx",
+  D.descriptorWithDescriptorTypeData(code("abso"), D.descriptorWithTypeCode(code("all ")).data), null);
+
+function terminalProperty(pid, property) {
+  const list = send(pid, "core", "getd", specifier("prop", "prop", D.descriptorWithTypeCode(code(property)), everyTerminal));
+  const values = [];
+  for (let index = 1; list && !list.isNil() && index <= list.numberOfItems; index++) {
+    values.push(ObjC.unwrap(list.descriptorAtIndex(index).stringValue) || "");
+  }
+  return values;
+}
+
+function run(argv) {
+  const [tty, marker, host, fallback, ...pidArgs] = argv;
+  const report = (path) => {
+    const handle = $.NSFileHandle.fileHandleForWritingAtPath(tty);
+    if (handle.isNil()) throw new Error("cannot write to " + tty);
+    const sequence = "\x1b]7;file://" + host + encodeURI(path) + "\x07";
+    handle.writeData($(sequence).dataUsingEncoding($.NSUTF8StringEncoding));
+    handle.closeFile;
+  };
+  const before = {};
+  const pids = [];
+  let lastError = "";
+  for (const pid of pidArgs.map(Number)) {
+    try {
+      const ids = terminalProperty(pid, "ID  ");
+      const directories = terminalProperty(pid, "Gwdr");
+      ids.forEach((id, index) => { before[pid + "/" + id] = directories[index]; });
+      pids.push(pid);
+    } catch (error) {
+      lastError = String(error.message || error);
+    }
+  }
+  if (!pids.length) throw new Error("cannot script Ghostty (allow Automation access in System Settings): " + lastError);
+  report(marker);
+  for (let attempt = 0; attempt < 40; attempt++) {
+    for (const pid of pids) {
+      let index = -1;
+      try { index = terminalProperty(pid, "Gwdr").indexOf(marker); } catch (error) { continue; }
+      if (index < 0) continue;
+      const id = terminalProperty(pid, "ID  ")[index];
+      const previous = before[pid + "/" + id];
+      report(previous && previous !== marker ? previous : fallback || ObjC.unwrap($.NSHomeDirectory()));
+      send(pid, "Ghst", "Fcus", specifier("Gtrm", "ID  ", D.descriptorWithString(id), null));
+      $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid)
+        .activateWithOptions($.NSApplicationActivateIgnoringOtherApps);
+      return pid + " " + id;
+    }
+    delay(0.025);
+  }
+  if (fallback) report(fallback);
+  throw new Error("no Ghostty terminal shows " + tty);
+}' | osascript -l JavaScript - "$tty" "$marker" "$(hostname)" "$cwd" "${ghostty_pids[@]}"

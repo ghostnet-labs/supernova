@@ -1,0 +1,3 @@
+{"command": "git status --short", "description": "Show changed and untracked files", "id": "52b6b36faed7306c37843e3269e75d5a98db9cb81bd0be83b60479a6a82db592", "scope": "personal", "tags": ["git", "status"]}
+{"command": "git diff --stat", "description": "Summarize unstaged changes by file", "id": "c7b4c3eed727b01ee890acd77da7f43ae3ff7840431697ebb2502f4042db5249", "scope": "personal", "tags": ["git", "diff"]}
+{"command": "du -sh .", "description": "Show total disk usage of the current directory", "id": "21a04bed02ef926cfb1a72dcb74e40a6da2b70cdf758b53dab409cd37717e092", "scope": "personal", "tags": ["filesystem", "disk"]}

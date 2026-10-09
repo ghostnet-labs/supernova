@@ -1,0 +1,2759 @@
+#!/usr/bin/env python3
+# toolbox: agents codex sessions | Browse local Codex sessions, inspect live agents, and focus or resume a session.
+# toolbox-args: [--limit COUNT] [--live] [--all] [--json] [--watch|--tui] | --jump SESSION_ID
+# toolbox-example: codex-sessions --watch --limit 20
+# toolbox-example: codex-sessions --tui
+# toolbox-example: codex-sessions --json --live --all
+# toolbox-example: codex-sessions --jump SESSION_ID
+"""List local Codex sessions and install their macOS resume-link handler."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import io
+import json
+import os
+import re
+import shlex
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import uuid
+from collections import Counter
+from contextlib import closing
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, TextIO
+from urllib.parse import parse_qsl, urlparse
+from uuid import UUID
+
+
+# Shared with the native app; resolve symlinked PATH launchers back to this checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/agent-control-center"))
+from session_stream import JsonlCache, file_metadata, run_stream  # noqa: E402
+
+
+DEFAULT_LIMIT = 10
+DEFAULT_INTERVAL = 2
+APP_NAME = "Codex Resume.app"
+LSREGISTER = Path(
+    "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+    "LaunchServices.framework/Support/lsregister"
+)
+
+
+@dataclass
+class ReportOptions:
+    limit: int = DEFAULT_LIMIT
+    include_subagents: bool = False
+    verbose: bool = False
+    json_output: bool = False
+    stream_json: bool = False
+    live_only: bool = False
+    no_links: bool = False
+    watch: bool = False
+    tui: bool = False
+    interval: int = DEFAULT_INTERVAL
+    display_args: tuple[str, ...] = ()
+
+
+@dataclass
+class ReportCache:
+    """Parsed rollout rows retained between watch frames."""
+
+    rows: dict[Path, tuple[int, int, dict[str, object]]]
+    transcripts: JsonlCache = field(default_factory=JsonlCache)
+
+
+@dataclass(frozen=True)
+class LiveRollout:
+    """Host process and Zellij location currently holding a rollout open."""
+
+    pid: int
+    zellij_session: str = ""
+    zellij_pane_id: str = ""
+    tmux_socket: str = ""
+    tmux_pane: str = ""
+
+
+@dataclass(frozen=True)
+class TranscriptSession:
+    """Lightweight session-list record used by the transcript TUI."""
+
+    session_id: str
+    path: Path
+    cwd: str
+    title: str
+    updated_at: float
+    live: Optional[LiveRollout]
+    archived: bool
+    thread_source: str
+    model: str = ""
+    reasoning_effort: str = ""
+    git_branch: str = ""
+    started_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class TranscriptMessage:
+    """One user-visible message extracted from a rollout."""
+
+    role: str
+    text: str
+    timestamp: float
+    phase: str = ""
+
+
+class UsageError(Exception):
+    """Raised when a command-line invocation is invalid."""
+
+
+def build_help_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="codex-sessions",
+        description="List, inspect, and resume local Codex sessions in their recorded working directories.",
+        epilog=(
+            "Examples:\n"
+            "  codex-sessions\n"
+            "  codex-sessions --watch --limit 20\n"
+            "  codex-sessions --tui\n"
+            "  codex-sessions --json --live --all\n"
+            "  codex-sessions --jump SESSION_ID\n\n"
+            "Environment:\n"
+            "  CODEX_HOME             Override Codex home (default: ~/.codex)\n"
+            "  CODEX_SESSIONS_LINKS=0 Disable resume links"
+        ),
+        formatter_class=lambda prog: argparse.RawDescriptionHelpFormatter(prog, max_help_position=32),
+    )
+    parser.add_argument("-l", "--limit", metavar="COUNT", help="Number of sessions to show (default: 10).")
+    parser.add_argument("--all", action="store_true", help="Include subagent rollouts.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Show full session details.")
+    parser.add_argument("--json", action="store_true", help="Emit collected session data as JSON.")
+    parser.add_argument("--stream-json", action="store_true", help="Stream versioned JSON snapshots, including all history and archives (default interval: 5).")
+    parser.add_argument("--live", action="store_true", help="Include only sessions held open by a local Codex process.")
+    parser.add_argument("--jump", metavar="SESSION_ID", help="Show a live session's exact Ghostty window, tab, and pane, or resume it.")
+    parser.add_argument("--no-links", action="store_true", help="Render plain IDs instead of resume links.")
+    parser.add_argument("-w", "--watch", action="store_true", help="Refresh in a resize-safe terminal screen.")
+    parser.add_argument("--tui", action="store_true", help="Browse live and historical user/Codex messages interactively.")
+    parser.add_argument("-n", "--interval", metavar="SECONDS", help="Watch refresh interval (default: 2).")
+    parser.add_argument("--install-resume-handler", action="store_true", help="Install the macOS codex-resume:// handler.")
+    parser.add_argument("--force", action="store_true", help="Replace the installed handler (install only).")
+    return parser
+
+
+def print_usage(stream: TextIO = sys.stdout) -> None:
+    build_help_parser().print_help(file=stream)
+
+
+def positive_integer(option: str, value: Optional[str]) -> int:
+    if value is None or not re.fullmatch(r"[1-9][0-9]*", value):
+        raise UsageError(f"Error: {option} requires a positive integer")
+    return int(value)
+
+
+def parse_report_options(argv: list[str]) -> ReportOptions:
+    options = ReportOptions()
+    display_args: list[str] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument in {"-l", "--limit"}:
+            value = argv[index + 1] if index + 1 < len(argv) else None
+            options.limit = positive_integer(argument, value)
+            display_args.extend((argument, value or ""))
+            index += 2
+        elif argument == "--all":
+            options.include_subagents = True
+            display_args.append(argument)
+            index += 1
+        elif argument in {"-v", "--verbose"}:
+            options.verbose = True
+            display_args.append(argument)
+            index += 1
+        elif argument == "--json":
+            options.json_output = True
+            display_args.append(argument)
+            index += 1
+        elif argument == "--stream-json":
+            options.stream_json = True
+            index += 1
+        elif argument == "--live":
+            options.live_only = True
+            display_args.append(argument)
+            index += 1
+        elif argument == "--jump":
+            raise UsageError("--jump is a standalone action and cannot be combined with report options")
+        elif argument == "--no-links":
+            options.no_links = True
+            display_args.append(argument)
+            index += 1
+        elif argument in {"-w", "--watch"}:
+            options.watch = True
+            index += 1
+        elif argument == "--tui":
+            options.tui = True
+            index += 1
+        elif argument in {"-n", "--interval"}:
+            value = argv[index + 1] if index + 1 < len(argv) else None
+            options.interval = positive_integer(argument, value)
+            index += 2
+        elif argument in {"-h", "--help"}:
+            print_usage()
+            raise SystemExit(0)
+        else:
+            raise UsageError(f"Unknown argument: {argument}")
+    if options.stream_json:
+        if options.watch or options.tui or options.verbose or options.live_only or options.json_output:
+            raise UsageError("--stream-json cannot be combined with other output modes")
+        if "--interval" not in argv and "-n" not in argv:
+            options.interval = 5
+    options.display_args = tuple(display_args)
+    if options.live_only and not options.json_output:
+        raise UsageError("--live requires --json")
+    if options.tui and (options.watch or options.json_output or options.verbose):
+        raise UsageError("--tui cannot be combined with --watch, --json, or --verbose")
+    return options
+
+
+def read_metadata(path: Path) -> dict[str, object]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            first_line = stream.readline(1024 * 1024)
+        record = json.loads(first_line)
+        payload = record.get("payload")
+        if not isinstance(payload, dict):
+            return {}
+        if record.get("type") == "session_meta" and not payload.get("thread_source"):
+            # Codex 0.128 and older wrote no thread_source; only its subagents had an object source.
+            payload["thread_source"] = "subagent" if isinstance(payload.get("source"), dict) else "user"
+        return payload
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+
+
+def open_codex_rollout_paths(
+    sessions_dir: Path,
+    *,
+    ps_output: Optional[str] = None,
+    lsof_output: Optional[str] = None,
+) -> Optional[set[Path]]:
+    """Return rollout files held by live local Codex processes."""
+    if ps_output is None:
+        try:
+            completed = subprocess.run(
+                ["ps", "-ax", "-o", "pid=", "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode != 0:
+            return None
+        ps_output = completed.stdout
+
+    pids: list[str] = []
+    for line in ps_output.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, command = parts
+        command_parts = command.split()
+        if not command_parts or Path(command_parts[0]).name != "codex":
+            continue
+        pids.append(pid)
+    if not pids:
+        return set()
+
+    if lsof_output is None:
+        try:
+            completed = subprocess.run(
+                ["lsof", "-w", "-Fpn", "-p", ",".join(pids)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode != 0:
+            return None
+        lsof_output = completed.stdout
+
+    try:
+        resolved_sessions_dir = sessions_dir.resolve()
+    except OSError:
+        return None
+    paths_by_pid: dict[str, list[Path]] = {pid: [] for pid in pids}
+    current_pid = ""
+    for line in lsof_output.splitlines():
+        if line.startswith("p"):
+            current_pid = line[1:]
+            continue
+        if current_pid not in paths_by_pid or not line.startswith("n"):
+            continue
+        try:
+            path = Path(line[1:]).resolve()
+            path.relative_to(resolved_sessions_dir)
+        except (OSError, ValueError):
+            continue
+        if path.name.startswith("rollout-") and path.suffix == ".jsonl":
+            paths_by_pid[current_pid].append(path)
+
+    return {path for paths in paths_by_pid.values() for path in paths}
+
+
+def linux_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]:
+    """Map rollout files to owning Codex processes without spawning ps/lsof."""
+    proc = Path("/proc")
+    if sys.platform != "linux" or not proc.is_dir():
+        return None
+    try:
+        resolved_sessions_dir = sessions_dir.resolve()
+    except OSError:
+        return None
+    live: dict[Path, LiveRollout] = {}
+    try:
+        processes = list(proc.iterdir())
+    except OSError:
+        return None
+    for process in processes:
+        if not process.name.isdigit():
+            continue
+        try:
+            if (process / "comm").read_text(encoding="utf-8").strip() != "codex":
+                continue
+            environment = {
+                part.split(b"=", 1)[0].decode("utf-8", "replace"): part.split(b"=", 1)[1].decode("utf-8", "replace")
+                for part in (process / "environ").read_bytes().split(b"\0")
+                if b"=" in part
+            }
+            file_descriptors = list((process / "fd").iterdir())
+        except (OSError, IndexError):
+            continue
+        context = LiveRollout(
+            pid=int(process.name),
+            zellij_session=environment.get("ZELLIJ_SESSION_NAME", ""),
+            zellij_pane_id=environment.get("ZELLIJ_PANE_ID", ""),
+        )
+        for descriptor in file_descriptors:
+            try:
+                target = Path(os.readlink(descriptor)).resolve()
+                target.relative_to(resolved_sessions_dir)
+            except (OSError, ValueError):
+                continue
+            if target.name.startswith("rollout-") and target.suffix == ".jsonl":
+                live[target] = context
+    return live
+
+
+@dataclass(frozen=True)
+class CodexTui:
+    """An interactive Codex process attached to a terminal."""
+
+    context: LiveRollout
+    command: str
+    cwd: str
+    started_at: float
+
+
+def attribute_daemon_rollouts(
+    live: dict[Path, LiveRollout],
+    tuis: dict[int, CodexTui],
+    metadata_for=read_metadata,
+) -> dict[Path, LiveRollout]:
+    """Credit rollouts held by the Codex app-server daemon to the TUI showing them.
+
+    Newer Codex keeps rollouts open in a background daemon with no terminal, so the
+    holder says nothing about the pane. A TUI matches when `codex resume ID` names the
+    session, when it started in the session's directory within seconds of it, or when
+    it is the only unmatched TUI left in that directory.
+    """
+    tui_pids = set(tuis)
+    roots: dict[Path, dict[str, object]] = {}
+    children: dict[Path, str] = {}
+    for path, context in live.items():
+        if context.pid in tui_pids:
+            continue
+        metadata = metadata_for(path)
+        root_id = str(metadata.get("session_id") or "")
+        # Subagent and review threads share their root session's TUI.
+        if metadata.get("thread_source") != "user" and root_id and root_id != metadata.get("id"):
+            children[path] = root_id
+        else:
+            roots[path] = metadata
+    claimed: set[int] = set()
+    matched: dict[str, LiveRollout] = {}
+
+    def claim(path: Path, pid: int) -> None:
+        claimed.add(pid)
+        live[path] = tuis[pid].context
+        matched[str(roots[path].get("id") or "")] = tuis[pid].context
+
+    for path, metadata in roots.items():
+        session_id = str(metadata.get("id") or "")
+        named = [pid for pid, tui in tuis.items() if session_id and session_id in tui.command.split()]
+        if named:
+            claim(path, named[0])
+    for path, metadata in roots.items():
+        if str(metadata.get("id") or "") in matched:
+            continue
+        started = parse_start_timestamp(metadata.get("timestamp"), 0)
+        near = [
+            pid for pid, tui in tuis.items()
+            if pid not in claimed and tui.cwd == metadata.get("cwd") and abs(tui.started_at - started) <= 10
+        ]
+        if len(near) == 1:
+            claim(path, near[0])
+    unmatched = [path for path, metadata in roots.items() if str(metadata.get("id") or "") not in matched]
+    for path in unmatched:
+        cwd = roots[path].get("cwd")
+        same_cwd_roots = [other for other in unmatched if roots[other].get("cwd") == cwd]
+        same_cwd_tuis = [pid for pid, tui in tuis.items() if pid not in claimed and tui.cwd == cwd]
+        if len(same_cwd_roots) == 1 and len(same_cwd_tuis) == 1:
+            claim(path, same_cwd_tuis[0])
+    for path, root_id in children.items():
+        if root_id in matched:
+            live[path] = matched[root_id]
+    return live
+
+
+def darwin_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]:
+    """Map live Codex rollouts to tmux/Zellij targets on macOS."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        ps = subprocess.run(
+            ["ps", "eww", "-ax", "-o", "pid=", "-o", "tty=", "-o", "lstart=", "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if ps.returncode != 0:
+        return None
+    process_contexts: dict[str, LiveRollout] = {}
+    tui_candidates: dict[str, tuple[str, float]] = {}
+    for line in ps.stdout.splitlines():
+        parts = line.strip().split(None, 7)
+        if len(parts) != 8:
+            continue
+        pid, tty, command = parts[0], parts[1], parts[7]
+        command_head = command.split(None, 1)[0] if command else ""
+        if Path(command_head).name != "codex":
+            continue
+        environment = dict(re.findall(r"(?:^|\s)([A-Z_][A-Z0-9_]*)=(\S+)", command))
+        tmux_value = environment.get("TMUX", "")
+        process_contexts[pid] = LiveRollout(
+            pid=int(pid),
+            zellij_session=environment.get("ZELLIJ_SESSION_NAME", ""),
+            zellij_pane_id=environment.get("ZELLIJ_PANE_ID", ""),
+            tmux_socket=tmux_value.split(",", 1)[0] if tmux_value else "",
+            tmux_pane=environment.get("TMUX_PANE", ""),
+        )
+        if tty not in {"??", "-"} and "app-server" not in command.split():
+            try:
+                started = time.mktime(time.strptime(" ".join(parts[2:7]), "%a %b %d %H:%M:%S %Y"))
+            except ValueError:
+                started = 0.0
+            tui_candidates[pid] = (command, started)
+    if not process_contexts:
+        return {}
+    try:
+        completed = subprocess.run(
+            ["lsof", "-w", "-Fpfn", "-p", ",".join(process_contexts)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        reported = {line[1:] for line in completed.stdout.splitlines() if line.startswith("p")}
+        for pid in set(process_contexts) - reported:
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                return None
+            return None
+        if not reported:
+            return {}
+    try:
+        resolved_sessions_dir = sessions_dir.resolve()
+    except OSError:
+        return None
+    live: dict[Path, LiveRollout] = {}
+    cwds: dict[str, str] = {}
+    current_pid = current_fd = ""
+    for line in completed.stdout.splitlines():
+        if line.startswith("p"):
+            current_pid = line[1:]
+            continue
+        if line.startswith("f"):
+            current_fd = line[1:]
+            continue
+        context = process_contexts.get(current_pid)
+        if not context or not line.startswith("n"):
+            continue
+        if current_fd == "cwd":
+            cwds[current_pid] = line[1:]
+            continue
+        try:
+            target = Path(line[1:]).resolve()
+            target.relative_to(resolved_sessions_dir)
+        except (OSError, ValueError):
+            continue
+        if target.name.startswith("rollout-") and target.suffix == ".jsonl":
+            live[target] = context
+    tuis = {
+        int(pid): CodexTui(process_contexts[pid], command, cwds.get(pid, ""), started)
+        for pid, (command, started) in tui_candidates.items()
+    }
+    return attribute_daemon_rollouts(live, tuis)
+
+
+def live_rollouts(sessions_dir: Path, strict: bool = False) -> dict[Path, LiveRollout]:
+    """Return live rollout context with exact multiplexer targets when available."""
+    linux_result = linux_live_rollouts(sessions_dir)
+    if linux_result is not None:
+        return linux_result
+    darwin_result = darwin_live_rollouts(sessions_dir)
+    if darwin_result is not None:
+        return darwin_result
+    paths = open_codex_rollout_paths(sessions_dir)
+    if strict and paths is None:
+        raise RuntimeError("Cannot determine live Codex processes")
+    return {path: LiveRollout(pid=0) for path in paths or set()}
+
+
+def discover_transcript_sessions(codex_home: Path, include_subagents: bool = False) -> list[TranscriptSession]:
+    """Collect lightweight records for the interactive transcript browser."""
+    sessions_dir = codex_home / "sessions"
+    archived_dir = codex_home / "archived_sessions"
+    thread_index = load_thread_index(codex_home / "state_5.sqlite")
+    live_by_path = live_rollouts(sessions_dir)
+    sessions: list[TranscriptSession] = []
+    for root, archived in ((sessions_dir, False), (archived_dir, True)):
+        if not root.is_dir():
+            continue
+        for path in root.rglob("rollout-*.jsonl"):
+            metadata = read_metadata(path)
+            thread_source = str(metadata.get("thread_source") or "-")
+            if not metadata or (not include_subagents and thread_source != "user"):
+                continue
+            try:
+                rollout_stat = path.stat()
+                resolved_path = path.resolve()
+            except OSError:
+                continue
+            session_id = str(metadata.get("id") or metadata.get("session_id") or path.stem)
+            database_row = thread_index.get(session_id, {})
+            title = session_title(database_row) or session_id
+            git = metadata.get("git") if isinstance(metadata.get("git"), dict) else {}
+            sessions.append(
+                TranscriptSession(
+                    session_id=session_id,
+                    path=path,
+                    cwd=str(metadata.get("cwd") or database_row.get("cwd") or "-"),
+                    title=" ".join(title.split()),
+                    updated_at=rollout_stat.st_mtime,
+                    live=live_by_path.get(resolved_path),
+                    archived=archived,
+                    thread_source=thread_source,
+                    model=str(database_row.get("model") or metadata.get("model") or ""),
+                    reasoning_effort=str(database_row.get("reasoning_effort") or ""),
+                    git_branch=str(git.get("branch") or database_row.get("git_branch") or ""),
+                    started_at=parse_start_timestamp(metadata.get("timestamp"), rollout_stat.st_mtime),
+                )
+            )
+    sessions.sort(key=lambda session: (not bool(session.live), -session.updated_at, session.session_id))
+    return sessions
+
+
+def transcript_message(record: object, fallback_time: float) -> Optional[TranscriptMessage]:
+    """Extract one user-visible message from a JSONL record."""
+    if not isinstance(record, dict) or record.get("type") != "event_msg":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    event_type = payload.get("type")
+    role = "user" if event_type == "user_message" else "assistant" if event_type == "agent_message" else ""
+    message = payload.get("message")
+    if not role or not isinstance(message, str) or not message.strip():
+        return None
+    return TranscriptMessage(
+        role=role,
+        text=message.strip(),
+        timestamp=parse_start_timestamp(record.get("timestamp"), fallback_time),
+        phase=str(payload.get("phase") or ""),
+    )
+
+
+def read_transcript(path: Path, offset: int = 0) -> tuple[list[TranscriptMessage], int]:
+    """Read complete user/assistant events at or after offset, tolerating an active partial line."""
+    try:
+        rollout_stat = path.stat()
+        size = rollout_stat.st_size
+        if offset < 0 or offset > size:
+            offset = 0
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read()
+    except OSError:
+        return [], offset
+    if not data:
+        return [], offset
+    complete_size = len(data) if data.endswith(b"\n") else data.rfind(b"\n") + 1
+    messages: list[TranscriptMessage] = []
+    fallback_time = rollout_stat.st_mtime
+    for raw_line in data[:complete_size].splitlines():
+        if b'"event_msg"' not in raw_line or (
+            b'"user_message"' not in raw_line and b'"agent_message"' not in raw_line
+        ):
+            continue
+        try:
+            record = json.loads(raw_line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        message = transcript_message(record, fallback_time)
+        if message:
+            messages.append(message)
+    return messages, offset + complete_size
+
+
+def load_database_threads(path: Path) -> dict[str, dict[str, object]]:
+    if not path.is_file():
+        return {}
+    requested_columns = (
+        "cwd",
+        "git_sha",
+        "git_branch",
+        "git_origin_url",
+        "model",
+        "reasoning_effort",
+        "name",
+        "title",
+        "first_user_message",
+        "tokens_used",
+        "agent_nickname",
+        "agent_path",
+        "updated_at",
+        "recency_at",
+    )
+    try:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            available_columns = {str(row[1]) for row in connection.execute("pragma table_info(threads)")}
+            if "id" not in available_columns:
+                return {}
+            selected_columns = ["id"] + [
+                column if column in available_columns else f"NULL AS {column}"
+                for column in requested_columns
+            ]
+            rows = connection.execute(f"select {', '.join(selected_columns)} from threads").fetchall()
+    except sqlite3.Error:
+        return {}
+    return {row["id"]: dict(row) for row in rows}
+
+
+def load_thread_index(path: Path) -> dict[str, dict[str, object]]:
+    """Read metadata plus saved names, including installations without SQLite names."""
+    index = load_database_threads(path)
+    names: dict[str, str] = {}
+    try:
+        with path.with_name("session_index.jsonl").open("rb") as stream:
+            for line in stream:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue  # A concurrent append can leave an incomplete last line.
+                if not isinstance(entry, dict):
+                    continue
+                session_id, name = entry.get("id"), entry.get("thread_name")
+                if isinstance(session_id, str) and session_id and isinstance(name, str) and name.strip():
+                    names[session_id] = name
+    except OSError:
+        pass
+    for session_id, name in names.items():
+        row = index.setdefault(session_id, {})
+        if not str(row.get("name") or "").strip():
+            row["name"] = name
+    return index
+
+
+def session_title(row: dict[str, object]) -> str:
+    """Prefer a saved name; never use the unmodified first request as a title."""
+    name = " ".join(str(row.get("name") or "").split())
+    if name:
+        return name
+    title = " ".join(str(row.get("title") or "").split())
+    first_request = " ".join(str(row.get("first_user_message") or "").split())
+    return title if title != first_request else ""
+
+
+def local_time(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp).astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def compact_local_time(timestamp: float) -> str:
+    local = datetime.fromtimestamp(timestamp).astimezone()
+    return f"{local.month}/{local.day} {local:%H:%M}"
+
+
+def parse_start_timestamp(value: object, fallback: float) -> float:
+    if not isinstance(value, str):
+        return fallback
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return fallback
+
+
+def duration_text(seconds: float) -> str:
+    if seconds < 0:
+        return "-"
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = [f"{value}{suffix}" for value, suffix in ((days, "d"), (hours, "h"), (minutes, "m")) if value]
+    return " ".join(parts[:2]) or "0m"
+
+
+def number_text(value: object) -> str:
+    if value is None:
+        return "-"
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return "-"
+    if number >= 1_000_000_000:
+        return f"{number / 1_000_000_000:.2f}B"
+    if number >= 1_000_000:
+        return f"{number / 1_000_000:.2f}M"
+    if number >= 1_000:
+        return f"{number / 1_000:.1f}k"
+    return str(number)
+
+
+def header_details(cwd: str, parts: list[str], width: int) -> str:
+    """Join the session header's detail line, shortening only the path so the other parts stay whole."""
+    rest = " · ".join(part for part in parts if part)
+    if cwd:
+        room = max(12, width - (len(rest) + 3 if rest else 0))
+        # Keep the end of the path, the part that names the project: …/dev/supernova.
+        if len(cwd) > room:
+            cwd = "…" + cwd[-(room - 1):]
+    return compact_text(" · ".join(part for part in (cwd, rest) if part), width)
+
+
+def compact_text(value: object, width: int) -> str:
+    text = " ".join(str(value or "-").replace("\n", " ").split())
+    if len(text) <= width:
+        return text
+    if width <= 3:
+        return text[:width]
+    return text[: width - 3] + "..."
+
+
+def user_text(content: object) -> str:
+    if not isinstance(content, list):
+        return ""
+    texts = [
+        item.get("text", "")
+        for item in content
+        if isinstance(item, dict) and item.get("type") == "input_text"
+    ]
+    if not texts:
+        return ""
+    text = str(texts[-1]).strip()
+    for marker in ("</environment_context>", "</INSTRUCTIONS>"):
+        if marker in text:
+            text = text.rsplit(marker, 1)[-1].strip()
+    return " ".join(text.split())
+
+
+def current_state(
+    active_task_starts: dict[str, float],
+    last_terminal_state: Optional[tuple[str, float]],
+    session_started_at: float,
+) -> tuple[str, float]:
+    if active_task_starts:
+        return "open", min(active_task_starts.values())
+    if last_terminal_state:
+        return last_terminal_state
+    return "unknown", session_started_at
+
+
+def client_type(source: str) -> str:
+    return {
+        "cli": "CLI",
+        "codex-tui": "CLI",
+        "codex_cli_rs": "CLI",
+        "Codex Desktop": "APP",
+        "codex_work_desktop": "APP",
+        "subagent": "AGENT",
+        "vscode": "APP",
+    }.get(source, "OTHER")
+
+
+def session_status(liveness: str, state: str) -> str:
+    if liveness == "CLOSED":
+        return "CLOSED"
+    if liveness == "OPEN":
+        if state == "open":
+            return "BUSY"
+        if state in {"complete", "aborted"}:
+            return "WAITING"
+    return "UNKNOWN"
+
+
+class RolloutSummary:
+    def __init__(self, modified):
+        self.modified = modified
+        self.model = ""
+        self.effort = ""
+        self.records = self.user_turns = self.assistant_messages = self.reasoning_items = self.tool_calls = 0
+        self.task_starts = self.task_completes = self.aborted_turns = 0
+        self.active_task_starts: dict[str, float] = {}
+        self.last_terminal_state: Optional[tuple[str, float]] = None
+        self.requests: list[str] = []
+        self.latest_tokens: Optional[dict[str, object]] = None
+        self.context_used: Optional[int] = None
+        self.context_window: Optional[int] = None
+        self.last_record: dict[str, object] = {}
+
+    def consume(self, record, position):
+        self.records += 1
+        payload = record.get("payload")
+        self.last_record = {"type": record.get("type"), "payload": {"type": payload.get("type", "") if isinstance(payload, dict) else ""}}
+        if not isinstance(payload, dict):
+            return
+        if record.get("type") == "event_msg":
+            event_type = payload.get("type")
+            event_time = parse_start_timestamp(record.get("timestamp"), self.modified)
+            turn_id = str(payload.get("turn_id") or f"event-{self.records}")
+            if event_type == "task_started":
+                self.task_starts += 1
+                self.active_task_starts[turn_id] = event_time
+            elif event_type == "task_complete":
+                self.task_completes += 1
+                self.active_task_starts.pop(turn_id, None)
+                self.last_terminal_state = ("complete", event_time)
+            elif event_type == "turn_aborted":
+                self.aborted_turns += 1
+                self.active_task_starts.pop(turn_id, None)
+                self.last_terminal_state = ("aborted", event_time)
+            elif event_type == "token_count":
+                info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                token_info = info.get("total_token_usage")
+                if isinstance(token_info, dict):
+                    self.latest_tokens = token_info
+                # The last request's tokens are what the context currently holds.
+                last_usage = info.get("last_token_usage")
+                if isinstance(last_usage, dict) and isinstance(last_usage.get("total_tokens"), int):
+                    self.context_used = last_usage["total_tokens"]
+                if isinstance(info.get("model_context_window"), int):
+                    self.context_window = info["model_context_window"]
+            return
+        if record.get("type") == "turn_context":
+            self.model = payload.get("model") or self.model
+            self.effort = payload.get("effort") or payload.get("reasoning_effort") or self.effort
+        if record.get("type") != "response_item":
+            return
+        response_type = payload.get("type")
+        if response_type == "message":
+            if payload.get("role") == "user":
+                self.user_turns += 1
+                request = user_text(payload.get("content"))
+                if request:
+                    self.requests[:] = [self.requests[0], request] if self.requests else [request]
+            elif payload.get("role") == "assistant":
+                self.assistant_messages += 1
+        elif response_type == "reasoning":
+            self.reasoning_items += 1
+        elif response_type in {"custom_tool_call", "function_call"}:
+            self.tool_calls += 1
+
+
+def scan_rollout(
+    info: dict[str, object],
+    thread_index: dict[str, dict[str, object]],
+    agent_counts: Counter[str],
+    cache: Optional[JsonlCache] = None,
+) -> dict[str, object]:
+    metadata = info["metadata"]
+    rollout_path = info["path"]
+    rollout_stat = info["stat"]
+    if not isinstance(metadata, dict) or not isinstance(rollout_path, Path):
+        raise RuntimeError("invalid rollout metadata")
+    reader = cache or JsonlCache()
+    try:
+        summary = reader.read(rollout_path, lambda: RolloutSummary(rollout_stat.st_mtime), RolloutSummary.consume)
+    except OSError as error:
+        raise RuntimeError(f"could not read {rollout_path}: {error}") from error
+    records = summary.records
+    user_turns = summary.user_turns
+    assistant_messages = summary.assistant_messages
+    reasoning_items = summary.reasoning_items
+    tool_calls = summary.tool_calls
+    task_starts = summary.task_starts
+    task_completes = summary.task_completes
+    aborted_turns = summary.aborted_turns
+    active_task_starts = summary.active_task_starts
+    last_terminal_state = summary.last_terminal_state
+    requests = summary.requests
+    latest_tokens = summary.latest_tokens
+    context_used = summary.context_used
+    context_window = summary.context_window
+    last_record = summary.last_record
+    rollout_id = str(metadata.get("id") or metadata.get("session_id") or rollout_path.stem)
+    database_row = thread_index.get(rollout_id, {})
+    start_time = parse_start_timestamp(metadata.get("timestamp"), rollout_stat.st_mtime)
+    git = metadata.get("git") if isinstance(metadata.get("git"), dict) else {}
+    branch = git.get("branch") or database_row.get("git_branch") or ""
+    commit = git.get("commit_hash") or database_row.get("git_sha") or ""
+    remote = git.get("repository_url") or database_row.get("git_origin_url") or ""
+    git_summary = "-"
+    if branch:
+        git_summary = str(branch)
+        if commit:
+            git_summary += f"@{str(commit)[:12]}"
+    first_request = requests[0] if requests else database_row.get("first_user_message") or database_row.get("title") or ""
+    last_request = requests[-1] if requests else first_request
+    thread_source = str(metadata.get("thread_source") or "-")
+    source = "subagent" if isinstance(metadata.get("originator") or metadata.get("source"), dict) else str(metadata.get("originator") or metadata.get("source") or "-")
+    total_tokens = latest_tokens.get("total_tokens") if latest_tokens else database_row.get("tokens_used")
+    token_metrics = latest_tokens if thread_source != "subagent" else None
+    if thread_source == "subagent":
+        total_tokens = None
+    state, state_started_at = current_state(active_task_starts, last_terminal_state, start_time)
+    state_elapsed_seconds = max(0, time.time() - state_started_at)
+    return {
+        "rank": 0,
+        "session_id": rollout_id,
+        "title": session_title(database_row) or "-",
+        "root_session_id": metadata.get("session_id") or rollout_id,
+        "parent_thread_id": metadata.get("parent_thread_id"),
+        "thread_source": thread_source,
+        "last_activity": rollout_stat.st_mtime,
+        "last_activity_local": local_time(rollout_stat.st_mtime),
+        "last_activity_compact": compact_local_time(rollout_stat.st_mtime),
+        "started_at": start_time,
+        "started_at_local": local_time(start_time),
+        "started_at_compact": compact_local_time(start_time),
+        "wall_duration_seconds": max(0, rollout_stat.st_mtime - start_time),
+        "wall_duration": duration_text(rollout_stat.st_mtime - start_time),
+        "state": state,
+        "state_started_at": state_started_at,
+        "state_started_at_local": local_time(state_started_at),
+        "state_elapsed_seconds": state_elapsed_seconds,
+        "state_elapsed": duration_text(state_elapsed_seconds),
+        "last_record": f"{last_record.get('type', 'unknown')}/{last_record.get('payload', {}).get('type', '')}".rstrip("/"),
+        "cwd": metadata.get("cwd") or database_row.get("cwd") or "-",
+        "git_branch": branch or None,
+        "git_commit": commit or None,
+        "git_remote": remote or None,
+        "git_summary": git_summary,
+        "source": source,
+        "client_type": "AGENT" if thread_source == "subagent" else client_type(source),
+        "cli_version": metadata.get("cli_version") or "-",
+        "model": database_row.get("model") or summary.model or metadata.get("model") or "-",
+        "reasoning_effort": database_row.get("reasoning_effort") or summary.effort or "-",
+        "file_mib": round(rollout_stat.st_size / (1024 * 1024), 1),
+        "records": records,
+        "user_turns": user_turns,
+        "assistant_messages": assistant_messages,
+        "reasoning_items": reasoning_items,
+        "tool_calls": tool_calls,
+        "task_starts": task_starts,
+        "task_completes": task_completes,
+        "aborted_turns": aborted_turns,
+        "first_user_request": first_request or "-",
+        "last_user_request": last_request or "-",
+        "tokens_total": total_tokens,
+        "context_used_tokens": context_used,
+        "context_window_tokens": context_window,
+        "tokens_cached": token_metrics.get("cached_input_tokens") if token_metrics else None,
+        "tokens_output": token_metrics.get("output_tokens") if token_metrics else None,
+        "tokens_reasoning": token_metrics.get("reasoning_output_tokens") if token_metrics else None,
+        "subagent_rollouts": agent_counts[str(metadata.get("session_id") or rollout_id)],
+    }
+
+
+def cached_scan_rollout(
+    info: dict[str, object],
+    thread_index: dict[str, dict[str, object]],
+    agent_counts: Counter[str],
+    cache: Optional[ReportCache],
+) -> dict[str, object]:
+    """Return a fresh row, reusing an unchanged rollout scan in watch mode."""
+    rollout_path = info.get("path")
+    rollout_stat = info.get("stat")
+    if not isinstance(rollout_path, Path) or not isinstance(rollout_stat, os.stat_result):
+        raise RuntimeError("invalid rollout metadata")
+    cached = cache.rows.get(rollout_path) if cache else None
+    if cached and cached[:2] == ((rollout_stat.st_dev, rollout_stat.st_ino, rollout_stat.st_mtime_ns), rollout_stat.st_size):
+        row = dict(cached[2])
+    else:
+        row = scan_rollout(info, thread_index, agent_counts, cache.transcripts if cache else None)
+        if cache:
+            cache.rows[rollout_path] = ((rollout_stat.st_dev, rollout_stat.st_ino, rollout_stat.st_mtime_ns), rollout_stat.st_size, dict(row))
+    # Names can change without the transcript changing (for example after auto-titling).
+    row["title"] = session_title(thread_index.get(str(row["session_id"]), {})) or "-"
+    metadata = info.get("metadata")
+    if isinstance(metadata, dict):
+        row["subagent_rollouts"] = agent_counts[str(metadata.get("session_id") or row["session_id"])]
+    state_started_at = row.get("state_started_at")
+    if isinstance(state_started_at, (int, float)):
+        elapsed = max(0, time.time() - state_started_at)
+        row["state_elapsed_seconds"] = elapsed
+        row["state_elapsed"] = duration_text(elapsed)
+    return row
+
+
+def agent_task_label(metadata: dict[str, object], database_row: dict[str, object]) -> str:
+    nickname = str(metadata.get("agent_nickname") or database_row.get("agent_nickname") or "").strip()
+    path = str(metadata.get("agent_path") or database_row.get("agent_path") or "").strip()
+    if " the " in nickname:
+        nickname = nickname.split(" the ", 1)[0]
+    task = path.rstrip("/").rsplit("/", 1)[-1] if path else ""
+    return " · ".join(part for part in (nickname, task) if part) or "-"
+
+
+def latest_task_lifecycle(path: Path, fallback: float) -> Optional[tuple[str, float]]:
+    """Read the newest task lifecycle event without rescanning the whole rollout."""
+    event_states = {
+        "task_started": "active",
+        "task_complete": "idle",
+        "turn_aborted": "interrupted",
+    }
+    chunk_size = 256 * 1024
+    suffix = b""
+    try:
+        with path.open("rb") as stream:
+            position = stream.seek(0, os.SEEK_END)
+            while position:
+                start = max(0, position - chunk_size)
+                stream.seek(start)
+                parts = (stream.read(position - start) + suffix).split(b"\n")
+                if start:
+                    suffix = parts[0]
+                    candidates = parts[1:]
+                else:
+                    candidates = parts
+                for raw_line in reversed(candidates):
+                    if (
+                        b'"type":"event_msg"' not in raw_line
+                        or (b'"type":"task_' not in raw_line and b'"type":"turn_aborted"' not in raw_line)
+                    ):
+                        continue
+                    try:
+                        record = json.loads(raw_line)
+                    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    payload = record.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    state = event_states.get(str(payload.get("type")))
+                    if state:
+                        return state, parse_start_timestamp(record.get("timestamp"), fallback)
+                position = start
+    except OSError:
+        return None
+    return None
+
+
+def open_subagent_row(
+    info: dict[str, object],
+    thread_index: dict[str, dict[str, object]],
+    display_id: str,
+) -> Optional[dict[str, object]]:
+    metadata = info.get("metadata")
+    rollout_path = info.get("path")
+    rollout_stat = info.get("stat")
+    if not isinstance(metadata, dict) or not isinstance(rollout_path, Path) or not isinstance(rollout_stat, os.stat_result):
+        return None
+    session_id = str(metadata.get("id") or rollout_path.stem)
+    database_row = thread_index.get(session_id, {})
+    start_time = parse_start_timestamp(metadata.get("timestamp"), rollout_stat.st_mtime)
+    lifecycle = info.get("agent_lifecycle")
+    if not isinstance(lifecycle, tuple) or len(lifecycle) != 2:
+        return None
+    state, state_started_at = lifecycle
+    if state != "active" or not isinstance(state_started_at, float):
+        return None
+    git = metadata.get("git") if isinstance(metadata.get("git"), dict) else {}
+    branch = git.get("branch") or database_row.get("git_branch") or ""
+    commit = git.get("commit_hash") or database_row.get("git_sha") or ""
+    git_summary = str(branch) if branch else "-"
+    if commit:
+        git_summary += f"@{str(commit)[:12]}"
+    task_label = agent_task_label(metadata, database_row)
+    return {
+        "display_id": display_id,
+        "row_kind": "subagent",
+        "rank": 0,
+        "session_id": session_id,
+        "root_session_id": metadata.get("session_id") or "-",
+        "parent_thread_id": metadata.get("parent_thread_id"),
+        "thread_source": "subagent",
+        "last_activity": rollout_stat.st_mtime,
+        "last_activity_local": local_time(rollout_stat.st_mtime),
+        "last_activity_compact": compact_local_time(rollout_stat.st_mtime),
+        "started_at": start_time,
+        "started_at_local": local_time(start_time),
+        "started_at_compact": compact_local_time(start_time),
+        "wall_duration_seconds": None,
+        "wall_duration": "-",
+        "state": state,
+        "state_started_at": state_started_at,
+        "state_started_at_local": local_time(state_started_at),
+        "state_elapsed_seconds": max(0, time.time() - state_started_at),
+        "state_elapsed": duration_text(max(0, time.time() - state_started_at)),
+        "liveness": "OPEN",
+        "status": "ACTIVE",
+        "last_record": "-",
+        "cwd": metadata.get("cwd") or database_row.get("cwd") or "-",
+        "git_branch": branch or None,
+        "git_commit": commit or None,
+        "git_remote": git.get("repository_url") or database_row.get("git_origin_url") or None,
+        "git_summary": git_summary,
+        "source": "subagent",
+        "client_type": "AGENT",
+        "cli_version": metadata.get("cli_version") or "-",
+        "model": database_row.get("model") or metadata.get("model") or "-",
+        "reasoning_effort": database_row.get("reasoning_effort") or "-",
+        "file_mib": round(rollout_stat.st_size / (1024 * 1024), 1),
+        "records": None,
+        "user_turns": None,
+        "assistant_messages": None,
+        "reasoning_items": None,
+        "tool_calls": None,
+        "task_starts": None,
+        "task_completes": None,
+        "aborted_turns": None,
+        "first_user_request": "-",
+        "last_user_request": "-",
+        "table_detail": task_label,
+        "tokens_total": None,
+        "tokens_cached": None,
+        "tokens_output": None,
+        "tokens_reasoning": None,
+        "subagent_rollouts": None,
+    }
+
+
+def active_subagents_by_root(
+    files: list[dict[str, object]],
+    open_rollouts: Optional[set[Path]],
+) -> dict[str, list[dict[str, object]]]:
+    if open_rollouts is None:
+        return {}
+    paths: dict[Path, dict[str, object]] = {}
+    for info in files:
+        path = info.get("path")
+        if not isinstance(path, Path):
+            continue
+        try:
+            paths[path.resolve()] = info
+        except OSError:
+            continue
+    by_root: dict[str, list[dict[str, object]]] = {}
+    for path in open_rollouts:
+        info = paths.get(path)
+        metadata = info.get("metadata") if info else None
+        if not isinstance(metadata, dict) or metadata.get("thread_source") != "subagent":
+            continue
+        rollout_stat = info.get("stat")
+        if not isinstance(rollout_stat, os.stat_result):
+            continue
+        lifecycle = latest_task_lifecycle(path, rollout_stat.st_mtime)
+        if not lifecycle or lifecycle[0] != "active":
+            continue
+        root_session_id = metadata.get("session_id")
+        if root_session_id:
+            info = {**info, "agent_lifecycle": lifecycle}
+            by_root.setdefault(str(root_session_id), []).append(info)
+    return by_root
+
+
+def ordered_active_subagents(
+    root_session_id: str,
+    infos: list[dict[str, object]],
+) -> list[tuple[dict[str, object], str]]:
+    def metadata_for(info: dict[str, object]) -> dict[str, object]:
+        metadata = info.get("metadata")
+        return metadata if isinstance(metadata, dict) else {}
+
+    def session_id_for(info: dict[str, object]) -> str:
+        metadata = metadata_for(info)
+        path = info.get("path")
+        return str(metadata.get("id") or (path.stem if isinstance(path, Path) else ""))
+
+    def tree_session_id(session_id: str) -> str:
+        return f"{session_id[:4]}…{session_id[-4:]}" if len(session_id) > 8 else session_id
+
+    def sort_key(info: dict[str, object]) -> tuple[float, str]:
+        rollout_stat = info.get("stat")
+        fallback = rollout_stat.st_mtime if isinstance(rollout_stat, os.stat_result) else 0.0
+        return parse_start_timestamp(metadata_for(info).get("timestamp"), fallback), session_id_for(info)
+
+    by_id = {session_id_for(info): info for info in infos}
+    children: dict[str, list[dict[str, object]]] = {}
+    roots: list[dict[str, object]] = []
+    for info in infos:
+        parent = str(metadata_for(info).get("parent_thread_id") or root_session_id)
+        if parent == root_session_id or parent not in by_id:
+            roots.append(info)
+        else:
+            children.setdefault(parent, []).append(info)
+    roots.sort(key=sort_key)
+    for entries in children.values():
+        entries.sort(key=sort_key)
+
+    ordered: list[tuple[dict[str, object], str]] = []
+    seen: set[str] = set()
+
+    def visit(entries: list[dict[str, object]], prefix: str) -> None:
+        for index, info in enumerate(entries):
+            last = index == len(entries) - 1
+            session_id = session_id_for(info)
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            ordered.append((info, f"{prefix}{'└─' if last else '├─'}{tree_session_id(session_id)}"))
+            visit(children.get(session_id, []), prefix + ("  " if last else "│ "))
+
+    visit(roots, "")
+    return ordered
+
+
+def table_rows_with_active_subagents(
+    root_rows: list[dict[str, object]],
+    files: list[dict[str, object]],
+    open_rollouts: Optional[set[Path]],
+    thread_index: dict[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    subagents = active_subagents_by_root(files, open_rollouts)
+    table_rows: list[dict[str, object]] = []
+    for row in root_rows:
+        row["row_kind"] = "root"
+        row["display_id"] = str(row["session_id"])[:8]
+        table_rows.append(row)
+        for info, display_id in ordered_active_subagents(str(row["session_id"]), subagents.get(str(row["session_id"]), [])):
+            agent_row = open_subagent_row(info, thread_index, display_id)
+            if agent_row:
+                table_rows.append(agent_row)
+    return table_rows
+
+
+def metric_pair(row: dict[str, object], first_key: str, second_key: str) -> str:
+    first, second = row.get(first_key), row.get(second_key)
+    return f"{first}/{second}" if first is not None and second is not None else "-"
+
+
+def metric_triplet(row: dict[str, object], keys: tuple[str, str, str]) -> str:
+    values = [row.get(key) for key in keys]
+    return "/".join(str(value) for value in values) if all(value is not None for value in values) else "-"
+
+
+def relative_cwd(cwd: object) -> str:
+    text = str(cwd)
+    home = str(Path.home())
+    return "~" + text[len(home):] if text.startswith(home + os.sep) else text
+
+
+def resume_url(row: dict[str, object], tmux_socket: str, tmux_pane: str) -> Optional[str]:
+    if row["thread_source"] != "user":
+        return None
+    try:
+        session_id = str(uuid.UUID(str(row["session_id"])))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    cwd = row["cwd"]
+    if not isinstance(cwd, str) or not os.path.isabs(cwd) or not os.path.isdir(cwd):
+        return None
+    query: dict[str, str] = {"session": session_id, "cwd": cwd}
+    if tmux_socket and tmux_pane:
+        query["tmux_socket"] = tmux_socket
+        query["tmux_pane"] = tmux_pane
+    return "codex-resume://resume?" + urllib.parse.urlencode(query, quote_via=urllib.parse.quote)
+
+
+def terminal_hyperlink(url: str, text: str) -> str:
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+
+
+def highlight_scores(rows: list[dict[str, object]]) -> dict[str, int]:
+    root_rows = [row for row in rows if row.get("row_kind", "root") == "root"]
+    scores = {
+        "U/A": [int(row["user_turns"]) + int(row["assistant_messages"]) for row in root_rows],
+        "C/S/A": [int(row["task_completes"]) + int(row["task_starts"]) + int(row["aborted_turns"]) for row in root_rows],
+        "TOKENS": [int(row["tokens_total"] or 0) for row in root_rows],
+    }
+    return {column: max(values) for column, values in scores.items()}
+
+
+def row_score(row: dict[str, object], column: str) -> int:
+    if column == "U/A":
+        return int(row["user_turns"]) + int(row["assistant_messages"])
+    if column == "C/S/A":
+        return int(row["task_completes"]) + int(row["task_starts"]) + int(row["aborted_turns"])
+    if column == "TOKENS":
+        return int(row["tokens_total"] or 0)
+    raise ValueError(f"unsupported score column: {column}")
+
+
+def highlight(text: str) -> str:
+    return f"\033[1;33m{text}\033[0m"
+
+
+def render_table(rows: list[dict[str, object]], links_enabled: bool, color_enabled: bool, stream: TextIO) -> None:
+    terminal_width = int(os.environ.get("COLUMNS") or shutil.get_terminal_size((160, 24)).columns)
+    if terminal_width >= 180:
+        columns = [
+            ("ID", 14, lambda row: row.get("display_id", str(row["session_id"])[:8])), ("TYPE", 5, lambda row: row["client_type"]),
+            ("CREATED", 11, lambda row: row["started_at_compact"]), ("STATUS", 8, lambda row: row["status"]),
+            ("ELAPSED", 11, lambda row: row["state_elapsed"]),
+            ("CWD", 24, lambda row: relative_cwd(row["cwd"])), ("GIT", 22, lambda row: row["git_summary"]),
+            ("MODEL", 15, lambda row: row["model"]), ("U/A", 9, lambda row: metric_pair(row, "user_turns", "assistant_messages")),
+            ("C/S/A", 11, lambda row: metric_triplet(row, ("task_completes", "task_starts", "aborted_turns"))),
+            ("TOKENS", 10, lambda row: number_text(row["tokens_total"])),
+            ("TASK / LAST REQUEST", max(19, terminal_width - 151), lambda row: row.get("table_detail", row["last_user_request"])),
+        ]
+    elif terminal_width >= 160:
+        columns = [
+            ("ID", 14, lambda row: row.get("display_id", str(row["session_id"])[:8])), ("TYPE", 5, lambda row: row["client_type"]),
+            ("CREATED", 11, lambda row: row["started_at_compact"]), ("STATUS", 8, lambda row: row["status"]),
+            ("ELAPSED", 11, lambda row: row["state_elapsed"]),
+            ("CWD", 19, lambda row: relative_cwd(row["cwd"])), ("GIT", 20, lambda row: row["git_summary"]),
+            ("MODEL", 15, lambda row: row["model"]),
+            ("C/S/A", 11, lambda row: metric_triplet(row, ("task_completes", "task_starts", "aborted_turns"))),
+            ("TOKENS", 10, lambda row: number_text(row["tokens_total"])),
+            ("TASK / LAST REQUEST", max(19, terminal_width - 134), lambda row: row.get("table_detail", row["last_user_request"])),
+        ]
+    elif terminal_width >= 140:
+        columns = [
+            ("ID", 14, lambda row: row.get("display_id", str(row["session_id"])[:8])), ("CREATED", 11, lambda row: row["started_at_compact"]),
+            ("STATUS", 8, lambda row: row["status"]), ("ELAPSED", 11, lambda row: row["state_elapsed"]),
+            ("CWD", 26, lambda row: relative_cwd(row["cwd"])),
+            ("GIT", 20, lambda row: row["git_summary"]),
+            ("C/S/A", 11, lambda row: metric_triplet(row, ("task_completes", "task_starts", "aborted_turns"))),
+            ("TOKENS", 10, lambda row: number_text(row["tokens_total"])),
+            ("TASK / LAST REQUEST", max(19, terminal_width - 119), lambda row: row.get("table_detail", row["last_user_request"])),
+        ]
+    else:
+        columns = [
+            ("ID", 14, lambda row: row.get("display_id", str(row["session_id"])[:8])), ("CREATED", 11, lambda row: row["started_at_compact"]),
+            ("STATUS", 8, lambda row: row["status"]),
+            ("CWD", 20, lambda row: relative_cwd(row["cwd"])),
+            ("TASK / LAST REQUEST", max(20, terminal_width - 57), lambda row: row.get("table_detail", row["last_user_request"])),
+        ]
+    rendered_rows = [[compact_text(getter(row), width) for _, width, getter in columns] for row in rows]
+    widths = [max(len(header), *(len(row[index]) for row in rendered_rows)) for index, (header, _, _) in enumerate(columns)]
+    print(" ".join(f"{name:<{width}}" for (name, _, _), width in zip(columns, widths)).rstrip(), file=stream)
+    print(" ".join("-" * width for width in widths).rstrip(), file=stream)
+    id_index = next((index for index, (name, _, _) in enumerate(columns) if name == "ID"), None)
+    highest_scores = highlight_scores(rows)
+    tmux_environment = os.environ.get("TMUX", "")
+    tmux_socket = tmux_environment.split(",", 1)[0] if tmux_environment else ""
+    tmux_pane = os.environ.get("TMUX_PANE", "")
+    for raw_row, rendered_row in zip(rows, rendered_rows):
+        id_url: Optional[str] = None
+        if links_enabled and id_index is not None:
+            id_url = resume_url(raw_row, tmux_socket, tmux_pane)
+        cells = []
+        for index, (value, width) in enumerate(zip(rendered_row, widths)):
+            cell = f"{value:<{width}}"
+            if index == len(rendered_row) - 1:
+                cell = cell.rstrip()
+            column = columns[index][0]
+            if raw_row.get("row_kind", "root") == "root" and color_enabled and column in highest_scores and row_score(raw_row, column) == highest_scores[column]:
+                cell = highlight(cell)
+            if index == id_index and id_url:
+                cell = terminal_hyperlink(id_url, cell)
+            cells.append(cell)
+        print(" ".join(cells), file=stream)
+
+
+def render_details(rows: list[dict[str, object]], stream: TextIO) -> None:
+    for row in rows:
+        print(file=stream)
+        print(f"#{row['rank']}  {row['session_id']}  {row['status']}", file=stream)
+        print(f"  Started: {row['started_at_local']}  Last seen: {row['last_activity_local']}  Wall span: {row['wall_duration']}", file=stream)
+        print(f"  Lifecycle: {str(row['state']).upper()} since {row['state_started_at_local']} ({row['state_elapsed']})", file=stream)
+        print(f"  Source: {row['source']} {row['cli_version']}  Model: {row['model']}  Reasoning: {row['reasoning_effort']}", file=stream)
+        print(f"  CWD: {row['cwd']}", file=stream)
+        if row["git_branch"]:
+            print(f"  Git: {row['git_branch']} @ {row['git_commit'] or '-'}  {row['git_remote'] or ''}".rstrip(), file=stream)
+        print(f"  Log: {row['file_mib']:.1f} MiB, {row['records']:,} records, last record {row['last_record']}", file=stream)
+        print(f"  Messages: {row['user_turns']} user / {row['assistant_messages']} assistant; {row['reasoning_items']} reasoning; {row['tool_calls']:,} tool calls", file=stream)
+        print(f"  Tasks: {row['task_completes']}/{row['task_starts']} complete/started; {row['aborted_turns']} aborted; {row['subagent_rollouts']} subagent rollouts", file=stream)
+        token_parts = [f"total {number_text(row['tokens_total'])}"]
+        for label, key in (("cached", "tokens_cached"), ("output", "tokens_output"), ("reasoning", "tokens_reasoning")):
+            if row[key] is not None:
+                token_parts.append(f"{label} {number_text(row[key])}")
+        print("  Tokens: " + ", ".join(token_parts), file=stream)
+        print(f"  First request: {row['first_user_request']}", file=stream)
+        print(f"  Last request: {row['last_user_request']}", file=stream)
+
+
+def links_are_enabled(options: ReportOptions, output_is_tty: bool, force_links: bool) -> bool:
+    return not options.json_output and not options.no_links and os.environ.get("CODEX_SESSIONS_LINKS") != "0" and (output_is_tty or force_links or os.environ.get("CODEX_SESSIONS_LINKS") == "1")
+
+
+def report(
+    options: ReportOptions,
+    stream: TextIO,
+    error_stream: TextIO,
+    output_is_tty: bool,
+    force_links: bool = False,
+    cache: Optional[ReportCache] = None,
+) -> int:
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    sessions_dir = codex_home / "sessions"
+    db_path = codex_home / "state_5.sqlite"
+    if not sessions_dir.is_dir():
+        print(f"Error: Codex sessions directory not found at {sessions_dir}", file=error_stream)
+        return 1
+    files: list[dict[str, object]] = []
+    for path in sessions_dir.rglob("rollout-*.jsonl"):
+        try:
+            rollout_stat = path.stat()
+        except OSError:
+            continue
+        metadata = read_metadata(path)
+        if metadata:
+            files.append({"path": path, "stat": rollout_stat, "metadata": metadata})
+    if not files:
+        print(f"No Codex session rollouts found in {sessions_dir}", file=error_stream)
+        return 1
+    agent_counts: Counter[str] = Counter(
+        str(info["metadata"].get("session_id"))
+        for info in files
+        if isinstance(info["metadata"], dict) and info["metadata"].get("thread_source") == "subagent" and info["metadata"].get("session_id")
+    )
+    thread_index = load_thread_index(db_path)
+    live_contexts = live_rollouts(sessions_dir)
+    open_rollouts = set(live_contexts)
+    candidates = files if options.include_subagents else [info for info in files if isinstance(info["metadata"], dict) and info["metadata"].get("thread_source") == "user"]
+    if options.live_only:
+        live_paths = set(live_contexts)
+        filtered: list[dict[str, object]] = []
+        for info in candidates:
+            try:
+                if Path(info["path"]).resolve() in live_paths:
+                    filtered.append(info)
+            except OSError:
+                continue
+        candidates = filtered
+    candidates.sort(key=lambda info: info["stat"].st_mtime_ns, reverse=True)
+    rows: list[dict[str, object]] = []
+    for info in candidates:
+        if len(rows) >= options.limit:
+            break
+        try:
+            row = cached_scan_rollout(info, thread_index, agent_counts, cache)
+        except RuntimeError as error:
+            print(f"Warning: {error}", file=error_stream)
+            continue
+        row["rank"] = len(rows) + 1
+        if open_rollouts is not None:
+            try:
+                liveness = "OPEN" if Path(info["path"]).resolve() in open_rollouts else "CLOSED"
+            except OSError:
+                liveness = "UNKNOWN"
+        else:
+            liveness = "UNKNOWN"
+        row["liveness"] = liveness
+        row["status"] = session_status(liveness, str(row["state"]))
+        try:
+            context = live_contexts.get(Path(info["path"]).resolve())
+        except OSError:
+            context = None
+        row["live_pid"] = context.pid if context else None
+        row["zellij_session"] = context.zellij_session if context else ""
+        row["zellij_pane_id"] = context.zellij_pane_id if context else ""
+        row["tmux_socket"] = context.tmux_socket if context else ""
+        row["tmux_pane"] = context.tmux_pane if context else ""
+        rows.append(row)
+    if options.json_output:
+        json.dump(rows, stream, indent=2)
+        print(file=stream)
+        return 0
+    if not rows:
+        print("No readable Codex sessions found.", file=error_stream)
+        return 1
+    table_rows = rows if options.include_subagents else table_rows_with_active_subagents(rows, files, open_rollouts, thread_index)
+    open_subagent_count = len(table_rows) - len(rows)
+    scope = "top-level and subagent rollouts" if options.include_subagents else "top-level user sessions"
+    enabled_links = links_are_enabled(options, output_is_tty, force_links)
+    colors_enabled = output_is_tty
+    if options.include_subagents:
+        summary = f"{len(rows)} shown"
+    else:
+        summary = f"{len(rows)} roots shown, {open_subagent_count} active subagents"
+    print(f"Recent Codex {scope} (by last local activity; {summary})", file=stream)
+    print(file=stream)
+    render_table(table_rows, enabled_links, colors_enabled, stream)
+    print(file=stream)
+    print("TYPE: CLI is a terminal session, APP is a desktop or IDE session, and AGENT is a subagent. STATUS: CLOSED has no matching local Codex process; BUSY has an active task; WAITING has no active task. Nested AGENT rows follow /agent's active-thread concept: only child threads with an active latest task are shown. Completed threads held open by a Codex process are omitted. U/A is user/assistant messages; C/S/A is complete/started/aborted tasks. Nested U/A, C/S/A, and TOKENS values are unavailable without a reliable per-agent attribution. Top-level token totals are session-tree totals and include cached input. Elapsed is time in the current derived lifecycle state.", file=stream)
+    if enabled_links:
+        print("Clickable top-level IDs resume the session in its recorded CWD. Use --no-links or CODEX_SESSIONS_LINKS=0 for plain IDs.", file=stream)
+    if options.verbose:
+        render_details(rows, stream)
+    return 0
+
+
+def build_tui_app(options: ReportOptions):
+    """Build the optional Textual transcript browser without affecting report-only imports."""
+    try:
+        from pygments.style import Style as PygmentsStyle
+        from pygments.token import Comment, Generic, Keyword, Name, Number, Operator, Punctuation, String
+        from pygments.token import Text as PygmentsText
+        from rich import box
+        from rich.box import Box
+        from rich.console import Group
+        from rich.markdown import CodeBlock, Markdown
+        from rich.panel import Panel
+        from rich.syntax import PygmentsSyntaxTheme
+        from rich.syntax import Syntax
+        from rich.text import Text
+        from textual import events
+        from textual.app import App, ComposeResult
+        from textual.binding import Binding
+        from textual.containers import Horizontal, Vertical
+        from textual.widgets import Input, Label, ListItem, ListView, RichLog, Static
+    except ImportError as error:
+        raise RuntimeError("Textual is unavailable; run setup repair for the configured work environment") from error
+
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+
+    message_box = Box(
+        "╭   \n"
+        "│ │ \n"
+        "    \n"
+        "│ │ \n"
+        "    \n"
+        "    \n"
+        "│ │ \n"
+        "╰   "
+    )
+    class TokyoNightCodeStyle(PygmentsStyle):
+        background_color = None
+        styles = {
+            PygmentsText: "#c0caf5",
+            Comment: "italic #7f849c",
+            Keyword: "#bb9af7",
+            Name: "#c0caf5",
+            Name.Builtin: "#7aa2f7",
+            Name.Class: "#e0af68",
+            Name.Function: "#7aa2f7",
+            Number: "#ff9e64",
+            Operator: "#89ddff",
+            Punctuation: "#a9b1d6",
+            String: "#9ece6a",
+            Generic.Deleted: "#f7768e",
+            Generic.Heading: "bold #7aa2f7",
+            Generic.Inserted: "#9ece6a",
+        }
+
+    code_theme = PygmentsSyntaxTheme(TokyoNightCodeStyle)
+
+    class TranscriptCodeBlock(CodeBlock):
+        def __rich_console__(self, console, render_options):
+            syntax = Syntax(
+                str(self.text).rstrip(),
+                self.lexer_name,
+                theme=self.theme,
+                word_wrap=True,
+                padding=(0, 1),
+            )
+            yield Panel(
+                syntax,
+                box=box.ROUNDED,
+                border_style="#5f668f",
+                padding=0,
+            )
+
+    class TranscriptMarkdown(Markdown):
+        elements = {
+            **Markdown.elements,
+            "fence": TranscriptCodeBlock,
+            "code_block": TranscriptCodeBlock,
+        }
+
+    class SessionLabel:
+        def __init__(self, session: TranscriptSession, unread: int = 0) -> None:
+            self.session = session
+            self.unread = unread
+
+        def __rich_console__(self, console, render_options):
+            session = self.session
+            width = max(1, render_options.max_width)
+            marker = "●" if session.live else "◆" if session.archived else "○"
+            marker_style = "bold #9ece6a" if session.live else "#bb9af7" if session.archived else "#a9b1d6"
+            timestamp = compact_local_time(session.updated_at)
+            cwd = relative_cwd(session.cwd)
+            cwd = Path(cwd).name if cwd not in {"-", "~"} else cwd
+            cwd_width = max(1, width - len(timestamp) - 3)
+            first_line = Text.assemble(
+                (f"{marker} ", marker_style),
+                (compact_text(cwd, cwd_width), "bold #c0caf5"),
+            )
+            first_line.append(" " * max(1, width - first_line.cell_len - len(timestamp)))
+            first_line.append(timestamp, style="#a9b1d6")
+            yield first_line
+            badge_count = str(self.unread) if self.unread < 100 else "99+"
+            badge = f"●{badge_count}" if self.unread else ""
+            title_width = max(1, width - len(badge) - (1 if badge else 0))
+            title = Text(compact_text(session.title, title_width), style="#a9b1d6")
+            if badge:
+                title.append(" " * max(1, width - title.cell_len - len(badge)))
+                title.append(badge, style="bold #f7768e")
+            yield title
+
+    class SectionLabel:
+        def __init__(self, section: str) -> None:
+            self.section = section
+
+        def __rich_console__(self, console, render_options):
+            prefix = f"─ {self.section} "
+            yield Text(prefix + "─" * max(0, render_options.max_width - len(prefix)))
+
+    class SessionItem(ListItem):
+        def __init__(self, session: TranscriptSession, unread: int = 0) -> None:
+            self.session = session
+            self.unread = unread
+            super().__init__(Label(SessionLabel(session, unread)), classes="session-item")
+
+        def update_unread(self, unread: int) -> None:
+            self.unread = unread
+            self.query_one(Label).update(SessionLabel(self.session, unread))
+
+    class SessionSection(ListItem):
+        def __init__(self, label: str) -> None:
+            self.section = label
+            super().__init__(Label(SectionLabel(label)), classes="session-section", disabled=True)
+
+    class SessionEmptyState(ListItem):
+        def __init__(self) -> None:
+            super().__init__(
+                Label("◇  NO MATCHES\n   Try another filter"),
+                classes="empty-state",
+                disabled=True,
+            )
+
+    class SessionLoadingState(ListItem):
+        def __init__(self) -> None:
+            super().__init__(
+                Label("◌  LOADING SESSIONS\n   Reading local Codex history"),
+                classes="loading-state",
+                disabled=True,
+            )
+
+    class TranscriptLog(RichLog):
+        def pause_follow(self) -> None:
+            self.app.set_follow(False)
+
+        def update_scroll_feedback(self) -> None:
+            self.call_after_refresh(self.app.update_footer)
+
+        def _on_mouse_scroll_up(self, event: events.MouseScrollUp) -> None:
+            self.pause_follow()
+            super()._on_mouse_scroll_up(event)
+            self.update_scroll_feedback()
+
+        def _on_mouse_scroll_down(self, event: events.MouseScrollDown) -> None:
+            super()._on_mouse_scroll_down(event)
+            self.update_scroll_feedback()
+
+        def action_scroll_up(self) -> None:
+            self.pause_follow()
+            super().action_scroll_up()
+            self.update_scroll_feedback()
+
+        def action_scroll_down(self) -> None:
+            super().action_scroll_down()
+            self.update_scroll_feedback()
+
+        def action_page_up(self) -> None:
+            self.pause_follow()
+            super().action_page_up()
+            self.update_scroll_feedback()
+
+        def action_page_down(self) -> None:
+            super().action_page_down()
+            self.update_scroll_feedback()
+
+        def action_scroll_home(self) -> None:
+            self.pause_follow()
+            super().action_scroll_home()
+            self.update_scroll_feedback()
+
+        def action_scroll_end(self) -> None:
+            self.app.set_follow(True)
+            super().action_scroll_end()
+            self.update_scroll_feedback()
+
+    class CodexTranscriptApp(App[None]):
+        TITLE = "Codex Messages"
+        SUB_TITLE = "live and historical session transcripts"
+        CSS = """
+        Screen {
+            background: #1a1b26;
+            color: #c0caf5;
+        }
+        #body {
+            height: 1fr;
+        }
+        #sidebar {
+            width: 30%;
+            min-width: 34;
+            max-width: 46;
+            border-right: solid #5f668f;
+            background: #16161e;
+        }
+        #session-filter {
+            height: 2;
+            margin: 0 1;
+            border-bottom: solid #5f668f;
+            background: #16161e;
+        }
+        #session-filter:focus {
+            border-bottom: solid #7aa2f7;
+            background: #1a1b26;
+        }
+        #session-list, #transcript {
+            scrollbar-size-vertical: 1;
+            scrollbar-size-horizontal: 0;
+            scrollbar-color: #5f668f;
+            scrollbar-color-hover: #8992b3;
+            scrollbar-color-active: #7aa2f7;
+            scrollbar-background: transparent;
+            scrollbar-background-hover: transparent;
+            scrollbar-background-active: transparent;
+        }
+        #session-list {
+            height: 1fr;
+            background: #16161e;
+            background-tint: transparent;
+        }
+        .session-item {
+            height: 3;
+            padding: 0 1;
+            background: #16161e;
+        }
+        .session-item > Label {
+            width: 1fr;
+            text-wrap: nowrap;
+            text-overflow: ellipsis;
+        }
+        #session-list > .session-item.-hovered {
+            background: #24283b;
+        }
+        #session-list > .session-item.-highlight {
+            color: #c0caf5;
+            background: #2e3654;
+            border-left: tall #7aa2f7;
+            padding-left: 1;
+        }
+        .session-section {
+            height: 1;
+            padding: 0 2;
+            color: #7f849c;
+            background: #16161e;
+            text-style: bold;
+            opacity: 1;
+        }
+        .empty-state, .loading-state {
+            height: 4;
+            padding: 1 2;
+            color: #8992b3;
+            background: #16161e;
+        }
+        #main {
+            width: 1fr;
+        }
+        #session-header {
+            height: 3;
+            padding: 0 2;
+            border-bottom: solid #5f668f;
+            background: #16161e;
+        }
+        #transcript {
+            height: 1fr;
+            min-width: 0;
+            padding: 1 2;
+            background: #1a1b26;
+            background-tint: transparent;
+        }
+        #transcript-empty {
+            display: none;
+            height: 1fr;
+            padding: 0 2;
+            content-align: center middle;
+            background: #1a1b26;
+        }
+        #footer {
+            dock: bottom;
+            height: 1;
+            padding: 0 1;
+            background: #16161e;
+            color: #8992b3;
+        }
+        Screen.narrow #sidebar {
+            width: 1fr;
+            min-width: 0;
+            max-width: 100%;
+            border-right: none;
+        }
+        Screen.narrow #main {
+            display: none;
+            width: 1fr;
+        }
+        Screen.narrow.show-transcript #sidebar {
+            display: none;
+        }
+        Screen.narrow.show-transcript #main {
+            display: block;
+        }
+        Screen.follow-paused #transcript {
+            scrollbar-color: #ff9e64;
+        }
+        """
+        BINDINGS = [
+            Binding("q", "quit", "Quit"),
+            Binding("/", "focus_filter", "Filter"),
+            Binding("f", "toggle_follow", "Follow"),
+            Binding("r", "refresh_sessions", "Refresh"),
+            Binding("g", "goto_pane", "Go to pane"),
+            Binding("s", "show_sessions", "Sessions", show=False),
+            Binding("escape", "show_sessions", "Sessions", show=False),
+        ]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.theme = "tokyo-night"
+            self.scroll_sensitivity_y = 1.0
+            self.sessions: list[TranscriptSession] = []
+            self.visible_sessions: list[TranscriptSession] = []
+            self.selected: Optional[TranscriptSession] = None
+            self.selected_offset = 0
+            self.selected_size = 0
+            self.follow = True
+            self.unread_messages = 0
+            self.unread_by_session: dict[str, int] = {}
+            self.session_offsets: dict[str, int] = {}
+            self.session_sizes: dict[str, int] = {}
+            self.rendered_day = None
+            self.launch_cwd = os.getcwd()
+            self.layout_width = 0
+            self.transcript_resize_timer = None
+
+        def get_system_commands(self, screen):
+            yield from (command for command in super().get_system_commands(screen) if command.title != "Theme")
+
+        def compose(self) -> ComposeResult:
+            with Horizontal(id="body"):
+                with Vertical(id="sidebar"):
+                    yield Input(placeholder="Filter sessions  /", id="session-filter", compact=True)
+                    yield ListView(id="session-list")
+                with Vertical(id="main"):
+                    yield Static("Select a session", id="session-header")
+                    yield TranscriptLog(
+                        id="transcript",
+                        min_width=1,
+                        wrap=True,
+                        highlight=False,
+                        markup=False,
+                        auto_scroll=True,
+                        max_lines=50_000,
+                    )
+                    yield Static(id="transcript-empty")
+            yield Static(id="footer")
+
+        async def on_mount(self) -> None:
+            self.update_responsive_mode(self.size.width)
+            await self.reload_sessions()
+            self.update_footer()
+            self.set_interval(1.0, self.poll_selected)
+
+        def on_resize(self, event: events.Resize) -> None:
+            previous_width = self.layout_width
+            self.layout_width = event.size.width
+            self.update_responsive_mode(event.size.width)
+            if self.selected and previous_width and previous_width != event.size.width:
+                if self.transcript_resize_timer is not None:
+                    self.transcript_resize_timer.stop()
+                self.transcript_resize_timer = self.set_timer(0.12, self.reflow_transcript)
+
+        def reflow_transcript(self) -> None:
+            self.transcript_resize_timer = None
+            if not self.selected:
+                return
+            log = self.query_one("#transcript", TranscriptLog)
+            if log.region.width == 0:
+                return
+            scroll_ratio = float(log.scroll_y) / max(1.0, float(log.max_scroll_y))
+            self.load_session(self.selected)
+            if not self.follow:
+                self.call_after_refresh(self.restore_transcript_scroll, scroll_ratio)
+
+        def restore_transcript_scroll(self, scroll_ratio: float) -> None:
+            log = self.query_one("#transcript", TranscriptLog)
+            log.scroll_to(y=float(log.max_scroll_y) * scroll_ratio, animate=False)
+            self.call_after_refresh(self.update_footer)
+
+        @property
+        def is_narrow(self) -> bool:
+            return self.screen.has_class("narrow")
+
+        def update_responsive_mode(self, width: int) -> None:
+            narrow = width < 72
+            self.screen.set_class(narrow, "narrow")
+            if not narrow:
+                self.screen.remove_class("show-transcript")
+            if self.selected:
+                self.update_session_header()
+            if self.query("#footer"):
+                self.update_footer()
+
+        def update_footer(self) -> None:
+            footer = Text()
+
+            def add(key: str, label: str = "") -> None:
+                if footer:
+                    footer.append("  ")
+                keycap = key if self.is_narrow else f" {key} "
+                footer.append(keycap, style="bold #ff9e64 on #24283b")
+                if label:
+                    footer.append(f" {label}", style="#a9b1d6")
+
+            follow_label = "on" if self.follow else "paused"
+            if self.is_narrow:
+                add("q")
+                if self.screen.has_class("show-transcript"):
+                    add("s", "list")
+                    add("f", follow_label)
+                    add("r")
+                    add("g")
+                else:
+                    add("/", "filter")
+                    add("↵", "open")
+                    add("f", follow_label)
+                    add("r")
+            else:
+                add("q", "Quit")
+                add("/", "Filter")
+                add("f", "Following" if self.follow else "Paused")
+                add("r", "Refresh")
+                add("g", "Go to pane")
+            if self.unread_messages:
+                if footer:
+                    footer.append("  ")
+                unread_label = (
+                    f"↓{self.unread_messages}"
+                    if self.is_narrow
+                    else f"↓ {self.unread_messages} new"
+                )
+                footer.append(unread_label, style="bold #f7768e")
+            if not self.follow and self.selected:
+                log = self.query_one("#transcript", TranscriptLog)
+                scroll_limit = float(log.max_scroll_y)
+                scroll_percent = 100 if scroll_limit <= 0 else round(100 * float(log.scroll_y) / scroll_limit)
+                if footer:
+                    footer.append("  ")
+                footer.append(f"{scroll_percent}%", style="bold #e0af68")
+            self.query_one("#footer", Static).update(footer)
+
+        async def reload_sessions(self) -> None:
+            selected_id = self.selected.session_id if self.selected else ""
+            view = self.query_one("#session-list", ListView)
+            await view.clear()
+            await view.append(SessionLoadingState())
+            self.query_one("#session-header", Static).update("LOADING SESSIONS")
+            self.show_empty_transcript("◌  LOADING SESSIONS", "Reading local Codex history")
+            await asyncio.sleep(0)
+            self.sessions = discover_transcript_sessions(codex_home, options.include_subagents)
+            live_ids = {session.session_id for session in self.sessions if session.live}
+            self.unread_by_session = {
+                session_id: count
+                for session_id, count in self.unread_by_session.items()
+                if session_id in live_ids
+            }
+            for session in self.sessions:
+                if not session.live or session.session_id in self.session_sizes:
+                    continue
+                try:
+                    size = session.path.stat().st_size
+                except OSError:
+                    continue
+                self.session_offsets[session.session_id] = size
+                self.session_sizes[session.session_id] = size
+            if not selected_id:
+                preferred = next(
+                    (session for session in self.sessions if session.live and session.cwd == self.launch_cwd),
+                    None,
+                )
+                selected_id = preferred.session_id if preferred else ""
+            focus_list = not (self.is_narrow and self.screen.has_class("show-transcript"))
+            await self.populate_sessions(selected_id, focus_list=focus_list)
+
+        @staticmethod
+        def session_section(session: TranscriptSession) -> str:
+            if session.live:
+                return "LIVE"
+            if session.archived:
+                return "ARCHIVED"
+            return "HISTORY"
+
+        async def populate_sessions(self, selected_id: str = "", focus_list: bool = True) -> None:
+            query = self.query_one("#session-filter", Input).value.casefold().strip()
+            self.visible_sessions = [
+                session
+                for session in self.sessions
+                if not query
+                or query in session.session_id.casefold()
+                or query in session.cwd.casefold()
+                or query in session.title.casefold()
+                or (query == "live" and session.live is not None)
+            ]
+            section_order = {"LIVE": 0, "HISTORY": 1, "ARCHIVED": 2}
+            self.visible_sessions.sort(
+                key=lambda session: (section_order[self.session_section(session)], -session.updated_at)
+            )
+            view = self.query_one("#session-list", ListView)
+            await view.clear()
+            if not self.visible_sessions:
+                self.selected = None
+                self.unread_messages = 0
+                await view.append(SessionEmptyState())
+                self.query_one("#session-header", Static).update("NO MATCHES")
+                self.show_empty_transcript("◇  NO MATCHES", "Try another filter")
+                self.update_footer()
+                return
+            items: list[ListItem] = []
+            session_indexes: dict[str, int] = {}
+            previous_section = ""
+            for session in self.visible_sessions:
+                section = self.session_section(session)
+                if section != previous_section:
+                    items.append(SessionSection(section))
+                    previous_section = section
+                session_indexes[session.session_id] = len(items)
+                items.append(SessionItem(session, self.unread_by_session.get(session.session_id, 0)))
+            await view.extend(items)
+            selected_index = session_indexes.get(selected_id, 1)
+            view.index = selected_index
+            if focus_list:
+                view.focus()
+            selected_item = items[selected_index]
+            if isinstance(selected_item, SessionItem):
+                self.load_session(selected_item.session)
+
+        @staticmethod
+        def message_day_label(timestamp: float) -> str:
+            message_day = datetime.fromtimestamp(timestamp).astimezone().date()
+            today = datetime.now().astimezone().date()
+            if message_day == today:
+                return "TODAY"
+            if (today - message_day).days == 1:
+                return "YESTERDAY"
+            return message_day.strftime("%a · %b %d, %Y").replace(" 0", " ").upper()
+
+        def show_empty_transcript(self, title: str, hint: str) -> None:
+            log = self.query_one("#transcript", TranscriptLog)
+            log.clear()
+            log.display = False
+            empty = self.query_one("#transcript-empty", Static)
+            empty.update(Text.assemble((title, "bold #7aa2f7"), (f"\n{hint}", "#8992b3")))
+            empty.display = True
+
+        def show_transcript(self) -> None:
+            self.query_one("#transcript-empty", Static).display = False
+            self.query_one("#transcript", TranscriptLog).display = True
+
+        def render_message(self, message: TranscriptMessage) -> None:
+            log = self.query_one("#transcript", RichLog)
+            message_day = datetime.fromtimestamp(message.timestamp).astimezone().date()
+            if message_day != self.rendered_day:
+                self.rendered_day = message_day
+                day_label = self.message_day_label(message.timestamp)
+                rule_width = max(12, log.scrollable_content_region.width)
+                rule_prefix = f"── {day_label} "
+                date_rule = rule_prefix + "─" * max(0, rule_width - len(rule_prefix))
+                log.write(Text(date_rule, style="bold #7f849c"), scroll_end=self.follow)
+                log.write("", scroll_end=self.follow)
+            timestamp = datetime.fromtimestamp(message.timestamp).astimezone().strftime("%H:%M:%S")
+            if message.role == "user":
+                accent = "#bb9af7"
+                is_final = False
+                label = Text.assemble((timestamp, "#8992b3"), ("  YOU", f"bold {accent}"))
+            else:
+                is_final = message.phase == "final_answer"
+                accent = "#9ece6a" if is_final else "#7aa2f7"
+                phase = " · FINAL" if is_final else " · UPDATE" if message.phase == "commentary" else ""
+                label = Text.assemble(
+                    (timestamp, "#8992b3"),
+                    ("  CODEX", f"bold {accent}"),
+                    (phase, f"bold {accent}"),
+                )
+            body = TranscriptMarkdown(
+                message.text,
+                code_theme=code_theme,
+                inline_code_theme=code_theme,
+                style="#c0caf5",
+            )
+            panel = Panel(
+                Group(label, body),
+                box=message_box,
+                border_style=accent,
+                style="#c0caf5",
+                padding=(0, 1),
+            )
+            log.write(panel, scroll_end=self.follow)
+
+        def set_session_unread(self, session_id: str, unread: int) -> None:
+            if unread:
+                self.unread_by_session[session_id] = unread
+            else:
+                self.unread_by_session.pop(session_id, None)
+            for item in self.query(SessionItem):
+                if item.session.session_id == session_id:
+                    item.update_unread(unread)
+                    break
+
+        def update_session_header(self) -> None:
+            session = self.selected
+            if not session:
+                return
+            live = session.live
+            location = ""
+            if live and live.zellij_pane_id:
+                location = f"{live.zellij_session or 'zellij'}:{live.zellij_pane_id}"
+            state = "LIVE" if live else "ARCHIVED" if session.archived else "HISTORY"
+            state_marker = "●" if live else "◆" if session.archived else "○"
+            state_label = f"{state_marker} {state}"
+            state_style = "bold #9ece6a" if live else "bold #bb9af7" if session.archived else "bold #7aa2f7"
+            display_id = (
+                f"{session.session_id[:8]}…{session.session_id[-4:]}"
+                if len(session.session_id) > 13
+                else session.session_id
+            )
+            sidebar_width = self.query_one("#sidebar").region.width
+            header_width = self.size.width if self.is_narrow else max(1, self.size.width - sidebar_width)
+            title_width = max(12, header_width - len(state_label) - 6)
+            elapsed = ""
+            if session.started_at:
+                elapsed_end = time.time() if live else session.updated_at
+                elapsed = f"{duration_text(max(0, elapsed_end - session.started_at))} elapsed"
+            details = header_details(
+                relative_cwd(session.cwd) if session.cwd else "",
+                [
+                    f"git:{session.git_branch}" if session.git_branch else "",
+                    session.model,
+                    f"{session.reasoning_effort} reasoning" if session.reasoning_effort else "",
+                    elapsed,
+                    location,
+                    display_id,
+                ],
+                max(12, header_width - 4),
+            )
+            header = Text.assemble(
+                (state_label, state_style),
+                ("  ", ""),
+                (compact_text(session.title, title_width), "bold #c0caf5"),
+                (f"\n{details}", "#8992b3"),
+            )
+            self.query_one("#session-header", Static).update(header)
+
+        def load_session(self, session: TranscriptSession) -> None:
+            self.selected = session
+            log = self.query_one("#transcript", RichLog)
+            log.clear()
+            self.rendered_day = None
+            messages, self.selected_offset = read_transcript(session.path)
+            try:
+                self.selected_size = session.path.stat().st_size
+            except OSError:
+                self.selected_size = self.selected_offset
+            self.session_offsets[session.session_id] = self.selected_offset
+            self.session_sizes[session.session_id] = self.selected_size
+            self.update_session_header()
+            if not messages:
+                self.show_empty_transcript("◇  NO MESSAGES YET", "Waiting for user or Codex activity")
+                return
+            self.show_transcript()
+            for message in messages:
+                self.render_message(message)
+            if self.follow:
+                log.scroll_end(animate=False)
+
+        def poll_selected(self) -> None:
+            session = self.selected
+            if not session:
+                return
+            for candidate in self.sessions:
+                if not candidate.live or candidate.session_id == session.session_id:
+                    continue
+                try:
+                    candidate_size = candidate.path.stat().st_size
+                except OSError:
+                    continue
+                candidate_id = candidate.session_id
+                previous_size = self.session_sizes.get(candidate_id)
+                if previous_size is None:
+                    self.session_offsets[candidate_id] = candidate_size
+                    self.session_sizes[candidate_id] = candidate_size
+                    continue
+                if candidate_size == previous_size:
+                    continue
+                candidate_offset = self.session_offsets.get(candidate_id, previous_size)
+                if candidate_size < previous_size:
+                    self.session_offsets[candidate_id] = candidate_size
+                    self.session_sizes[candidate_id] = candidate_size
+                    self.set_session_unread(candidate_id, 0)
+                    continue
+                messages, new_offset = read_transcript(candidate.path, candidate_offset)
+                self.session_offsets[candidate_id] = new_offset
+                self.session_sizes[candidate_id] = candidate_size
+                if messages:
+                    self.set_session_unread(
+                        candidate_id,
+                        self.unread_by_session.get(candidate_id, 0) + len(messages),
+                    )
+            if session.live:
+                self.update_session_header()
+            try:
+                size = session.path.stat().st_size
+            except OSError:
+                return
+            if size == self.selected_size:
+                return
+            if size < self.selected_offset:
+                self.load_session(session)
+                return
+            messages, new_offset = read_transcript(session.path, self.selected_offset)
+            self.selected_offset = new_offset
+            self.selected_size = size
+            self.session_offsets[session.session_id] = new_offset
+            self.session_sizes[session.session_id] = size
+            if messages:
+                self.show_transcript()
+                if not self.follow:
+                    self.unread_messages += len(messages)
+                    self.set_session_unread(
+                        session.session_id,
+                        self.unread_by_session.get(session.session_id, 0) + len(messages),
+                    )
+                    self.update_footer()
+            for message in messages:
+                self.render_message(message)
+
+        def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+            if isinstance(event.item, SessionItem):
+                self.unread_messages = 0
+                self.set_session_unread(event.item.session.session_id, 0)
+                self.load_session(event.item.session)
+                self.update_footer()
+
+        def on_list_view_selected(self, event: ListView.Selected) -> None:
+            if isinstance(event.item, SessionItem):
+                self.unread_messages = 0
+                self.set_session_unread(event.item.session.session_id, 0)
+                self.load_session(event.item.session)
+                if self.is_narrow:
+                    self.screen.add_class("show-transcript")
+                    self.query_one("#transcript", TranscriptLog).focus()
+                    self.update_footer()
+                    # The transcript was hidden (zero width) while it loaded; wrap it again
+                    # once the narrow layout shows it.
+                    self.call_after_refresh(self.reflow_transcript)
+
+        async def on_input_changed(self, event: Input.Changed) -> None:
+            if event.input.id == "session-filter":
+                await self.populate_sessions(self.selected.session_id if self.selected else "", focus_list=False)
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            if event.input.id == "session-filter":
+                self.query_one("#session-list", ListView).focus()
+
+        def action_focus_filter(self) -> None:
+            self.action_show_sessions()
+            self.query_one("#session-filter", Input).focus()
+
+        def set_follow(self, enabled: bool) -> None:
+            self.follow = enabled
+            self.screen.set_class(not enabled, "follow-paused")
+            if enabled:
+                self.unread_messages = 0
+                if self.selected:
+                    self.set_session_unread(self.selected.session_id, 0)
+            log = self.query_one("#transcript", RichLog)
+            log.auto_scroll = self.follow
+            if self.follow:
+                log.scroll_end(animate=False)
+            self.update_footer()
+
+        def action_toggle_follow(self) -> None:
+            self.set_follow(not self.follow)
+            self.notify(f"Follow {'on' if self.follow else 'off'}")
+
+        def action_show_sessions(self) -> None:
+            if self.is_narrow:
+                self.screen.remove_class("show-transcript")
+            self.query_one("#session-list", ListView).focus()
+            self.update_footer()
+
+        async def action_refresh_sessions(self) -> None:
+            await self.reload_sessions()
+            self.notify(f"Refreshed {len(self.sessions)} sessions")
+
+        def action_goto_pane(self) -> None:
+            live = self.selected.live if self.selected else None
+            if not live or not live.zellij_pane_id:
+                self.notify("This session has no live Zellij pane", severity="warning")
+                return
+            zellij = shutil.which("zellij")
+            if not zellij:
+                self.notify("zellij is unavailable", severity="error")
+                return
+            environment = dict(os.environ)
+            if live.zellij_session:
+                environment["ZELLIJ_SESSION_NAME"] = live.zellij_session
+            pane_id = live.zellij_pane_id
+            if pane_id.isdigit():
+                pane_id = f"terminal_{pane_id}"
+            try:
+                completed = subprocess.run(
+                    [zellij, "action", "focus-pane-id", pane_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                    env=environment,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                self.notify(str(error), severity="error")
+                return
+            if completed.returncode:
+                self.notify(completed.stderr.strip() or "Could not focus pane", severity="error")
+
+    return CodexTranscriptApp()
+
+
+def run_tui(options: ReportOptions) -> int:
+    try:
+        app = build_tui_app(options)
+    except RuntimeError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    app.run()
+    return 0
+
+
+def watch(options: ReportOptions) -> int:
+    arguments = "".join(f" {shlex.quote(argument)}" for argument in options.display_args)
+    last_size: Optional[os.terminal_size] = None
+    first_frame = True
+    cache = ReportCache(rows={})
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+    try:
+        while True:
+            size = shutil.get_terminal_size((0, 0))
+            resized = first_frame or size != last_size
+            last_size = size
+            first_frame = False
+            captured = io.StringIO()
+            rc = report(
+                options,
+                captured,
+                captured,
+                True,
+                force_links=not options.no_links and os.environ.get("CODEX_SESSIONS_LINKS") != "0",
+                cache=cache,
+            )
+            prefix = "\033[?2026h\033[H" + ("\033[2J\033[3J" if resized else "\033[2K")
+            frame = f"{prefix}Every {options.interval}s: codex-sessions{arguments}    {time.ctime()}\033[K\n\033[K\n"
+            frame += captured.getvalue().replace("\n", "\033[K\n") + "\033[K\n"
+            if rc:
+                frame += f"\033[K\nExit status: {rc}\033[K\n"
+            sys.stdout.write(frame + "\033[J\033[?2026l")
+            sys.stdout.flush()
+            time.sleep(options.interval)
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        sys.stdout.write("\033[?25h")
+        sys.stdout.flush()
+
+
+HANDLER_SOURCE = r'''#import <AppKit/AppKit.h>
+
+@interface CodexResumeDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation CodexResumeDelegate
+
+- (void)application:(NSApplication *)application openURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    NSString *launcher = [[NSBundle mainBundle] pathForResource:@"codex-sessions" ofType:nil];
+    if (url == nil || launcher == nil) {
+        NSBeep();
+        [application terminate:nil];
+        return;
+    }
+    NSTask *task = [[NSTask alloc] init];
+    task.executableURL = [NSURL fileURLWithPath:launcher];
+    task.arguments = @[@"--resume-url", url.absoluteString];
+    task.standardOutput = [NSFileHandle fileHandleWithStandardError];
+    task.standardError = [NSFileHandle fileHandleWithStandardError];
+    @try {
+        [task launchAndReturnError:nil];
+        [task waitUntilExit];
+    } @catch (NSException *exception) {
+        NSBeep();
+    }
+    [application terminate:nil];
+}
+
+@end
+
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        NSApplication *application = [NSApplication sharedApplication];
+        CodexResumeDelegate *delegate = [[CodexResumeDelegate alloc] init];
+        application.delegate = delegate;
+        [application setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [application run];
+    }
+    return 0;
+}
+'''
+
+INFO_PLIST = '''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Codex Resume</string>
+  <key>CFBundleExecutable</key><string>CodexResume</string>
+  <key>CFBundleIdentifier</key><string>local.codex-resume</string>
+  <key>CFBundleName</key><string>Codex Resume</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>Codex Resume Link</string>
+    <key>CFBundleURLSchemes</key><array><string>codex-resume</string></array>
+  </dict></array>
+  <key>LSBackgroundOnly</key><true/>
+</dict></plist>
+'''
+
+
+def install_resume_handler(force: bool) -> int:
+    if sys.platform != "darwin":
+        print("Error: --install-resume-handler is supported only on macOS.", file=sys.stderr)
+        return 1
+    clang = shutil.which("clang")
+    if not clang:
+        print("Error: clang is required. Install Xcode Command Line Tools first.", file=sys.stderr)
+        return 1
+    if not LSREGISTER.is_file() or not os.access(LSREGISTER, os.X_OK):
+        print("Error: macOS LaunchServices registration tool was not found.", file=sys.stderr)
+        return 1
+    app_dir = Path.home() / "Applications" / APP_NAME
+    if app_dir.exists() and not force:
+        print(f"Error: {app_dir} already exists; re-run with --force to replace it.", file=sys.stderr)
+        return 1
+    source = Path(__file__).resolve()
+    if not source.is_file():
+        print(f"Error: cannot locate the standalone script at {source}", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory(prefix="codex-resume.") as temporary:
+        build_dir = Path(temporary)
+        handler = build_dir / "codex-resume-handler.m"
+        binary = build_dir / "CodexResume"
+        handler.write_text(HANDLER_SOURCE, encoding="utf-8")
+        try:
+            subprocess.run([clang, "-fobjc-arc", "-framework", "AppKit", str(handler), "-o", str(binary)], check=True)
+        except subprocess.CalledProcessError as error:
+            print(f"Error: failed to build the resume handler: {error}", file=sys.stderr)
+            return error.returncode or 1
+        staged_app = build_dir / APP_NAME
+        resources = staged_app / "Contents" / "Resources"
+        resources.mkdir(parents=True)
+        macos_dir = staged_app / "Contents" / "MacOS"
+        macos_dir.mkdir()
+        shutil.move(str(binary), macos_dir / "CodexResume")
+        launcher = resources / "codex-sessions"
+        shutil.copy2(source, launcher)
+        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        (staged_app / "Contents" / "Info.plist").write_text(INFO_PLIST, encoding="utf-8")
+        app_dir.parent.mkdir(parents=True, exist_ok=True)
+        if app_dir.exists():
+            shutil.rmtree(app_dir)
+        shutil.move(str(staged_app), app_dir)
+    subprocess.run([str(LSREGISTER), "-f", str(app_dir)], check=True)
+    print(f"Installed and registered {app_dir}")
+    print("Run codex-sessions from tmux, then Command-click a session ID to resume it in a right-side pane.")
+    return 0
+
+
+def fail_resume(message: str) -> None:
+    print(f"codex-sessions: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def command_path(name: str) -> str:
+    path = shutil.which(name)
+    if not path:
+        fail_resume(f"{name} is not on PATH")
+    return path
+
+
+def validate_socket(socket_text: str) -> Path:
+    uid = os.getuid()
+    prefixes = (f"/private/tmp/tmux-{uid}/", f"/tmp/tmux-{uid}/")
+    if not socket_text.startswith(prefixes):
+        fail_resume("tmux socket is outside this user's tmux directory")
+    socket_path = Path(socket_text)
+    try:
+        socket_stat = socket_path.stat()
+    except OSError:
+        fail_resume("tmux socket is unavailable")
+    if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != uid:
+        fail_resume("tmux socket is not an owned socket")
+    return socket_path
+
+
+def parse_resume_url(raw_url: str) -> tuple[str, Path, str, str]:
+    parsed = urlparse(raw_url)
+    if parsed.scheme != "codex-resume" or parsed.netloc != "resume" or parsed.path:
+        fail_resume("invalid Codex resume URL")
+    try:
+        pairs = parse_qsl(parsed.query, keep_blank_values=True, strict_parsing=True)
+    except ValueError:
+        fail_resume("invalid URL query")
+    query: dict[str, str] = {}
+    for key, value in pairs:
+        if key in query:
+            fail_resume(f"duplicate URL field: {key}")
+        query[key] = value
+    expected = {"session", "cwd", "tmux_socket", "tmux_pane"}
+    if set(query) - expected or not {"session", "cwd"}.issubset(query):
+        fail_resume("URL is missing required session information")
+    try:
+        session_id = str(UUID(query["session"]))
+    except (KeyError, ValueError):
+        fail_resume("invalid session UUID")
+    cwd = Path(query["cwd"])
+    if not cwd.is_absolute() or not cwd.is_dir():
+        fail_resume(f"recorded working directory is unavailable: {cwd}")
+    return session_id, cwd, query.get("tmux_socket", ""), query.get("tmux_pane", "")
+
+
+def launch_resume(raw_url: str) -> int:
+    session_id, cwd, tmux_socket, tmux_pane = parse_resume_url(raw_url)
+    os.environ["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    codex = command_path("codex")
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    if not os.path.isfile(shell) or not os.access(shell, os.X_OK):
+        shell = "/bin/zsh"
+    resume_command = f"cd {shlex.quote(str(cwd))} && exec {shlex.quote(codex)} resume {shlex.quote(session_id)}"
+    if tmux_socket or tmux_pane:
+        if not tmux_socket or not tmux_pane:
+            fail_resume("incomplete tmux target")
+        if not re.fullmatch(r"%[0-9]+", tmux_pane):
+            fail_resume("invalid tmux pane")
+        tmux = command_path("tmux")
+        validate_socket(tmux_socket)
+        pane_command = f"{shlex.quote(shell)} -lc {shlex.quote(resume_command)}"
+        subprocess.run([tmux, "-S", tmux_socket, "split-window", "-h", "-t", tmux_pane, "-c", str(cwd), pane_command], check=True)
+        return 0
+    subprocess.run(["/usr/bin/open", "-na", "Ghostty.app", "--args", "--window-save-state=never", f"--working-directory={cwd}", f"--initial-command={shlex.quote(shell)} -lic {shlex.quote(resume_command)}"], check=True)
+    return 0
+
+
+def show_terminal(pid: int, cwd: str) -> None:
+    """Raise the exact Ghostty window/tab/split showing PID, or at least Ghostty."""
+    if sys.platform != "darwin":
+        return
+    helper = Path(__file__).resolve().with_name("ghostty-focus")
+    found = None
+    if pid:
+        try:
+            found = subprocess.run([str(helper), "--pid", str(pid), "--cwd", cwd], capture_output=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            found = None
+    if not found or found.returncode:
+        subprocess.run(["/usr/bin/open", "-a", "Ghostty"], check=False)
+
+
+def jump_to_session(session_id: str) -> int:
+    """Focus a live multiplexer pane for SESSION_ID, or resume it in Ghostty."""
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    sessions = discover_transcript_sessions(codex_home, include_subagents=True)
+    session = next((candidate for candidate in sessions if candidate.session_id == session_id), None)
+    if not session:
+        fail_resume(f"session not found: {session_id}")
+    live = session.live
+    if live and live.zellij_pane_id:
+        zellij = command_path("zellij")
+        environment = dict(os.environ)
+        if live.zellij_session:
+            environment["ZELLIJ_SESSION_NAME"] = live.zellij_session
+        pane_id = live.zellij_pane_id
+        if pane_id.isdigit():
+            pane_id = f"terminal_{pane_id}"
+        completed = subprocess.run(
+            [zellij, "action", "focus-pane-id", pane_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+            env=environment,
+        )
+        if completed.returncode:
+            fail_resume(completed.stderr.strip() or "could not focus Zellij pane")
+        show_terminal(live.pid, session.cwd)
+        return 0
+    if live and live.tmux_socket and live.tmux_pane:
+        tmux = command_path("tmux")
+        validate_socket(live.tmux_socket)
+        completed = subprocess.run(
+            [tmux, "-S", live.tmux_socket, "select-window", "-t", live.tmux_pane, ";", "select-pane", "-t", live.tmux_pane],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if completed.returncode:
+            fail_resume(completed.stderr.strip() or "could not focus tmux pane")
+        show_terminal(live.pid, session.cwd)
+        return 0
+    if live:
+        # A background app-server can retain the rollout after its TUI exits.
+        # Only focus it when an actual terminal remains attached.
+        tty = subprocess.run(["ps", "-p", str(live.pid), "-o", "tty="], capture_output=True, text=True, check=False)
+        if tty.returncode == 0 and tty.stdout.strip() not in {"", "??", "-", "?"}:
+            show_terminal(live.pid, session.cwd)
+            return 0
+    cwd = Path(session.cwd)
+    if not cwd.is_dir():
+        fail_resume(f"recorded working directory is unavailable: {cwd}")
+    codex = command_path("codex")
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    resume_command = f"cd {shlex.quote(str(cwd))} && exec {shlex.quote(codex)} resume {shlex.quote(session_id)}"
+    if sys.platform == "darwin":
+        subprocess.run(["/usr/bin/open", "-na", "Ghostty.app", "--args", "--window-save-state=never", f"--working-directory={cwd}", f"--initial-command={shlex.quote(shell)} -lic {shlex.quote(resume_command)}"], check=True)
+        return 0
+    return subprocess.run([codex, "resume", session_id], cwd=cwd, check=False).returncode
+
+
+def stream_snapshots(options: ReportOptions) -> int:
+    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    transcripts = JsonlCache.persistent("codex", home)
+    metadata_cache = {}
+
+    def snapshot():
+        if not home.is_dir():
+            return {"health": "unavailable", "sessions": [], "active_subagents": []}
+        files = []
+        retained = set()
+        for directory, archived in ((home / "sessions", False), (home / "archived_sessions", True)):
+            for path in directory.rglob("rollout-*.jsonl"):
+                stat = path.stat()
+                retained.add(path)
+                stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                previous = metadata_cache.get(path)
+                # Metadata is immutable during appends, but replacement/truncation resets it.
+                append = previous and previous[0][:2] == stamp[:2] and stamp[2] > previous[0][2]
+                metadata = previous[1] if previous and (previous[0] == stamp or append) and previous[1] else read_metadata(path)
+                metadata_cache[path] = (stamp, metadata)
+                if metadata:
+                    files.append({"path": path, "stat": stat, "metadata": metadata, "archived": archived})
+        index = load_thread_index(home / "state_5.sqlite")
+        live = live_rollouts(home / "sessions", strict=True)
+        counts = Counter(str(info["metadata"].get("session_id")) for info in files if info["metadata"].get("thread_source") == "subagent")
+        roots, agents = {}, {}
+        for info in files:
+            row = scan_rollout(info, index, counts, transcripts)
+            path = info["path"]
+            context = live.get(path.resolve())
+            if row["title"] == "-":
+                row["title"] = " ".join(str(row["first_user_request"]).split())[:180] if row["first_user_request"] != "-" else row["session_id"]
+            row.update(file_metadata(path))
+            row.update(transcript_path=str(path), archived=info["archived"], context_window_is_estimated=False,
+                       liveness="OPEN" if context else "CLOSED", live_pid=context.pid if context else None,
+                       tmux_socket=context.tmux_socket if context else "", tmux_pane=context.tmux_pane if context else "",
+                       zellij_session=context.zellij_session if context else "", zellij_pane_id=context.zellij_pane_id if context else "")
+            row["status"] = session_status(row["liveness"], str(row["state"]))
+            if context and row["state"] == "aborted":
+                row["status"] = "INTERRUPTED"
+            if info["metadata"].get("thread_source") != "user":
+                if context and row["state"] == "open":
+                    row["table_detail"] = agent_task_label(info["metadata"], index.get(row["session_id"], {}))
+                    agents[row["session_id"]] = row
+            else:
+                previous = roots.get(row["session_id"])
+                if not previous or (previous["archived"] and not row["archived"]) or previous["last_activity"] < row["last_activity"]:
+                    roots[row["session_id"]] = row
+        transcripts.retain(retained)
+        for path in set(metadata_cache) - retained:
+            del metadata_cache[path]
+        return {"health": "ok", "sessions": sorted(roots.values(), key=lambda row: row["last_activity"], reverse=True),
+                "active_subagents": list(agents.values())}
+
+    return run_stream("codex", options.interval, snapshot)
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["--jump"]:
+        if len(argv) != 2:
+            fail_resume("usage: codex-sessions --jump SESSION_ID")
+        return jump_to_session(argv[1])
+    if argv[:1] == ["--resume-url"]:
+        if len(argv) != 2:
+            fail_resume("usage: codex-sessions --resume-url <codex-resume-url>")
+        return launch_resume(argv[1])
+    if "--install-resume-handler" in argv:
+        allowed = {"--install-resume-handler", "--force"}
+        if any(argument not in allowed for argument in argv):
+            raise UsageError("--install-resume-handler accepts only --force")
+        return install_resume_handler("--force" in argv)
+    options = parse_report_options(argv)
+    if options.stream_json:
+        return stream_snapshots(options)
+    if options.tui:
+        return run_tui(options)
+    return watch(options) if options.watch else report(options, sys.stdout, sys.stderr, sys.stdout.isatty())
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except UsageError as error:
+        print(error, file=sys.stderr)
+        build_help_parser().print_usage(file=sys.stderr)
+        raise SystemExit(1)

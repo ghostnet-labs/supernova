@@ -1,0 +1,29 @@
+# grep
+alias grep="grep --color=auto"
+alias egrep="grep -E --color=auto"
+alias fgrep="grep -F --color=auto"
+alias rg='rg --no-heading --hidden --smart-case'
+
+# ls with color (cross-platform)
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    alias ls="ls -G"
+else
+    alias ls="ls --color=auto"
+fi
+
+# bat command (bat colors only when writing to a terminal)
+alias bat='bat --style=plain --theme="gruvbox-dark"'
+
+# git aliases
+alias gl='git log --oneline --decorate --stat origin/main..HEAD'
+alias gs='git status -sb'
+alias gdnc='git diff --stat'
+alias gdnp='git diff --stat origin/main..HEAD'
+
+#alternatives
+#find
+alias fd='fd -uia'
+
+#kubenetes
+
+alias codex-sessions-app='codex_sessions_app'

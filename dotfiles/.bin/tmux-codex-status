@@ -1,0 +1,676 @@
+#!/usr/bin/env python3
+# toolbox: internal tmux codex | Internal tmux updater that tracks native Codex session state and elapsed time.
+# toolbox-args: [start|update]
+"""Keep compact Codex session badges on tmux windows."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+
+DEFAULT_INTERVAL = 10.0
+REGISTRATION_TIMEOUT = 1.0
+REGISTRATION_POLL_INTERVAL = 0.05
+STATUS_OPTION = "@codex_status"
+ELAPSED_OPTION = "@codex_elapsed"
+NATIVE_CLASS_OPTION = "@codex_native_class"
+NATIVE_SINCE_OPTION = "@codex_native_since"
+NATIVE_ELAPSED_OPTION = "@codex_native_elapsed"
+UPDATER_PID_OPTION = "@codex_status_updater_pid"
+COMMAND_TIMEOUT = 5
+NATIVE_BUSY_PATTERN = re.compile(r"^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]$")
+NATIVE_ACTION_PATTERN = re.compile(r"^\[ *[!.] *\] Action Required \|$")
+SERVER_INPUT_REQUEST_METHODS = frozenset(
+    {
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/permissions/requestApproval",
+        "item/tool/requestUserInput",
+        "mcpServer/elicitation/request",
+        "tool/requestUserInput",
+    }
+)
+SERVER_STATE_MARKERS = (
+    b"requestApproval",
+    b"requestUserInput",
+    b"elicitation/request",
+    b"serverRequest/resolved",
+    b"item/completed",
+)
+INPUT_PROMPT_PATTERN = re.compile(
+    r"\b(?:press\s+)?enter\s+to\s+(?:confirm|submit)\b.*\besc\s+to\s+cancel\b",
+    re.IGNORECASE,
+)
+
+
+class StatusError(Exception):
+    """Raised when live tmux or process information is unavailable."""
+
+
+@dataclass(frozen=True)
+class Pane:
+    pane_id: str
+    window_id: str
+    pane_index: int
+    active: bool
+    tty: str
+
+
+@dataclass(frozen=True)
+class NativePane:
+    pane_id: str
+    command: str
+    title: str
+    state_class: str
+    since: str
+    elapsed: str
+
+
+def help_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tmux-codex-status",
+        usage="tmux-codex-status [start|update]",
+        description="Track elapsed time for each tmux pane's native Codex session state.",
+        epilog=(
+            "Examples:\n"
+            "  tmux-codex-status start\n"
+            "  tmux-codex-status update\n\n"
+            "Environment:\n"
+            "  TMUX_CODEX_STATUS_INTERVAL  Refresh interval in seconds (default: 10)"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser._positionals.title = "Commands"
+    parser._optionals.title = "Options"
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="start",
+        metavar="{start,update}",
+        help="start the idempotent updater, or refresh elapsed clocks once",
+    )
+    return parser
+
+
+def command_path(name: str) -> str:
+    command = shutil.which(name)
+    if not command:
+        raise StatusError(f"required command is unavailable: {name}")
+    return command
+
+
+def run(command: list[str], *, allow_empty_failure: bool = False) -> str:
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=COMMAND_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise StatusError(str(error)) from error
+    if completed.returncode and not (allow_empty_failure and not completed.stdout):
+        detail = completed.stderr.strip() or f"exit status {completed.returncode}"
+        raise StatusError(detail)
+    return completed.stdout
+
+
+def tmux_socket_from_environment() -> Path:
+    value = os.environ.get("TMUX", "")
+    socket_text = value.split(",", 1)[0]
+    if not socket_text:
+        raise StatusError("TMUX does not identify a server socket")
+    socket_path = Path(socket_text)
+    try:
+        socket_stat = socket_path.stat()
+    except OSError as error:
+        raise StatusError(f"tmux socket is unavailable: {socket_path}") from error
+    if not stat.S_ISSOCK(socket_stat.st_mode) or socket_stat.st_uid != os.getuid():
+        raise StatusError(f"tmux socket is not owned by this user: {socket_path}")
+    return socket_path
+
+
+def tmux(socket_path: Path, *arguments: str, allow_empty_failure: bool = False) -> str:
+    return run(
+        [command_path("tmux"), "-S", str(socket_path), *arguments],
+        allow_empty_failure=allow_empty_failure,
+    )
+
+
+def normalize_tty(tty: str) -> str:
+    return tty.removeprefix("/dev/")
+
+
+def list_panes(socket_path: Path) -> tuple[list[Pane], dict[str, tuple[str, str]]]:
+    output = tmux(
+        socket_path,
+        "list-panes",
+        "-a",
+        "-F",
+        "#{pane_id}\t#{window_id}\t#{pane_index}\t#{pane_active}\t#{pane_tty}\t#{@codex_status}\t#{@codex_elapsed}",
+    )
+    panes: list[Pane] = []
+    existing: dict[str, tuple[str, str]] = {}
+    for line in output.splitlines():
+        fields = line.split("\t", 6)
+        if len(fields) != 7:
+            continue
+        pane_id, window_id, pane_index, active, tty, status_text, elapsed_text = fields
+        try:
+            index = int(pane_index)
+        except ValueError:
+            continue
+        panes.append(Pane(pane_id, window_id, index, active == "1", normalize_tty(tty)))
+        existing[window_id] = (status_text, elapsed_text)
+    return panes, existing
+
+
+def codex_pids_by_tty(pane_ttys: set[str]) -> dict[str, list[str]]:
+    if not pane_ttys:
+        return {}
+    output = run(
+        [command_path("ps"), "-ax", "-o", "pid=", "-o", "tty=", "-o", "comm="],
+    )
+    by_tty: dict[str, list[str]] = {}
+    for line in output.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3:
+            continue
+        pid, tty, executable = fields
+        executable_name = Path(executable).name
+        if tty in pane_ttys and (executable_name == "codex" or executable_name.startswith("codex-")):
+            by_tty.setdefault(tty, []).append(pid)
+    return by_tty
+
+
+def rollout_paths_by_pid(pids: list[str], sessions_dir: Path) -> dict[str, list[Path]]:
+    if not pids:
+        return {}
+    output = run(
+        [command_path("lsof"), "-w", "-Fpn", "-p", ",".join(pids)],
+        allow_empty_failure=True,
+    )
+    paths: dict[str, list[Path]] = {pid: [] for pid in pids}
+    current_pid = ""
+    for line in output.splitlines():
+        if line.startswith("p"):
+            current_pid = line[1:]
+            continue
+        if current_pid not in paths or not line.startswith("n"):
+            continue
+        path = Path(line[1:])
+        try:
+            path.relative_to(sessions_dir)
+        except ValueError:
+            continue
+        if path.name.startswith("rollout-") and path.suffix == ".jsonl":
+            paths[current_pid].append(path)
+    return paths
+
+
+def read_metadata(path: Path) -> dict[str, object]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as stream:
+            record = json.loads(stream.readline(1024 * 1024))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return {}
+    if record.get("type") == "session_meta" and not payload.get("thread_source"):
+        # Codex 0.128 and older wrote no thread_source; only its subagents had an object source.
+        payload["thread_source"] = "subagent" if isinstance(payload.get("source"), dict) else "user"
+    return payload
+
+
+def event_timestamp(value: object) -> Optional[float]:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def server_message(record: object) -> Optional[dict[str, object]]:
+    if not isinstance(record, dict):
+        return None
+    if isinstance(record.get("method"), str):
+        return record
+    payload = record.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("method"), str):
+        return payload
+    return None
+
+
+def identifier(value: object) -> Optional[str]:
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def compact_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    parts = [f"{value}{suffix}" for value, suffix in ((days, "d"), (hours, "h"), (minutes, "m")) if value]
+    return "".join(parts[:2]) or "0m"
+
+
+def native_state_class(command: str, title: str) -> str:
+    if not command.startswith("codex") or not title:
+        return ""
+    normalized_title = re.sub(r" [^ ]*$", "", title)
+    if NATIVE_ACTION_PATTERN.fullmatch(normalized_title):
+        return "ACTION"
+    if NATIVE_BUSY_PATTERN.fullmatch(normalized_title):
+        return "BUSY"
+    return "IDLE"
+
+
+def list_native_panes(socket_path: Path) -> list[NativePane]:
+    output = tmux(
+        socket_path,
+        "list-panes",
+        "-a",
+        "-F",
+        (
+            "#{pane_id}\t#{pane_current_command}\t#{pane_title}"
+            f"\t#{{{NATIVE_CLASS_OPTION}}}\t#{{{NATIVE_SINCE_OPTION}}}\t#{{{NATIVE_ELAPSED_OPTION}}}"
+        ),
+    )
+    panes: list[NativePane] = []
+    for line in output.splitlines():
+        fields = line.split("\t", 5)
+        if len(fields) == 6:
+            panes.append(NativePane(*fields))
+    return panes
+
+
+def apply_native_elapsed(socket_path: Path, *, now: Optional[float] = None) -> dict[str, tuple[str, str, str]]:
+    current_time = int(time.time() if now is None else now)
+    desired: dict[str, tuple[str, str, str]] = {}
+    commands: list[str] = []
+    for pane in list_native_panes(socket_path):
+        state_class = native_state_class(pane.command, pane.title)
+        since = current_time
+        if state_class and state_class == pane.state_class:
+            try:
+                candidate = int(pane.since)
+                if 0 <= candidate <= current_time:
+                    since = candidate
+            except ValueError:
+                pass
+        value = (
+            (state_class, str(since), compact_duration(current_time - since))
+            if state_class
+            else ("", "", "")
+        )
+        desired[pane.pane_id] = value
+        current = (pane.state_class, pane.since, pane.elapsed)
+        for option, current_part, value_part in zip(
+            (NATIVE_CLASS_OPTION, NATIVE_SINCE_OPTION, NATIVE_ELAPSED_OPTION), current, value
+        ):
+            if current_part == value_part:
+                continue
+            if commands:
+                commands.append(";")
+            commands.extend(("set-option", "-pq", "-t", pane.pane_id, option, value_part))
+    if commands:
+        tmux(socket_path, *commands)
+    return desired
+
+
+def latest_lifecycle(path: Path) -> tuple[str, Optional[float]]:
+    event_states = {
+        "task_started": "BUSY",
+        "task_complete": "WAITING",
+        "turn_aborted": "WAITING",
+    }
+    chunk_size = 256 * 1024
+    suffix = b""
+    tool_responses: dict[str, Optional[float]] = {}
+    resolved_requests: dict[str, Optional[float]] = {}
+    completed_items: dict[str, Optional[float]] = {}
+    busy_since: Optional[float] = None
+    try:
+        with path.open("rb") as stream:
+            position = stream.seek(0, os.SEEK_END)
+            while position:
+                start = max(0, position - chunk_size)
+                stream.seek(start)
+                parts = (stream.read(position - start) + suffix).split(b"\n")
+                if start:
+                    suffix = parts[0]
+                    candidates = parts[1:]
+                else:
+                    candidates = parts
+                for raw_line in reversed(candidates):
+                    if b'"method"' in raw_line and any(marker in raw_line for marker in SERVER_STATE_MARKERS):
+                        try:
+                            record = json.loads(raw_line)
+                        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                            continue
+                        message = server_message(record)
+                        if message is not None:
+                            method = message.get("method")
+                            params = message.get("params")
+                            params = params if isinstance(params, dict) else {}
+                            timestamp = event_timestamp(record.get("timestamp"))
+                            if method == "serverRequest/resolved":
+                                request_id = identifier(params.get("requestId"))
+                                if request_id is not None:
+                                    resolved_requests[request_id] = timestamp
+                                continue
+                            if method == "item/completed":
+                                item = params.get("item")
+                                if isinstance(item, dict):
+                                    item_id = identifier(item.get("id"))
+                                    if item_id is not None:
+                                        completed_items[item_id] = timestamp
+                                continue
+                            if method in SERVER_INPUT_REQUEST_METHODS:
+                                request_id = identifier(message.get("id")) or identifier(
+                                    params.get("requestId")
+                                )
+                                item_id = identifier(params.get("itemId"))
+                                resolved_at = None
+                                is_resolved = False
+                                if request_id is not None and request_id in resolved_requests:
+                                    resolved_at = resolved_requests[request_id]
+                                    is_resolved = True
+                                elif item_id is not None and item_id in completed_items:
+                                    resolved_at = completed_items[item_id]
+                                    is_resolved = True
+                                if is_resolved:
+                                    busy_since = resolved_at if busy_since is None else busy_since
+                                    continue
+                                return "INPUT", timestamp
+                    if b'"type":"response_item"' in raw_line:
+                        if b'"type":"function_call_output"' in raw_line or b'"type":"custom_tool_call_output"' in raw_line:
+                            try:
+                                record = json.loads(raw_line)
+                            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                                continue
+                            payload = record.get("payload")
+                            if isinstance(payload, dict) and payload.get("type") in {
+                                "function_call_output",
+                                "custom_tool_call_output",
+                            }:
+                                call_id = payload.get("call_id")
+                                if isinstance(call_id, str):
+                                    tool_responses[call_id] = event_timestamp(record.get("timestamp"))
+                            continue
+                        if b'"type":"function_call"' in raw_line and b'"name":"request_user_input"' in raw_line:
+                            try:
+                                record = json.loads(raw_line)
+                            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                                continue
+                            payload = record.get("payload")
+                            if not isinstance(payload, dict) or payload.get("type") != "function_call":
+                                continue
+                            if payload.get("name") != "request_user_input":
+                                continue
+                            call_id = payload.get("call_id")
+                            if not isinstance(call_id, str):
+                                continue
+                            if call_id in tool_responses:
+                                busy_since = tool_responses[call_id] if busy_since is None else busy_since
+                                continue
+                            return "INPUT", event_timestamp(record.get("timestamp"))
+                        if b'"type":"custom_tool_call"' in raw_line and b'"name":"exec"' in raw_line:
+                            try:
+                                record = json.loads(raw_line)
+                            except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                                continue
+                            payload = record.get("payload")
+                            if not isinstance(payload, dict) or payload.get("type") != "custom_tool_call":
+                                continue
+                            if payload.get("name") != "exec":
+                                continue
+                            call_id = payload.get("call_id")
+                            if not isinstance(call_id, str):
+                                continue
+                            if call_id in tool_responses:
+                                busy_since = tool_responses[call_id] if busy_since is None else busy_since
+                                continue
+                            return "APPROVAL", event_timestamp(record.get("timestamp"))
+                    if b'"type":"event_msg"' not in raw_line:
+                        continue
+                    if not any(marker in raw_line for marker in (b'"type":"task_', b'"type":"turn_aborted"')):
+                        continue
+                    try:
+                        record = json.loads(raw_line)
+                    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                    payload = record.get("payload")
+                    if isinstance(payload, dict):
+                        state = event_states.get(str(payload.get("type")))
+                        if state:
+                            timestamp = event_timestamp(record.get("timestamp"))
+                            if state == "BUSY" and busy_since is not None:
+                                timestamp = busy_since
+                            return state, timestamp
+                position = start
+    except OSError:
+        pass
+    if busy_since is not None:
+        return "BUSY", busy_since
+    return "UNKNOWN", None
+
+
+def root_rollout(paths: list[Path]) -> Optional[Path]:
+    candidates: list[tuple[int, Path]] = []
+    for path in set(paths):
+        metadata = read_metadata(path)
+        if metadata.get("thread_source") != "user":
+            continue
+        try:
+            modified = path.stat().st_mtime_ns
+        except OSError:
+            continue
+        candidates.append((modified, path))
+    if not candidates:
+        return None
+    return max(candidates)[1]
+
+
+def pane_waits_for_approval(socket_path: Path, pane_id: str) -> bool:
+    try:
+        visible_text = tmux(socket_path, "capture-pane", "-p", "-t", pane_id)
+    except StatusError:
+        return False
+    normalized = " ".join(visible_text.split())
+    return INPUT_PROMPT_PATTERN.search(normalized) is not None
+
+
+def desired_statuses(socket_path: Path, panes: list[Pane]) -> dict[str, tuple[str, str]]:
+    pane_ttys = {pane.tty for pane in panes if pane.tty}
+    pids_by_tty = codex_pids_by_tty(pane_ttys)
+    all_pids = sorted({pid for pids in pids_by_tty.values() for pid in pids}, key=int)
+    paths_by_pid = rollout_paths_by_pid(all_pids, Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions")
+    choices: dict[str, list[tuple[bool, int, str, str]]] = {}
+    for pane in panes:
+        paths = [path for pid in pids_by_tty.get(pane.tty, []) for path in paths_by_pid.get(pid, [])]
+        path = root_rollout(paths)
+        if not path:
+            continue
+        state, started_at = latest_lifecycle(path)
+        if state == "APPROVAL":
+            state = "INPUT" if pane_waits_for_approval(socket_path, pane.pane_id) else "BUSY"
+        elapsed = compact_duration(time.time() - started_at) if started_at is not None else ""
+        choices.setdefault(pane.window_id, []).append((pane.active, pane.pane_index, state, elapsed))
+    return {
+        window_id: sorted(entries, key=lambda entry: (not entry[0], entry[1]))[0][2:]
+        for window_id, entries in choices.items()
+    }
+
+
+def apply_statuses(socket_path: Path) -> dict[str, tuple[str, str]]:
+    panes, existing = list_panes(socket_path)
+    desired = desired_statuses(socket_path, panes)
+    commands: list[str] = []
+    for window_id in sorted(existing):
+        current = existing[window_id]
+        value = desired.get(window_id, ("", ""))
+        for option, current_part, value_part in zip((STATUS_OPTION, ELAPSED_OPTION), current, value):
+            if current_part == value_part:
+                continue
+            if commands:
+                commands.append(";")
+            commands.extend(("set-option", "-wq", "-t", window_id, option, value_part))
+    if commands:
+        tmux(socket_path, *commands)
+    return desired
+
+
+def configured_interval() -> float:
+    raw_value = os.environ.get("TMUX_CODEX_STATUS_INTERVAL", str(DEFAULT_INTERVAL))
+    try:
+        interval = float(raw_value)
+    except ValueError as error:
+        raise StatusError("TMUX_CODEX_STATUS_INTERVAL must be a number") from error
+    if interval < 1:
+        raise StatusError("TMUX_CODEX_STATUS_INTERVAL must be at least 1 second")
+    return interval
+
+
+def updater_is_running(pid_text: str) -> bool:
+    try:
+        pid = int(pid_text)
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    try:
+        command = run([command_path("ps"), "-p", str(pid), "-o", "command="])
+    except StatusError:
+        return False
+    return str(Path(__file__).resolve()) in command and "_native_watch" in command
+
+
+def registered_updater_pid(socket_path: Path) -> str:
+    return tmux(
+        socket_path,
+        "show-option",
+        "-gqv",
+        UPDATER_PID_OPTION,
+        allow_empty_failure=True,
+    ).strip()
+
+
+def owns_updater_registration(socket_path: Path) -> bool:
+    return registered_updater_pid(socket_path) == str(os.getpid())
+
+
+def await_updater_registration(socket_path: Path) -> bool:
+    deadline = time.monotonic() + REGISTRATION_TIMEOUT
+    while True:
+        owner = registered_updater_pid(socket_path)
+        if owner:
+            return owner == str(os.getpid())
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(REGISTRATION_POLL_INTERVAL, remaining))
+
+
+def clear_updater_registration(socket_path: Path) -> None:
+    try:
+        owner_format = f"#{{==:#{{{UPDATER_PID_OPTION}}},{os.getpid()}}}"
+        tmux(
+            socket_path,
+            "if-shell",
+            "-F",
+            owner_format,
+            f"set-option -guq {UPDATER_PID_OPTION}",
+            allow_empty_failure=True,
+        )
+    except StatusError:
+        pass
+
+
+def start_updater(socket_path: Path) -> int:
+    current_pid = registered_updater_pid(socket_path)
+    if current_pid and updater_is_running(current_pid):
+        return 0
+    watcher = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "_native_watch", str(socket_path)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+    tmux(socket_path, "set-option", "-gq", UPDATER_PID_OPTION, str(watcher.pid))
+    return 0
+
+
+def watch(socket_path: Path) -> int:
+    stopping = False
+
+    def request_stop(_signum: int, _frame: object) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
+    interval = configured_interval()
+    try:
+        if not await_updater_registration(socket_path):
+            return 0
+        while not stopping:
+            if not owns_updater_registration(socket_path):
+                break
+            started = time.monotonic()
+            try:
+                apply_native_elapsed(socket_path)
+            except StatusError:
+                if not socket_path.exists():
+                    break
+            remaining = interval - (time.monotonic() - started)
+            if remaining > 0:
+                time.sleep(remaining)
+    finally:
+        clear_updater_registration(socket_path)
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["_native_watch"]:
+        if len(argv) != 2:
+            raise StatusError("internal watcher requires a tmux socket")
+        return watch(Path(argv[1]))
+    parser = help_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.command not in {"start", "update"}:
+        parser.error(f"unknown command: {arguments.command}")
+    socket_path = tmux_socket_from_environment()
+    if arguments.command == "start":
+        return start_updater(socket_path)
+    apply_native_elapsed(socket_path)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main(sys.argv[1:]))
+    except StatusError as error:
+        print(f"tmux-codex-status: {error}", file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,15 @@
+#!/bin/sh
+# setup-help: none (opened from a Zellij keybinding)
+# toolbox: internal zellij terminal | Internal Zellij keybinding helper that asks before closing the current tab.
+
+set -eu
+
+printf 'Close current tab? [y/N] '
+answer=
+IFS= read -r answer || :
+
+case $answer in
+    y|Y|yes|Yes|YES)
+        exec zellij action close-tab
+        ;;
+esac
