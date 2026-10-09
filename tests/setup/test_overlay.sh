@@ -68,12 +68,14 @@ assert_not_contains "$on_output" 'Warning'
 login_output="$(sandbox_zsh -l -c 'print -r -- "zprofile=${ACME_ZPROFILE:-none}"')"
 assert_contains "$login_output" 'zprofile=1'
 
+# tmux can live outside the minimal PATH, such as /opt/homebrew/bin on Apple
+# Silicon, so keep its directory first.
 tmux_option() { # tmux_option WORK_DIR_VALUE OPTION
   local socket="overlay-test-$$-$RANDOM"
-  env -i HOME="$SANDBOX_HOME" PATH="/usr/local/bin:/usr/bin:/bin" TERM=xterm WORK_DIR="$1" \
-    tmux -L "$socket" -f "$SANDBOX_HOME/.tmux.conf" new-session -d \; show -gqv "$2" \; kill-server 2>&1 || true
+  env -i HOME="$SANDBOX_HOME" PATH="${tmux_bin%/*}:/usr/local/bin:/usr/bin:/bin" TERM=xterm WORK_DIR="$1" \
+    "$tmux_bin" -L "$socket" -f "$SANDBOX_HOME/.tmux.conf" new-session -d \; show -gqv "$2" \; kill-server 2>&1 || true
 }
-if command -v tmux >/dev/null 2>&1; then
+if tmux_bin="$(command -v tmux)"; then
   assert_equals "$(tmux_option "$WORK_DIR" @acme_overlay)" 'yes'
   assert_equals "$(tmux_option "$WORK_DIR" @setup_dashboard)" 'acme'
 else
