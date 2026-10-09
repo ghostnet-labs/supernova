@@ -95,6 +95,8 @@ fzf_setup() {
     if [[ -n "$fzf_bin" ]]; then
         _fzf_cache="$HOME/.cache/fzf-init.zsh"
         if [[ ! -f "$_fzf_cache" || "$fzf_bin" -nt "$_fzf_cache" ]]; then
+            # A fresh home has no ~/.cache yet.
+            mkdir -p "${_fzf_cache:h}"
             fzf --zsh > "$_fzf_cache"
         fi
         source "$_fzf_cache"
