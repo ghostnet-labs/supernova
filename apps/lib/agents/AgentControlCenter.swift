@@ -206,6 +206,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static var applyActivationPolicy: (NSApplication.ActivationPolicy) -> Void = { policy in
         if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
+    /// Brings a window forward and takes focus. Window tests replace it so CI never
+    /// shows a window or takes focus from the person logged in.
+    static var presentWindow: (NSWindow) -> Void = { window in
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
     /// The policy last chosen: `.regular` while the app belongs in the Dock.
     private(set) var dockPolicy: NSApplication.ActivationPolicy?
 
@@ -259,9 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func activate(_ window: NSWindow) {
         openWindows.insert(ObjectIdentifier(window))
         updateActivationPolicy()
+        NSApp.unhide(nil)
         window.deminiaturize(nil)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        Self.presentWindow(window)
     }
 
     private func installMenus() {

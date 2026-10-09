@@ -39,6 +39,7 @@ import SwiftUI
             store.choose("s")
             let window = NSWindow(contentRect: NSRect(x: -6000, y: -6000, width: 900, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
             window.contentView = NSHostingView(rootView: SessionDetailView(store: store, session: store.sessions[0]))
+            window.alphaValue = 0; window.ignoresMouseEvents = true // never shown to the person logged in
             window.orderFrontRegardless()
             func transcriptScroll(_ view: NSView) -> NSScrollView? {
                 if let scroll = view as? NSScrollView, (scroll.documentView?.frame.height ?? 0) > scroll.frame.height { return scroll }
