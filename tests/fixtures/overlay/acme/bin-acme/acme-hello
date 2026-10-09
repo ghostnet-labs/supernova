@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fixture work command for the overlay tests.
+if [[ "${1:-}" == -h || "${1:-}" == --help ]]; then
+  printf '%s\n' 'Usage:
+  acme-hello
+
+Description:
+  Print a greeting from the acme fixture overlay.'
+  exit 0
+fi
+printf 'hello from acme\n'

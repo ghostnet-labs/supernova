@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Fixture installer for the acme fixture app.
+printf 'acme-app %s\n' "${1:-}"
