@@ -10,6 +10,7 @@ import select
 import shlex
 import shutil
 import struct
+import subprocess
 import tempfile
 import termios
 import time
@@ -47,6 +48,11 @@ class LoginShellTests(unittest.TestCase):
             for dotfile in (".zshrc", ".zprofile", ".p10k.zsh"):
                 (home / dotfile).symlink_to(ROOT / "dotfiles" / dotfile)
             (home / "env.zsh").write_text("\n".join(env_lines) + "\n")
+            # Some CI images have group-writable completion directories, and
+            # compinit would stop at its "insecure directories" question. A
+            # fresh dump makes .zshrc run compinit -C, which skips that audit.
+            subprocess.run([ZSH, "-fc", f"autoload -Uz compinit; compinit -u -d {shlex.quote(str(home / '.zcompdump'))}"],
+                           check=True, env={"HOME": str(home), "PATH": os.environ["PATH"]})
         environment = {
             key: value for key, value in os.environ.items()
             if not key.startswith(("ATUIN_", "SETUP_", "XDG_", "WORK_", "ZDOTDIR"))
