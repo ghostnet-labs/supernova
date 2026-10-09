@@ -1,0 +1,13 @@
+# Lint settings for the Python tools.
+# Python commands on PATH have no .py suffix, so list them explicitly.
+extend-include = [
+  "dotfiles/.bin/claude-sessions",
+  "dotfiles/.bin/codex-sessions",
+  "dotfiles/.bin/tmux-codex-status",
+  "dotfiles/.bin/tmux-fzf",
+  "dotfiles/.bin/zellij-fzf",
+]
+
+[lint]
+# Pin the rule set so a new ruff release cannot change what CI enforces.
+select = ["E4", "E7", "E9", "F"]
