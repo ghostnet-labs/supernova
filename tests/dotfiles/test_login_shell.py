@@ -109,6 +109,15 @@ class LoginShellTests(unittest.TestCase):
         output = self.login("personal", 'print -r -- "STATUS:$?"')
         self.assertIn("STATUS:0\n", output)
 
+    def test_personal_shell_has_the_kubernetes_helpers(self):
+        # They stay in dotfiles/functions, not in a work overlay.
+        output = self.login("kubernetes", "print -r -- KC:$aliases[kc]; "
+                            "for f in k8s_switch kget_labels kget_notready kget_taints knodes kpods; "
+                            "do print -r -- $f:$+functions[$f]; done")
+        self.assertIn("KC:kubectl\n", output)
+        for name in ("k8s_switch", "kget_labels", "kget_notready", "kget_taints", "knodes", "kpods"):
+            self.assertIn(f"{name}:1\n", output)
+
     def test_work_overlay_without_startup_files_starts_with_status_zero(self):
         overlay = self.root / "overlay"
         (overlay / "acme").mkdir(parents=True)

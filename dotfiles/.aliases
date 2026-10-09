@@ -25,5 +25,6 @@ alias gdnp='git diff --stat origin/main..HEAD'
 alias fd='fd -uia'
 
 #kubenetes
+alias kc='kubectl'
 
 alias codex-sessions-app='codex_sessions_app'

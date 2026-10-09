@@ -155,10 +155,10 @@ app is installed, and `--install` builds it from `apps/` and starts it.
 | Find available helpers and commands; insert an editable example | `toolbox`, `toolbox --pick` |
 
 Shell functions (Git state, ports and processes, disk usage, archives, network
-and SSH diagnostics, tmux and Zellij sessions, Homebrew and repo updates, and
-Codex usage, plus a work overlay's helpers) are listed by `toolbox` with a
-one-line description each. Filter with any word: `toolbox git`,
-`toolbox network`, or the job name (work helpers appear in a work shell). The description and filter words come
+and SSH diagnostics, tmux and Zellij sessions, Homebrew and repo updates,
+Kubernetes contexts, nodes and pods, and Codex usage, plus a work overlay's
+helpers) are listed by `toolbox` with a one-line description each. Filter with
+any word: `toolbox git`, `toolbox network`, `toolbox kubernetes`, or the job name (work helpers appear in a work shell). The description and filter words come
 from a contiguous metadata comment block above each function. Executables in
 the managed command directories appear when their directory is on PATH and
 the command is usable. Work commands require `WORK_ENV=true` and the selected
