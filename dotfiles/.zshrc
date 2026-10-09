@@ -233,4 +233,7 @@ if (( $+functions[_setup_refresh_forwarded_ssh_agent] )); then
 fi
 
 # Any other work shell setup runs last, so it can override the defaults above.
-[[ "$WORK_ENV" == true ]] && _setup_source "$WORK_DIR/zshrc.zsh"
+# An if block, not &&, so a personal shell starts with status 0, not 1.
+if [[ "$WORK_ENV" == true ]]; then
+    _setup_source "$WORK_DIR/zshrc.zsh"
+fi
