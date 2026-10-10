@@ -33,20 +33,18 @@ Open this repository on GitHub in a browser, select `bootstrap.sh`, choose
 bash ~/Downloads/bootstrap.sh
 ```
 
-Bootstrap runs on macOS, Ubuntu, Rocky, and RHEL. It works through these steps:
+Bootstrap runs on macOS, Ubuntu, Rocky, and RHEL. It only does what has to
+happen before the repository is on the machine, then hands off to setup:
 
-1. It checks for Git (plus the Command Line Tools on macOS, or OpenSSH on
-   Linux) and prints the install command for anything missing.
-2. It checks GitHub SSH access. Without a working key it offers to create an
-   Ed25519 key and opens GitHub's Add SSH Key page. If you decline and the
-   repository is public, it clones it read-only over HTTPS instead.
-3. It clones the repository to `~/dev/supernova`, or reuses an existing
-   checkout of the same repository there. It never pulls, resets, or replaces
-   an existing checkout.
-4. It asks for Personal or Work scope. Work also asks for the overlay checkout
+1. It checks for Git (the Command Line Tools on macOS) and prints the install
+   command if it is missing.
+2. It clones the repository to `~/dev/supernova` over SSH when one of your
+   GitHub keys can read it, and otherwise read-only over HTTPS. An existing
+   checkout there is used as it is, never pulled or reset.
+3. It asks for Personal or Work scope. Work also asks for the overlay checkout
    (a path, or a Git URL to clone next to this checkout) and the job name.
-5. It runs `./setup.sh --fix`, verifies the result, and starts a login Zsh, in
-   a new Ghostty window on macOS.
+4. It runs `./setup.sh --fix` with that scope, which installs everything else.
+   Open a new terminal window afterwards to start the configured shell.
 
 In a fork, set `BOOTSTRAP_OWNER` (and `BOOTSTRAP_REPOSITORY` if you renamed it)
 before running bootstrap, for example
@@ -364,14 +362,8 @@ hand:
   chosen scope. Work scope also adds the `.local/JOB-venv` Python environment,
   the `dotfiles/git/work.config` link, and the overlay's `JOB/.env.zsh`.
 
-If you let bootstrap set up SSH (it skips this when your existing keys work,
-or when you clone over HTTPS), it adds a `github-personal` host: it creates
-`~/.ssh/id_ed25519_github_personal` unless that key already exists, writes
-`~/.ssh/config.d/setup-bootstrap.conf`, and adds an `Include` line to the top
-of `~/.ssh/config` after copying the old file to
-`~/.ssh/config.bootstrap-backup-TIMESTAMP-PID`. Delete the managed file and
-the `Include` line (or copy the backup back) to undo it. Bootstrap also keeps
-a log of each run in `~/.local/state/setup-bootstrap/`.
+Bootstrap itself only clones the checkout (and the overlay, if you gave it a
+Git URL); everything listed above comes from `./setup.sh --fix`.
 
 `./setup.sh --check` warns about dangling links and counts the `~/.config`
 backups. Setup never removes backups, so delete them yourself once you are
