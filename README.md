@@ -322,15 +322,18 @@ Setup does not manage these. Set them by hand on a new Mac:
 
 ## Releases
 
-`main` is always usable. Tested points are tagged as releases (`v0.1.0` is the
-first); see the repository's Releases page for what changed in each. To pin a
+`main` is always usable. Tested points are tagged as releases; the first is
+[v0.1.0](https://github.com/ghostnet-labs/supernova/releases/tag/v0.1.0), and
+the [Releases page](https://github.com/ghostnet-labs/supernova/releases) says
+what changed in each. To pin a
 machine to one, run `git checkout v0.1.0` in the checkout before
 `./setup.sh --fix`, and `git checkout main` to follow `main` again.
 
 ## How to undo
 
 `--fix` never deletes your files. It moves what it replaces aside, and every
-other change is a new file, link, or install that you can remove by hand:
+other change is a new file, link, directory, or install that you can remove by
+hand:
 
 - **Home links**: `~/.zshrc`, `~/.zprofile`, `~/.aliases`, `~/.tmux.conf`,
   `~/.p10k.zsh`, `~/.vimrc`, and `~/.vim` become symlinks into
@@ -346,27 +349,33 @@ other change is a new file, link, or install that you can remove by hand:
   `~/.dotfiles-backup/codex/config.toml.TIMESTAMP` before the merge. Copy it
   back to undo the merge.
 - **`~/.gitconfig`** is created only when missing, with two comment lines.
-- **Login shell**: on macOS it becomes `/bin/zsh` (`chsh -s /bin/bash` to go
-  back). On Linux it becomes Homebrew's zsh, which is also added to
-  `/etc/shells` (`sudo usermod -s /bin/bash "$USER"` to go back).
+- **Login shell**: on macOS it becomes `/bin/zsh`; on Linux it becomes
+  Homebrew's zsh, which is also added to `/etc/shells`. To switch back, for
+  example to bash, run `chsh -s /bin/bash` on macOS or
+  `sudo usermod -s /bin/bash "$USER"` on Linux.
 - **Installs**: Homebrew (and on Linux its apt or dnf prerequisites), the
-  packages in `setup/dependencies.sh`, `~/.fzf-tab`, `~/.local/bin/zj-radar`,
-  and on Linux the MesloLGS NF fonts in `~/.local/share/fonts`. Remove them
-  with `brew uninstall NAME` or `rm`; setup never upgrades software it did not
-  need.
+  packages and macOS apps in `setup/dependencies.sh`, `~/.fzf-tab`,
+  `~/.local/bin/zj-radar` (in `~/.local/bin`, which setup creates), and on
+  Linux the MesloLGS NF fonts in `~/.local/share/fonts`. Remove them with
+  `brew uninstall NAME` or `rm`; setup upgrades a package only when the
+  installed one is too old for it.
 - **This checkout**: `core.hooksPath` is set to `.githooks`
   (`git config --unset core.hooksPath`), and `.local/.env.zsh` records the
-  chosen scope.
+  chosen scope. Work scope also adds the `.local/JOB-venv` Python environment,
+  the `dotfiles/git/work.config` link, and the overlay's `JOB/.env.zsh`.
 
-Bootstrap also adds a `github-personal` host to SSH: it writes
-`~/.ssh/config.d/setup-bootstrap.conf`, may create
-`~/.ssh/id_ed25519_github_personal`, and adds an `Include` line to the top of
-`~/.ssh/config` after copying the old file to
+If you let bootstrap set up SSH (it skips this when your existing keys work,
+or when you clone over HTTPS), it adds a `github-personal` host: it creates
+`~/.ssh/id_ed25519_github_personal` unless that key already exists, writes
+`~/.ssh/config.d/setup-bootstrap.conf`, and adds an `Include` line to the top
+of `~/.ssh/config` after copying the old file to
 `~/.ssh/config.bootstrap-backup-TIMESTAMP-PID`. Delete the managed file and
-the `Include` line (or copy the backup back) to undo it.
+the `Include` line (or copy the backup back) to undo it. Bootstrap also keeps
+a log of each run in `~/.local/state/setup-bootstrap/`.
 
-`./setup.sh --check` lists dangling links and counts `.bak` backups; setup never
-removes backups, so delete them yourself once you are happy.
+`./setup.sh --check` warns about dangling links and counts the `~/.config`
+backups. Setup never removes backups, so delete them yourself once you are
+happy with the result.
 
 ## License
 
