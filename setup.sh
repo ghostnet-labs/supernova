@@ -65,6 +65,8 @@ Environment:
   PATH                  Used to resolve commands and run repository tests.
   SETUP_LOCAL_ENV_FILE  Override the saved local setup configuration.
   SETUP_WORK_ROOT       Override the saved work overlay checkout (WORK_ROOT).
+  SETUP_CODEX_SYNC      Manage ~/.codex settings: auto (when Codex is in use),
+                        true, or false (default: auto).
   SETUP_TEST_TIMEOUT    Seconds before a test check is stopped (default: 300).
   SETUP_HELP_TIMEOUT    Seconds before a Help check is stopped (default: 30).
   SETUP_TEST_JOBS       Test files run at once by --test (default: one per CPU).

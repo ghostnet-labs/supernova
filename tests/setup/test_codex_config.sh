@@ -303,4 +303,16 @@ if /bin/bash -c 'source "$1"; setup_codex_render_config "$2" "$3" ubuntu "$4" "$
   fail_test "malformed tracked source unexpectedly rendered"
 fi
 
+# Codex settings are managed only where Codex is in use, unless forced either way.
+in_use() {
+  PATH="$1" SETUP_CODEX_SYNC="$3" /bin/bash -c 'source "$1"; setup_codex_in_use "$2"' _ "$HELPER" "$2"
+}
+unused_home="$TMP_ROOT/unused-home"
+mkdir -p "$unused_home"
+in_use "$NO_CODEX_BIN" "$unused_home" auto && fail_test "Codex counted as in use without a command or ~/.codex"
+in_use "$NO_CODEX_BIN" "$unused_home" true || fail_test "SETUP_CODEX_SYNC=true did not manage Codex settings"
+mkdir -p "$unused_home/.codex"
+in_use "$NO_CODEX_BIN" "$unused_home" auto || fail_test "an existing ~/.codex did not count as Codex in use"
+in_use "$NO_CODEX_BIN" "$unused_home" false && fail_test "SETUP_CODEX_SYNC=false still managed Codex settings"
+
 printf '[PASS] Codex config merge, backup, and validation checks\n'
