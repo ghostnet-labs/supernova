@@ -13,6 +13,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every lint job installs these Ruff and ShellCheck versions, on macOS and Ubuntu
+# alike, so lint results never depend on the runner. A work overlay's CI should
+# pin the same versions.
+env:
+  RUFF_VERSION: "0.16.10"
+  SHELLCHECK_VERSION: "0.11.0"
+
 jobs:
   secrets:
     name: Scan for secrets
@@ -53,8 +60,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y zsh tmux
           python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1 ruff==0.15.8
+          "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1 "ruff==$RUFF_VERSION"
           echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      # ShellCheck comes from its release binary, not the runner's own copy.
+      - name: Install ShellCheck
+        run: |
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/arm64/aarch64/')"
+          name="shellcheck-v${SHELLCHECK_VERSION}"
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -sSfL "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${name}.${os}.${arch}.tar.xz" |
+            tar -xJ -C "$RUNNER_TEMP/bin" --strip-components=1 "${name}/shellcheck"
+          "$RUNNER_TEMP/bin/shellcheck" --version | grep -qx "version: ${SHELLCHECK_VERSION}"
+          echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       # Ubuntu's fzf is too old for fzf --zsh, so pinned release binaries are
       # installed under RUNNER_TEMP, like the secrets job's gitleaks.
       - name: Install fzf, Atuin and gitleaks
@@ -73,7 +91,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       # ./setup.sh --test skips lint rows when a linter is missing, and the
       # fzf, Atuin, gitleaks and tmux tests skip without their tool, so make sure
-      # all are here. The runner image ships ShellCheck and mikefarah yq v4,
+      # all are here. The runner image ships mikefarah yq v4,
       # which the Codex config tests need.
       - name: Check the test tools are installed
         run: |
