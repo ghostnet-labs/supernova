@@ -325,4 +325,5 @@ Setup does not manage these. Set them by hand on a new Mac:
 [MIT](LICENSE). Vendored third-party files keep their own licenses: the GitHub
 Octicons (`apps/lib/octicons/LICENSE`), the LazyVim starter in `dotfiles/nvim/`
 (`dotfiles/nvim/LICENSE`, Apache 2.0), and the Vim colour schemes in
-`dotfiles/.vim/colors/`, whose headers name their upstream projects.
+`dotfiles/.vim/colors/`: gruvbox (`LICENSE-gruvbox`, MIT) and Tokyo Night
+(`LICENSE-tokyonight`, MIT).
