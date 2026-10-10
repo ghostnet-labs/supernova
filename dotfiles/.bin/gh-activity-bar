@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# toolbox: github macos | Manage the menu bar app showing recent GitHub organization activity.
-# toolbox-args: [--status|--start|--stop|--install|--uninstall] | --org NAME
+# toolbox: github macos | Manage the menu bar app showing recent activity in your cloned GitHub repos.
+# toolbox-args: [--status|--start|--stop|--install|--uninstall] | --root PATH
 # toolbox-example: gh-activity-bar --status
-# toolbox-example: gh-activity-bar --org my-org
+# toolbox-example: gh-activity-bar --root "$HOME/dev"
 # toolbox-example: gh-activity-bar --start
 # Build, install, and manage the GitHub Activity menu bar app.
 
