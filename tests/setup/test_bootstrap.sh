@@ -148,6 +148,7 @@ mkdir "$key_home"
 key_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$key_home" BOOTSTRAP_SSH_DIR="$key_home/.ssh" BOOTSTRAP_NO_OPEN=true /bin/bash -c '
   source "$1"
   checks=0
+  bootstrap_test_https_access() { return 1; }
   bootstrap_verify_repository_access() {
     checks=$((checks + 1))
     if (( checks > 1 )); then
@@ -178,6 +179,7 @@ registration_status=0
 registration_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$failed_registration_home" BOOTSTRAP_SSH_DIR="$failed_registration_home/.ssh" BOOTSTRAP_NO_OPEN=true /bin/bash -c '
   source "$1"
   bootstrap_verify_repository_access() { return 1; }
+  bootstrap_test_https_access() { return 1; }
   ssh-keygen() {
     local destination=""
     while (( $# > 0 )); do [[ "$1" == -f ]] && { destination="$2"; shift 2; continue; }; shift; done
@@ -187,6 +189,51 @@ registration_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$failed_registration_hom
 ' _ "$BOOTSTRAP" 2>&1)" || registration_status=$?
 [[ "$registration_status" -ne 0 ]] || fail_test "failed GitHub registration unexpectedly passed"
 assert_contains "$registration_output" 'GitHub still cannot authenticate'
+
+# A public repository without a working SSH key clones read-only over HTTPS by
+# default, and still offers the SSH key; a private one cancels on no.
+https_home="$TMP_ROOT/https-home"
+mkdir "$https_home"
+https_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$https_home" BOOTSTRAP_SSH_DIR="$https_home/.ssh" /bin/bash -c '
+  source "$1"
+  bootstrap_verify_repository_access() { return 1; }
+  bootstrap_test_https_access() { return 0; }
+  ssh-keygen() { printf "UNEXPECTED_KEYGEN\\n"; return 99; }
+  bootstrap_establish_github_access <<< ""
+  printf "%s|%s\\n" "$BOOTSTRAP_VERIFIED_ALIAS" "$BOOTSTRAP_VERIFIED_URL"
+' _ "$BOOTSTRAP")"
+assert_contains "$https_output" 'Cloning read-only over HTTPS'
+assert_contains "$https_output" 'HTTPS|https://github.com/ghostnet-labs/supernova.git'
+assert_not_contains "$https_output" 'UNEXPECTED_KEYGEN'
+[[ ! -e "$https_home/.ssh" ]] || fail_test "HTTPS clone changed SSH state"
+
+https_key_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$https_home" BOOTSTRAP_SSH_DIR="$https_home/.ssh" BOOTSTRAP_NO_OPEN=true /bin/bash -c '
+  source "$1"
+  bootstrap_verify_repository_access() { return 1; }
+  bootstrap_test_https_access() { return 0; }
+  bootstrap_install_personal_ssh_config() { printf "SSH_CONFIGURED\\n"; }
+  ssh-keygen() { printf "KEYGEN\\n"; return 1; }
+  bootstrap_establish_github_access <<< "yes"
+' _ "$BOOTSTRAP" 2>&1)" || true
+assert_contains "$https_key_output" 'KEYGEN'
+
+private_status=0
+private_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$https_home" BOOTSTRAP_SSH_DIR="$https_home/.ssh" /bin/bash -c '
+  source "$1"
+  bootstrap_verify_repository_access() { return 1; }
+  bootstrap_test_https_access() { return 1; }
+  bootstrap_establish_github_access <<< ""
+' _ "$BOOTSTRAP" 2>&1)" || private_status=$?
+[[ "$private_status" -ne 0 ]] || fail_test "private repository without SSH access unexpectedly passed"
+assert_contains "$private_output" 'GitHub SSH setup was cancelled'
+
+# A fork names its own owner and repository, and the default checkout follows it.
+fork_output="$(BOOTSTRAP_SOURCE_ONLY=true HOME="$https_home" BOOTSTRAP_OWNER=someone BOOTSTRAP_REPOSITORY=dots /bin/bash -c '
+  source "$1"
+  printf "%s|%s|%s\\n" "$(bootstrap_repo_url github.com)" "$(bootstrap_https_url)" "$BOOTSTRAP_DESTINATION"
+' _ "$BOOTSTRAP")"
+[[ "$fork_output" == "git@github.com:someone/dots.git|https://github.com/someone/dots.git|$https_home/dev/dots" ]] ||
+  fail_test "fork owner and repository were not used: $fork_output"
 
 # Fresh clone, empty destination, unchanged reuse, and unrelated-directory refusal.
 clone_root="$TMP_ROOT/clones"
