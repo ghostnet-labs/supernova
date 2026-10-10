@@ -291,3 +291,9 @@ Setup does not manage these. Set them by hand on a new Mac:
 - Set key repeat to fast and delay until repeat to none.
 - Move the Dock to the right and turn on automatic hiding.
 - Sign in with your Apple ID, then install Amphetamine from the App Store.
+
+## License
+
+[MIT](LICENSE). Vendored third-party files keep their own licenses, such as
+the GitHub Octicons in `apps/lib/octicons/LICENSE` and the Vim colour schemes
+named in their headers.
