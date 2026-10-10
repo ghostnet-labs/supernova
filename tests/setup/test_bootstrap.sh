@@ -306,7 +306,7 @@ unrelated_output="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$unrelated
 assert_contains "$unrelated_output" 'unrelated non-empty directory'
 
 # Scope selection asks for the work overlay checkout, discovers its jobs,
-# defaults to the first, and rejects bad names.
+# suggests a job only when there is exactly one, and rejects bad names.
 scope_checkout="$TMP_ROOT/scope-checkout"
 scope_overlay="$TMP_ROOT/scope-overlay"
 mkdir -p "$scope_checkout/setup" "$scope_overlay/acme/bin-acme" "$scope_overlay/zeta/bin-zeta" "$scope_overlay/notes"
@@ -318,9 +318,22 @@ assert_contains "$personal_scope" 'personal||./setup.sh --fix --personal'
 work_scope="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$scope_checkout" /bin/bash -c 'source "$1"; bootstrap_select_scope <<< "2
 $3
 $2
+
+zeta
 "; printf "%s|%s|%s|%s\n" "$BOOTSTRAP_SCOPE" "$BOOTSTRAP_JOB" "$BOOTSTRAP_WORK_ROOT" "$BOOTSTRAP_RERUN_COMMAND"' _ "$BOOTSTRAP" "$scope_overlay" "$TMP_ROOT/missing-overlay")"
-assert_contains "$work_scope" "work|acme|$scope_overlay|./setup.sh --fix --work --job acme --work-root $scope_overlay"
+assert_contains "$work_scope" "work|zeta|$scope_overlay|./setup.sh --fix --work --job zeta --work-root $scope_overlay"
 assert_contains "$work_scope" 'Overlay work jobs: acme zeta'
+assert_not_contains "$work_scope" 'Work job ['
+assert_contains "$work_scope" 'Job names must start'
+single_overlay="$TMP_ROOT/single-overlay"
+mkdir -p "$single_overlay/acme/bin-acme"
+single_overlay="$(cd -- "$single_overlay" && pwd)"
+single_scope="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$scope_checkout" /bin/bash -c 'source "$1"; bootstrap_select_scope <<< "2
+$2
+
+"; printf "|%s\n" "$BOOTSTRAP_JOB"' _ "$BOOTSTRAP" "$single_overlay")"
+assert_contains "$single_scope" 'Work job [acme]: '
+assert_contains "$single_scope" '|acme'
 assert_contains "$work_scope" "Not a directory: $TMP_ROOT/missing-overlay"
 custom_scope="$(BOOTSTRAP_SOURCE_ONLY=true BOOTSTRAP_DESTINATION="$scope_checkout" /bin/bash -c 'source "$1"; bootstrap_select_scope <<< "2
 $2

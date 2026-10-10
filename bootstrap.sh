@@ -591,7 +591,10 @@ bootstrap_select_scope() {
   done
 
   jobs="$(bootstrap_discover_work_jobs "$BOOTSTRAP_WORK_ROOT")"
-  default_job="$(printf '%s\n' "$jobs" | sed -n '1p')"
+  # Suggest a job only when the overlay has exactly one; with several, the
+  # first by name may be an old one, so ask for it by name.
+  default_job=""
+  [[ -n "$jobs" && "$jobs" != *$'\n'* ]] && default_job="$jobs"
   if [[ -n "$jobs" ]]; then
     printf 'Overlay work jobs: %s\n' "$(printf '%s\n' "$jobs" | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
   fi
