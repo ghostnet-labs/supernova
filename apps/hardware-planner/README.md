@@ -33,7 +33,7 @@ Totals only use selected offers whose minimum quantity is satisfied. Different c
 
 ## Build and verification
 
-`hardware-planner --build /tmp/HardwarePlanner.app` builds an isolated bundle, checks its ad-hoc signature and runs `--check-build`, without installing or opening it. Install builds and validates before quitting the running app, retains the previous bundle until the replacement opens successfully, and rolls back on failure. Uninstall keeps all project data. `--status` checks signature and the source SHA-256 manifest.
+`hardware-planner --build /tmp/HardwarePlanner.app` builds an isolated bundle, checks its ad-hoc signature and runs `--check-build`, without installing or opening it. Install builds and validates before quitting the running app, keeps the previous bundle until the replacement has been launched, and rolls back on failure. Uninstall keeps all project data. `--status` checks signature and the source SHA-256 manifest.
 
 Run `bash tests/dotfiles/test_hardware_planner.sh` for storage, immutable revisions, stale-writer rejection, lossless import/export, attachment containment, graph validation, backups, unknown/mixed-currency prices, help and UI typechecking. `bash tests/dotfiles/test_hardware_planner_installer.sh` verifies isolated install, signature, manifest, rollback and data-preserving uninstall.
 

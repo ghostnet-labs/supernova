@@ -14,7 +14,8 @@ dotfiles/.bin/awake --install
 The installer builds in a temporary directory, stops the old copy only after
 the build succeeds, installs in `~/Applications`, and opens the app. It also
 works with `reinstall-apps awake`. Set `AWAKE_APP_DIR` to choose another install
-directory. For a build only, run `bash apps/awake/build.sh` from the repository.
+directory. For a build only, run `bash apps/awake/build.sh` from the repository; it
+writes the app to `apps/awake/build/` (set `AWAKE_BUILD_DIR` to change that).
 The sun/moon menu bar icon provides all controls. No external dependencies.
 This is a local ad-hoc signed build, not a notarized distribution build.
 Its designated requirement is the bundle identifier rather than the ad-hoc
@@ -26,8 +27,8 @@ cdhash, so the Accessibility grant survives rebuilds.
 - Keep Awake starts on and prevents both display and system idle sleep using
   one display-sleep assertion. There is no separate display toggle.
 - Mouse Jiggle starts off. When enabled, it requests Accessibility permission.
-  Grant it in System Settings → Privacy & Security → Accessibility. If macOS
-  requires a relaunch, quit and reopen Awake.
+  Grant it in System Settings → Privacy & Security → Accessibility. Awake picks
+  up the grant without a relaunch.
 - Jiggle interval defaults to 60 seconds; choose 30, 60, 120, or 300 seconds.
   After inactivity it posts a one-pixel movement and immediate return, never
   clicks or types. It skips while a mouse button is held, during system/display

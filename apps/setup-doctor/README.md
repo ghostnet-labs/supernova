@@ -13,7 +13,7 @@ Setup Doctor is a native macOS dashboard over this repository's existing setup h
 
 ## Architecture
 
-The app runs the repository entry point with `NO_COLOR=1 TERM=dumb` and parses only the stable semantic markers used by setup:
+The app runs `./setup.sh --check` with `NO_COLOR=1 TERM=dumb` and parses only the stable semantic markers used by setup:
 
 - `✓` pass
 - `!` warning
@@ -21,7 +21,7 @@ The app runs the repository entry point with `NO_COLOR=1 TERM=dumb` and parses o
 - `•` information
 - `──` section
 
-It persists only finding IDs in `UserDefaults` to compute drift between scans.
+It finds `setup.sh` through `SETUP_DOCTOR_SETUP_SH`, then `SETUP_DIR`, then the default checkout. To compute drift between scans it saves only the finding IDs (and a baseline format version) in `UserDefaults`.
 
 ## Install
 

@@ -97,7 +97,7 @@ sessions. The app uses it when present, falling back to `active_subagents` for o
 providers. Completed children are Closed; unfinished children under a live parent
 become Idle after five minutes without transcript activity, staying in the hierarchy.
 
-Write `{"command":"refresh"}` followed by a newline to stdin for a coalesced immediate refresh. An optional `request_id` is echoed in `refresh_ids` on the snapshot collected after that request. Closing stdin ends the stream. Diagnostics go to stderr. Existing listing, JSON, watch, TUI, resume, and jump interfaces remain available.
+Write `{"command":"refresh"}` followed by a newline to stdin for a coalesced immediate refresh. The snapshot collected after that request lists its `request_id` in `refresh_ids`, or `"refresh"` when the request had none. Closing stdin ends the stream. Diagnostics go to stderr. Existing listing, JSON, watch, TUI, resume, and jump interfaces remain available.
 
 CLI providers own identities, saved titles, lifecycle, live-process attribution, hierarchy, and terminal targets. Codex names prefer SQLite `name`, then `session_index.jsonl` names, then a distinct saved title. Names refresh independently of transcript changes. Claude verifies PID start times, preserves user/custom title precedence, excludes meta/sidechain records, deduplicates response usage, and clears current-context usage after compaction. Inferred context capacities are marked estimated; ambiguous model variants leave capacity unknown.
 
@@ -111,7 +111,7 @@ Open assembly/source links to inspect the exact records in Hardware Planner. Mis
 
 Providers retain compact summaries rather than transcript contents. Complete appended JSONL records are processed incrementally; incomplete final lines wait for their newline. Inode, size, timestamp, and boundary fingerprints detect replacement, truncation, and truncate/regrow operations.
 
-Versioned JSON summary caches also survive app restarts. On macOS they live under `~/Library/Caches/local.agent-control-center/`; Linux uses `$XDG_CACHE_HOME` or `~/.cache`. Each provider/state-directory pair has its own private cache directory. Deleting this cache is safe and makes the next discovery scan history again. A corrupt cache file is rebuilt from its transcript. Large first scans emit loading heartbeats.
+Versioned JSON summary caches also survive app restarts. They live under `$XDG_CACHE_HOME` when it is set, on any platform; otherwise under `~/Library/Caches/local.agent-control-center/` on macOS and `~/.cache` on Linux. Each provider/state-directory pair has its own private cache directory. Deleting this cache is safe and makes the next discovery scan history again. A corrupt cache file is rebuilt from its transcript. Large first scans emit loading heartbeats.
 
 History indexes, decisions, and managed conversation records are stored locally. Sending a managed conversation transmits its instruction and selected context through the configured Codex service. The app does not add telemetry. Existing `codex-sessions://session/…` links remain registered alongside `agent-control-center://session/…`; session IDs and pin IDs remain unchanged. Existing Codex Sessions pin, notification, sound, and verbosity preferences are imported once, preserving explicit values already in the destination domain.
 

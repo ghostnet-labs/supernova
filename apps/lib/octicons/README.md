@@ -3,7 +3,8 @@
 These are unmodified 16px SVGs from https://github.com/primer/octicons at the
 commit in `REVISION`. GitHub's MIT license is included in `LICENSE`.
 
-GitHub Activity, Agent Control Center, and Worktree Manager compile
+GitHub Activity, Agent Control Center, Agent Workspace, Worktree Manager, and
+Hardware Planner compile
 `Octicons.swift`, generated vector PDFs embedded in each binary, and copy
 `LICENSE` into their bundles as `Contents/Resources/Octicons-LICENSE`.
 Images are decoded once and cached at their native 16px size. The apps draw
