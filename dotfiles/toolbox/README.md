@@ -2,8 +2,8 @@
 
 Catalogs are optional saved commands. Toolbox already searches every distinct
 command in the enabled local Atuin databases alongside loaded helpers and usable
-managed executables. Common history patterns have named functions with normal
-positional arguments; no catalog review or environment placeholders are needed.
+managed executables. Common history patterns are named shell functions with ordinary
+positional arguments, so you don't need a catalog to reuse them.
 Saved entries remain available with names such as `catalog:personal:0123456789ab`.
 
 `toolbox --pick` searches everything. `toolbox --json history:` selects history
@@ -63,7 +63,8 @@ toolbox --accept ID --command 'git diff --stat' --description 'Summarize changes
 toolbox --reject ID
 ```
 
-Acceptance requires a useful description. Edit machine-specific paths or values
+Accepting an entry requires a non-empty description; make it one you will
+recognise later. Edit machine-specific paths or values
 before accepting. An imported archive can contain both Personal and Work
 commands even when stored in `work-JOB`: the label cannot classify its contents.
 Keep Work entries in the Work catalog. To promote a reviewed Personal command
@@ -125,6 +126,5 @@ Descriptions and tags support search. Execution timestamps, counts, and raw
 history stay out of the catalog.
 
 Use the CLI to write optional catalog records so scope checks, validation, and
-secret screening run before the write. The initial generic examples remain;
-the generated history templates have been replaced by named helpers and direct
-history search. Existing user-saved entries are preserved.
+secret screening run before the write. The tracked catalog
+holds a few generic examples, and entries you saved yourself are kept.

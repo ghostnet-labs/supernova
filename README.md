@@ -19,7 +19,7 @@ Agent Control Center's project workspace, and Hardware Planner, start with
 | `setup/` | Internal modules sourced by `setup.sh` |
 | `tests/` | Tests run by `./setup.sh --test`, grouped as `setup/`, `dotfiles/`, and `github/`; `fixtures/overlay/` is a fake work overlay |
 | `dotfiles/` | Configs symlinked into `$HOME` and `~/.config`, general commands in `.bin/`, and shell functions in `functions/` (one file per topic) |
-| `apps/` | Source for the macOS apps the dotfiles install (Codex Balance, Agent Control Center, Agent Workspace, Setup Doctor, Worktree Manager, GitHub Activity, and Awake), the Swift code they share in `apps/lib/`, and the Zellij plugins |
+| `apps/` | Source for the macOS apps the dotfiles install (Codex Balance, Agent Control Center, Agent Workspace, Setup Doctor, Worktree Manager, GitHub Activity, Hardware Planner, and Awake), the Swift code they share in `apps/lib/`, and the Zellij plugins |
 | `docs/` | The tooling guide |
 | `.githooks/` | Secret scan and commit message checks, enabled by `./setup.sh --fix` |
 | `.github/workflows/` | CI: secret scan, lint, the test suite, and pull request format checks |
@@ -33,18 +33,26 @@ Open this repository on GitHub in a browser, select `bootstrap.sh`, choose
 bash ~/Downloads/bootstrap.sh
 ```
 
-Bootstrap checks for Git, OpenSSH, and (on macOS) the Command Line Tools and
-prints the install command for anything missing. It then checks GitHub SSH
-access. Without a working key it offers to create an Ed25519 key and opens
-GitHub's Add SSH Key page; answer no to clone the public repository read-only
-over HTTPS instead. In a fork, set `BOOTSTRAP_OWNER` (and `BOOTSTRAP_REPOSITORY`
-if you renamed it) before running bootstrap, for example
-`BOOTSTRAP_OWNER=you bash ~/Downloads/bootstrap.sh`.
-After that it clones `~/dev/supernova` (or reuses an existing
-checkout), asks for Personal or Work scope (Work also asks for the overlay
-checkout, a path or a Git URL to clone), runs `./setup.sh --fix`, verifies the result,
-and opens Ghostty on macOS or a login Zsh on Linux. It never pulls, resets, or
-replaces an existing checkout, and `bash bootstrap.sh --help` explains every step.
+Bootstrap runs on macOS, Ubuntu, Rocky, and RHEL. It works through these steps:
+
+1. It checks for Git (plus the Command Line Tools on macOS, or OpenSSH on
+   Linux) and prints the install command for anything missing.
+2. It checks GitHub SSH access. Without a working key it offers to create an
+   Ed25519 key and opens GitHub's Add SSH Key page. If you decline and the
+   repository is public, it clones it read-only over HTTPS instead.
+3. It clones the repository to `~/dev/supernova`, or reuses an existing
+   checkout of the same repository there. It never pulls, resets, or replaces
+   an existing checkout.
+4. It asks for Personal or Work scope. Work also asks for the overlay checkout
+   (a path, or a Git URL to clone next to this checkout) and the job name.
+5. It runs `./setup.sh --fix`, verifies the result, and starts a login Zsh, in
+   a new Ghostty window on macOS.
+
+In a fork, set `BOOTSTRAP_OWNER` (and `BOOTSTRAP_REPOSITORY` if you renamed it)
+before running bootstrap, for example
+`BOOTSTRAP_OWNER=you bash ~/Downloads/bootstrap.sh`; the checkout then goes to
+`~/dev/REPOSITORY`, and `BOOTSTRAP_DESTINATION` picks another path.
+`bash bootstrap.sh --help` lists these settings.
 
 ## Everyday commands
 
@@ -59,14 +67,16 @@ replaces an existing checkout, and `bash bootstrap.sh --help` explains every ste
 ```
 
 `--test` also lints with Ruff and ShellCheck when they are installed
-(`brew install ruff shellcheck`), the same way CI does; without them those two
-rows are skipped.
+(`brew install ruff shellcheck`); without them those two rows are skipped. CI
+pins exact versions of both (`RUFF_VERSION` and `SHELLCHECK_VERSION` in
+`.github/workflows/ci.yml`), so a newer local copy can occasionally disagree
+with CI.
 
 Test and check modes are read-only and never contact remote services or
 telemetry. Fix mode shows the health report and repair plan, requires a typed
 `y` or `yes` in an interactive terminal, and rechecks afterward. It only
 repairs managed state: it installs missing Homebrew or system packages, links
-dotfiles, enables the Git hook, pins shell plugins, and creates work
+dotfiles, enables the Git hooks, pins shell plugins, and creates work
 scaffolding. It upgrades a Homebrew package only when the installed one lacks
 what setup needs: gitleaks older than 8.29.0, fzf without `--zsh` (0.48.0 or
 newer), Atuin without `init zsh --disable-ai`, or a yq that cannot round-trip
@@ -87,9 +97,10 @@ After a repair, open a new shell or run `source_zsh`.
   binary. A work overlay adds its own rows (packages, Python requirements that
   go into `.local/JOB-venv`, and external commands that setup only reports as
   manual follow-up).
-- **Links**: the files in `dotfiles/` are symlinked into `$HOME`, and app
-  configs (Neovim, Ghostty, btop, Zellij, Git) into `~/.config`. Anything they
-  replace is backed up first.
+- **Links**: the home configs in `dotfiles/` (`.zshrc`, `.zprofile`,
+  `.aliases`, `.tmux.conf`, `.p10k.zsh`, `.vimrc`, and `.vim/`) are symlinked
+  into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
+  `~/.config`. Anything they replace is backed up first.
 - **Git**: shared settings live in `dotfiles/git/config`. Put identity,
   credentials, and machine-specific settings in `~/.gitconfig`, which overrides
   the shared file. Setup keeps `~/.gitconfig` present so `git config --global`
@@ -127,12 +138,14 @@ stays free of them. Fix mode writes `.local/.env.zsh` with the selected scope
 ```
 
 With work scope, `WORK_DIR` is `$WORK_ROOT/$JOB`, and each shared config also
-loads the overlay's version of it. Every file is optional; a missing one is
-skipped silently, and with no overlay configured nothing extra loads.
+loads the overlay's version of it. Every file is optional and a missing one is
+skipped silently. If the overlay checkout itself is missing, the shell warns
+and falls back to Personal scope; with no overlay configured nothing extra
+loads.
 
 | This repository | Loads from the overlay |
 | --- | --- |
-| `dotfiles/.zshrc` | `$WORK_DIR/.env.zsh` (credentials, never committed), `bin-$JOB/` on PATH, `.aliases-$JOB`, `bin-$JOB/functions-$JOB.sh`, `functions/*.zsh`, then `zshrc.zsh` last |
+| `dotfiles/.zshrc` | `bin-$JOB/` on PATH, then `$WORK_DIR/.env.zsh` (credentials, never committed), `.aliases-$JOB`, `bin-$JOB/functions-$JOB.sh`, `functions/*.zsh`, then `zshrc.zsh` last |
 | `dotfiles/.zprofile` | `zprofile.zsh` |
 | `dotfiles/.tmux.conf` | `tmux.conf`, last; it can add a status bar dashboard by setting `@setup_dashboard` and `command-alias[108]` |
 | `dotfiles/git/config` | `git/config`, through the `dotfiles/git/work.config` link fix mode creates |
@@ -152,8 +165,9 @@ Tracked general commands live in `dotfiles/.bin`, machine-local commands in
 ## Command index
 
 Every command below has a side-effect-free `--help` screen, and
-`./setup.sh --test` checks each one. The app commands are macOS only; run with no option, each shows whether its
-app is installed, and `--install` builds it from `apps/` and starts it.
+`./setup.sh --test` checks each one. The app commands are macOS only. Run with
+no option, each shows whether its app is installed; `--install` builds it from
+`apps/` and starts it.
 
 | Task | Command |
 | --- | --- |
@@ -175,23 +189,25 @@ Shell functions (Git state, ports and processes, disk usage, archives, network
 and SSH diagnostics, tmux and Zellij sessions, Homebrew and repo updates,
 Kubernetes contexts, nodes and pods, and Codex usage, plus a work overlay's
 helpers) are listed by `toolbox` with a one-line description each. Filter with
-any word: `toolbox git`, `toolbox network`, `toolbox kubernetes`, or the job name (work helpers appear in a work shell). The description and filter words come
+any word: `toolbox git`, `toolbox network`, `toolbox kubernetes`, or the job
+name (work helpers appear in a work shell). The description and filter words come
 from a contiguous metadata comment block above each function. Executables in
 the managed command directories appear when their directory is on PATH and
 the command is usable. Work commands require `WORK_ENV=true` and the selected
 `JOB`; discovery never loads another environment or executes a command.
 
-Use `toolbox --describe NAME` for source locations, examples, argument hints,
-and shadowed alternatives. `toolbox --json [FILTER]` returns a versioned
-`schema_version: 1` object with a `commands` array, including effective
-resolution and `shadowed` managed alternatives. No matches produces an empty
-array (the table interface still exits 1). An alias or external command that
-shadows a managed command is identified explicitly; its shadowed examples
-are not offered as if they belonged to the effective command.
+Use `toolbox --describe NAME` for a command's source location, examples, and
+argument hints. When an alias or another command with the same name hides a
+managed one, `--describe` says which one actually runs and lists the hidden
+one, and the picker doesn't offer the hidden command's examples.
+`toolbox --json [FILTER]` prints the same data as JSON (`schema_version: 1`,
+with a `commands` array); no matches gives an empty array, while the table
+form exits 1.
 
 `toolbox --pick [FILTER]` uses fzf to choose an example and place it at the next
-editable prompt. Ctrl+X then Ctrl+T opens the same picker from the current ZLE
-buffer, when that key is free. Enter selects text without executing it; Escape
+editable prompt. Ctrl+X then Ctrl+T opens the same picker while you are typing
+a command, when nothing else uses that key, and replaces the line with your
+choice. Enter selects text without executing it; Escape
 preserves the original buffer and cursor. Existing bindings, fzf file search,
 and tab completion remain available. Missing fzf produces an error; listing,
 describing, and JSON output need only Python 3. Reloading the shell is safe.
@@ -215,7 +231,7 @@ or approval step. Personal shells read only Personal history; Work shells also
 read their active job's history. Raw commands stay local and are never written
 to the tracked catalog. Exact spelling, arguments, and multiline text are retained.
 
-Common patterns from history are now ordinary functions with positional arguments:
+Common patterns from history are ordinary functions with positional arguments:
 
 | Task | Helpers |
 | --- | --- |
@@ -232,11 +248,12 @@ toolbox --pick 'git diff'          # Find an exact prior invocation or a helper
 toolbox --json history:            # Inspect only local history entries
 ```
 
-Use a helper's `--help` for arguments and defaults. The picker inserts the selected command for editing; it does not run it. History
-may contain old commands or tools that are no longer installed.
+Use a helper's `--help` for arguments and defaults. The picker inserts the
+selected command for editing; it does not run it. History may contain old
+commands or tools that are no longer installed.
 
 Optional catalogs are still available through `toolbox --save`, `--collect-history`,
-`--review`, `--accept`, and `--reject`. They are not needed for history search.
+`--review`, `--pending`, `--accept`, and `--reject`. They are not needed for history search.
 Saving a catalog entry requires a successful secret scan; raw history is not
 published. `newdev` updates tools without creating another review queue.
 See [catalog usage and local storage](dotfiles/toolbox/README.md) for these optional
@@ -247,7 +264,8 @@ Some `dotfiles/.bin` commands are launched for you rather than typed.
 `tmux-git-popup` and `tmux-fzf` in popups. `dotfiles/.tmux.native-activity.conf`
 starts `tmux-codex-status`. `tw` runs `tmux-fzf` inside tmux and `zellij-fzf`
 inside Zellij, whose keybindings also open `tmux-git-popup` and
-`zellij-close-tab`. Codex runs `codex-turn-bell` after each turn.
+`zellij-close-tab`. Codex runs `codex-turn-bell` after each turn, unless a Mac has the Computer Use
+client, whose own turn-ended notifier is used instead.
 
 Atuin is a managed dependency for local command history. In a new shell,
 **Ctrl+R** opens history search; Enter inserts the selected command for editing.
@@ -262,11 +280,13 @@ Personal uses `personal`, and each enabled Work job uses `work-JOB`, beneath
 `${XDG_CONFIG_HOME:-~/.config}/atuin/scopes/` for configuration and
 `${XDG_DATA_HOME:-~/.local/share}/atuin/scopes/` for databases and metadata.
 `print -r -- "$_SETUP_ATUIN_ACTIVE: $ATUIN_DB_PATH"` shows the active destination.
-The template in `dotfiles/atuin/config.toml` refreshes setup-managed scoped copies
-on shell initialization. An existing unmarked config is preserved and disables
-the integration until moved aside. Sync, update checks, AI integration, and the
-daemon are disabled. Reloading cancels an unfinished history recording before
-switching scope, so its ID cannot be completed in another database.
+Each new shell copies `dotfiles/atuin/config.toml` into those scope folders,
+replacing only copies that setup made (they start with a `# Managed by setup`
+line). If a config without that line is already there, setup leaves it alone
+and turns the integration off until you move it aside. Sync, update checks, AI
+integration, and the daemon are disabled. Reloading the shell abandons a
+command whose history entry is still being written, so that entry never lands
+in the wrong scope's database.
 
 Existing shell history is never imported automatically. For an explicit import,
 open the intended scoped shell, verify the destination above, and import only a
@@ -302,6 +322,7 @@ Setup does not manage these. Set them by hand on a new Mac:
 
 ## License
 
-[MIT](LICENSE). Vendored third-party files keep their own licenses, such as
-the GitHub Octicons in `apps/lib/octicons/LICENSE` and the Vim colour schemes
-named in their headers.
+[MIT](LICENSE). Vendored third-party files keep their own licenses: the GitHub
+Octicons (`apps/lib/octicons/LICENSE`), the LazyVim starter in `dotfiles/nvim/`
+(`dotfiles/nvim/LICENSE`, Apache 2.0), and the Vim colour schemes in
+`dotfiles/.vim/colors/`, whose headers name their upstream projects.
