@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-test: Linter versions
-"""Checks that every CI job lints with the same pinned Ruff and ShellCheck versions."""
+"""Checks that every CI job that lints uses the same pinned Ruff and ShellCheck versions."""
 
 from __future__ import annotations
 
