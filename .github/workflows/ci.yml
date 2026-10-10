@@ -13,9 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Every lint job installs these Ruff and ShellCheck versions, on macOS and Ubuntu
-# alike, so lint results never depend on the runner. A work overlay's CI should
-# pin the same versions.
+# The lint job (Ubuntu; the macOS job skips the lint rows) installs these Ruff
+# and ShellCheck versions, so lint results never depend on the runner. A work
+# overlay's CI should pin the same versions.
 env:
   RUFF_VERSION: "0.16.10"
   SHELLCHECK_VERSION: "0.11.0"
