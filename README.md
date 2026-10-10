@@ -34,9 +34,13 @@ bash ~/Downloads/bootstrap.sh
 ```
 
 Bootstrap checks for Git, OpenSSH, and (on macOS) the Command Line Tools and
-prints the install command for anything missing. It then sets up GitHub SSH
-access, offering to create an Ed25519 key and opening GitHub's Add SSH Key page
-if needed. After that it clones `~/dev/supernova` (or reuses an existing
+prints the install command for anything missing. It then checks GitHub SSH
+access. Without a working key it offers to create an Ed25519 key and opens
+GitHub's Add SSH Key page; answer no to clone the public repository read-only
+over HTTPS instead. In a fork, set `BOOTSTRAP_OWNER` (and `BOOTSTRAP_REPOSITORY`
+if you renamed it) before running bootstrap, for example
+`BOOTSTRAP_OWNER=you bash ~/Downloads/bootstrap.sh`.
+After that it clones `~/dev/supernova` (or reuses an existing
 checkout), asks for Personal or Work scope (Work also asks for the overlay
 checkout, a path or a Git URL to clone), runs `./setup.sh --fix`, verifies the result,
 and opens Ghostty on macOS or a login Zsh on Linux. It never pulls, resets, or

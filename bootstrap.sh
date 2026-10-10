@@ -2,9 +2,12 @@
 # Browser-downloaded first-machine bootstrap for this setup repository.
 set -u -o pipefail
 
+# A fork sets BOOTSTRAP_OWNER (and BOOTSTRAP_REPOSITORY) in the environment.
+BOOTSTRAP_REQUESTED_OWNER="${BOOTSTRAP_OWNER:-}"
 BOOTSTRAP_OWNER="ghostnet-labs"
-BOOTSTRAP_REPOSITORY="supernova"
-BOOTSTRAP_DESTINATION="${BOOTSTRAP_DESTINATION:-$HOME/dev/supernova}"
+BOOTSTRAP_OWNER="${BOOTSTRAP_REQUESTED_OWNER:-$BOOTSTRAP_OWNER}"
+BOOTSTRAP_REPOSITORY="${BOOTSTRAP_REPOSITORY:-supernova}"
+BOOTSTRAP_DESTINATION="${BOOTSTRAP_DESTINATION:-$HOME/dev/$BOOTSTRAP_REPOSITORY}"
 BOOTSTRAP_SSH_DIR="${BOOTSTRAP_SSH_DIR:-$HOME/.ssh}"
 BOOTSTRAP_LOG_DIR="${BOOTSTRAP_LOG_DIR:-$HOME/.local/state/setup-bootstrap}"
 BOOTSTRAP_LOG_FILE=""
@@ -27,8 +30,9 @@ bootstrap_usage() {
 Description:
   Bootstrap a new macOS, Ubuntu, Rocky, or RHEL machine from a browser-
   downloaded script. The interactive flow verifies prerequisites and GitHub
-  SSH access, safely clones ~/dev/supernova, runs setup, verifies it, and
-  enters the managed login shell. A Work scope also asks for a work overlay
+  access, safely clones ~/dev/supernova, runs setup, verifies it, and enters
+  the managed login shell. Without a working GitHub SSH key it offers to
+  create one, or clones a public repository read-only over HTTPS. A Work scope also asks for a work overlay
   checkout (a path, or a Git URL to clone next to it). Bootstrap itself
   installs no packages.
 
@@ -40,7 +44,12 @@ Examples:
   bash ~/Downloads/bootstrap.sh --help
 
 Environment:
-  HOME  Home directory where SSH state, the checkout, and status logs live.'
+  HOME                   Home directory where SSH state, the checkout, and status
+                         logs live.
+  BOOTSTRAP_OWNER        GitHub owner to clone from, for a fork (default:
+                         the upstream owner).
+  BOOTSTRAP_REPOSITORY   Repository name to clone (default: supernova).
+  BOOTSTRAP_DESTINATION  Checkout path (default: ~/dev/REPOSITORY).'
 }
 
 bootstrap_is_interactive() {
@@ -197,6 +206,16 @@ bootstrap_check_prerequisites() {
 
 bootstrap_repo_url() {
   printf 'git@%s:%s/%s.git\n' "$1" "$BOOTSTRAP_OWNER" "$BOOTSTRAP_REPOSITORY"
+}
+
+bootstrap_https_url() {
+  printf 'https://github.com/%s/%s.git\n' "$BOOTSTRAP_OWNER" "$BOOTSTRAP_REPOSITORY"
+}
+
+# A public repository can be cloned without any GitHub credentials.
+bootstrap_test_https_access() {
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false \
+    git -c credential.helper= ls-remote "$(bootstrap_https_url)" HEAD >/dev/null 2>&1
 }
 
 bootstrap_test_repository_alias() {
@@ -364,12 +383,27 @@ bootstrap_establish_github_access() {
   fi
 
   printf 'No existing GitHub SSH identity can read %s/%s.\n' "$BOOTSTRAP_OWNER" "$BOOTSTRAP_REPOSITORY"
-  printf 'Create and configure the no-passphrase key %s? [y/N] ' "$key_file"
-  IFS= read -r response || response=""
-  case "$response" in
-    y|Y|yes|Yes|YES) ;;
-    *) bootstrap_die "GitHub SSH setup was cancelled." "Rerun bootstrap after configuring repository access."; return 1 ;;
-  esac
+  if bootstrap_test_https_access; then
+    printf 'The repository is public, so it can also be cloned read-only over HTTPS.\n'
+    printf 'Create and configure the no-passphrase key %s instead? [y/N] ' "$key_file"
+    IFS= read -r response || response=""
+    case "$response" in
+      y|Y|yes|Yes|YES) ;;
+      *)
+        BOOTSTRAP_VERIFIED_ALIAS="HTTPS"
+        BOOTSTRAP_VERIFIED_URL="$(bootstrap_https_url)"
+        bootstrap_pass "Cloning read-only over HTTPS; add a GitHub SSH key later to push"
+        return 0
+        ;;
+    esac
+  else
+    printf 'Create and configure the no-passphrase key %s? [y/N] ' "$key_file"
+    IFS= read -r response || response=""
+    case "$response" in
+      y|Y|yes|Yes|YES) ;;
+      *) bootstrap_die "GitHub SSH setup was cancelled." "Rerun bootstrap after configuring repository access."; return 1 ;;
+    esac
+  fi
 
   mkdir -p "$BOOTSTRAP_SSH_DIR" || return 1
   chmod 700 "$BOOTSTRAP_SSH_DIR" || return 1
