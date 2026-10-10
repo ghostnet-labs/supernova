@@ -320,6 +320,13 @@ Setup does not manage these. Set them by hand on a new Mac:
 - Move the Dock to the right and turn on automatic hiding.
 - Sign in with your Apple ID, then install Amphetamine from the App Store.
 
+## Releases
+
+`main` is always usable. Tested points are tagged as releases (`v0.1.0` is the
+first); see the repository's Releases page for what changed in each. To pin a
+machine to one, run `git checkout v0.1.0` in the checkout before
+`./setup.sh --fix`, and `git checkout main` to follow `main` again.
+
 ## How to undo
 
 `--fix` never deletes your files. It moves what it replaces aside, and every
