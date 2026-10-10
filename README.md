@@ -320,6 +320,47 @@ Setup does not manage these. Set them by hand on a new Mac:
 - Move the Dock to the right and turn on automatic hiding.
 - Sign in with your Apple ID, then install Amphetamine from the App Store.
 
+## How to undo
+
+`--fix` never deletes your files. It moves what it replaces aside, and every
+other change is a new file, link, or install that you can remove by hand:
+
+- **Home links**: `~/.zshrc`, `~/.zprofile`, `~/.aliases`, `~/.tmux.conf`,
+  `~/.p10k.zsh`, `~/.vimrc`, and `~/.vim` become symlinks into
+  `dotfiles/`. A file or directory that was there before is moved to
+  `~/.dotfiles-backup/NAME.TIMESTAMP`. To restore one, remove the link and move
+  the backup back, for example
+  `rm ~/.zshrc && mv ~/.dotfiles-backup/.zshrc.20261010120000 ~/.zshrc`.
+- **App configs**: `~/.config/nvim`, `ghostty`, `btop`, `zellij`, and `git`
+  become symlinks. A previous config is moved to
+  `~/.config/NAME.bak.TIMESTAMP`; remove the link and rename the backup to
+  restore it.
+- **Codex**: the old `~/.codex/config.toml` is copied to
+  `~/.dotfiles-backup/codex/config.toml.TIMESTAMP` before the merge. Copy it
+  back to undo the merge.
+- **`~/.gitconfig`** is created only when missing, with two comment lines.
+- **Login shell**: on macOS it becomes `/bin/zsh` (`chsh -s /bin/bash` to go
+  back). On Linux it becomes Homebrew's zsh, which is also added to
+  `/etc/shells` (`sudo usermod -s /bin/bash "$USER"` to go back).
+- **Installs**: Homebrew (and on Linux its apt or dnf prerequisites), the
+  packages in `setup/dependencies.sh`, `~/.fzf-tab`, `~/.local/bin/zj-radar`,
+  and on Linux the MesloLGS NF fonts in `~/.local/share/fonts`. Remove them
+  with `brew uninstall NAME` or `rm`; setup never upgrades software it did not
+  need.
+- **This checkout**: `core.hooksPath` is set to `.githooks`
+  (`git config --unset core.hooksPath`), and `.local/.env.zsh` records the
+  chosen scope.
+
+Bootstrap also adds a `github-personal` host to SSH: it writes
+`~/.ssh/config.d/setup-bootstrap.conf`, may create
+`~/.ssh/id_ed25519_github_personal`, and adds an `Include` line to the top of
+`~/.ssh/config` after copying the old file to
+`~/.ssh/config.bootstrap-backup-TIMESTAMP-PID`. Delete the managed file and
+the `Include` line (or copy the backup back) to undo it.
+
+`./setup.sh --check` lists dangling links and counts `.bak` backups; setup never
+removes backups, so delete them yourself once you are happy.
+
 ## License
 
 [MIT](LICENSE). Vendored third-party files keep their own licenses: the GitHub
