@@ -132,6 +132,9 @@ chmod +x "$command_dir/git"
 mkdir -p "$TMP_ROOT/.fzf-tab/.git" "$TMP_ROOT/.fzf-tab/lib"
 printf '#!/bin/sh\nexit 0\n' >"$brew_prefix/bin/zsh"
 printf 'test fixture\n' >"$TMP_ROOT/.fzf-tab/fzf-tab.plugin.zsh"
+# Ubuntu's default umask 002 makes new files group-writable, which the
+# compaudit check rightly fails; --fix tightens a real checkout the same way.
+chmod -R go-w "$TMP_ROOT/.fzf-tab"
 printf '#!/bin/sh\nprintf "zj-radar 0.4.1\\n"\n' >"$TMP_ROOT/.local/bin/zj-radar"
 chmod +x "$TMP_ROOT/.local/bin/zj-radar"
 chmod +x "$brew_prefix/bin/zsh"
