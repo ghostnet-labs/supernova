@@ -219,6 +219,16 @@ check_codex_config() {
   local validation_status
   local current_mode
 
+  if ! setup_codex_in_use "$HOME"; then
+    setup_state_check "Codex settings"
+    if [[ "${SETUP_CODEX_SYNC:-auto}" == false ]]; then
+      setup_state_complete "Codex settings are not managed (SETUP_CODEX_SYNC=false)"
+    else
+      setup_state_complete "Codex is not installed; its settings are left alone"
+    fi
+    return 0
+  fi
+
   setup_state_check "Codex config file"
   if [[ ! -r "$source_file" ]]; then
     setup_state_fail "tracked Codex config source is missing: $source_file"

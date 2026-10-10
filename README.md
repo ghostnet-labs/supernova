@@ -90,9 +90,13 @@ After a repair, open a new shell or run `source_zsh`.
   credentials, and machine-specific settings in `~/.gitconfig`, which overrides
   the shared file. Setup keeps `~/.gitconfig` present so `git config --global`
   never edits the tracked file.
-- **Codex**: `dotfiles/codex/config.toml` is merged into `~/.codex/config.toml`
-  (not symlinked), keeping machine-local trust and state. The previous file is
-  saved under `~/.dotfiles-backup/codex/` before any change.
+- **Codex**: where Codex is in use (the `codex` command is installed or
+  `~/.codex` exists), `dotfiles/codex/config.toml` is merged into
+  `~/.codex/config.toml` (not symlinked), keeping machine-local trust and state.
+  The previous file is saved under `~/.dotfiles-backup/codex/` before any
+  change. The tracked file holds opinionated defaults (model, reasoning effort,
+  plugins); edit it in a fork, or set `SETUP_CODEX_SYNC=false` to leave
+  `~/.codex` alone (`true` manages it even before Codex is installed).
 - **Secret scanning**: `.githooks/pre-commit` runs `gitleaks` on staged changes
   and blocks commits that contain credentials. Setup requires gitleaks 8.29.0
   or newer: `./setup.sh --check` fails when it is missing or older, and

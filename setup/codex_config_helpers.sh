@@ -16,6 +16,19 @@ setup_codex_bell_notifier_path() {
   printf '%s/.bin/codex-turn-bell' "${codex_config_dir%/*}"
 }
 
+# Codex settings are managed only where Codex is in use: the codex command is on
+# PATH or HOME already has a ~/.codex directory. SETUP_CODEX_SYNC=true manages
+# them anyway, and SETUP_CODEX_SYNC=false leaves ~/.codex alone everywhere.
+setup_codex_in_use() {
+  local home_dir="$1"
+
+  case "${SETUP_CODEX_SYNC:-auto}" in
+    true) return 0 ;;
+    false) return 1 ;;
+  esac
+  command -v codex >/dev/null 2>&1 || [[ -d "$home_dir/.codex" ]]
+}
+
 setup_codex_validate_toml() {
   local config_file="$1"
 
