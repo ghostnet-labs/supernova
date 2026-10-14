@@ -4,9 +4,11 @@ on:
     inputs:
       scale_set:
         description: Exact ARC scale-set name
-        type: string
+        type: choice
         required: true
-        default: ci-linux-arm64
+        default: ghostnet-linux-arm64
+        options:
+          - ghostnet-linux-arm64
       expected_failure:
         description: Exercise cleanup after a failed job
         type: boolean

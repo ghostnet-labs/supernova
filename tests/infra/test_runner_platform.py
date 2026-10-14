@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # setup-test: Local runner platform
 """Exercise deployment guards without touching host VMs or GitHub."""
+import base64
 import importlib.util
 import json
 import plistlib
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,9 +59,28 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(template["ssh"]["forwardAgent"])
         self.assertEqual(template["portForwards"][0]["hostIP"], "127.0.0.1")
         self.assertTrue(template["portForwards"][1]["ignore"])
+        deny = template["portForwards"][1]
+        self.assertEqual(deny["guestIP"], "0.0.0.0")
+        self.assertEqual(deny["proto"], "any")
+        self.assertFalse(deny["guestIPMustBeZero"])
         script = template["provision"][0]["script"]
         self.assertIn("secrets-encryption", script)
         self.assertIn("container-log-max-size", script)
+
+    def test_initial_node_ready_also_waits_for_system_deployments(self):
+        required = ["coredns", "local-path-provisioner", "metrics-server"]
+        responses = iter([[], [{"metadata": {"name": name}} for name in required]])
+        calls = []
+        def kube(state, *args, **kwargs):
+            calls.append(args)
+            if args[:2] == ("get", "deployments"):
+                return json.dumps({"items": next(responses)})
+            return ""
+        with patch.object(platform, "kube", side_effect=kube), patch.object(platform.time, "sleep") as sleep:
+            platform.wait_cluster(Path("/private/state"))
+        sleep.assert_called_once_with(2)
+        rollouts = [args[2] for args in calls if args[:2] == ("rollout", "status")]
+        self.assertEqual(rollouts, ["deployment/" + name for name in required])
 
     def test_runner_bounds_and_no_host_socket(self):
         values = platform.runner_values(self.cfg, "pilot")
@@ -82,17 +102,31 @@ class DeploymentTests(unittest.TestCase):
         self.assertNotIn("PRIVATE", str(args))
         self.assertIn("data", json.loads(kwargs["input_text"]))
 
+    def test_registry_prompt_sends_token_only_through_secret_stdin(self):
+        with patch.object(platform, "load_config", return_value=self.cfg), patch.object(platform.sys.stdin, "isatty", return_value=True), patch.object(
+            platform.getpass, "getpass", return_value="REGISTRY-SECRET"), patch.object(platform, "apply_object"), patch.object(
+            platform, "secret") as secret:
+            self.assertEqual(platform.main(["registry-secret", "--username", "account", "--prompt"]), 0)
+            payload = json.loads(secret.call_args.args[3][".dockerconfigjson"])
+            self.assertEqual(base64.b64decode(payload["auths"]["ghcr.io"]["auth"]).decode(), "account:REGISTRY-SECRET")
+
+    def test_registry_prompt_refuses_noninteractive_stdin(self):
+        with patch.object(platform, "load_config", return_value=self.cfg), patch.object(platform.sys.stdin, "isatty", return_value=False), patch.object(
+            platform.getpass, "getpass") as prompt:
+            self.assertEqual(platform.main(["registry-secret", "--username", "account", "--prompt"]), 1)
+            prompt.assert_not_called()
+
     def test_deploy_requires_digest_before_reading_credentials(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch.object(platform, "check_deployment"):
                 with self.assertRaisesRegex(platform.PlatformError, "immutable"):
                     platform.deploy_arc(self.cfg, "pilot", Path(temp), Path(temp) / "absent.json")
 
-    def test_pilot_does_not_install_full_monitoring(self):
-        with patch.object(platform, "helm") as helm:
-            with self.assertRaises(platform.PlatformError):
-                platform.monitor(self.cfg, "pilot", Path("/unused"))
-            helm.assert_not_called()
+    def test_pilot_uses_bounded_monitoring(self):
+        values = platform.monitoring_values(self.cfg, "pilot")
+        self.assertEqual(values["prometheus"]["prometheusSpec"]["resources"]["limits"]["memory"], "512Mi")
+        self.assertEqual(values["prometheus"]["prometheusSpec"]["retention"], "48h")
+        self.assertEqual(values["grafana"]["resources"]["limits"]["memory"], "192Mi")
 
     def test_pagination_combines_pages(self):
         with patch.object(platform, "gh_json", return_value=[
@@ -150,6 +184,37 @@ class DeploymentTests(unittest.TestCase):
                 platform, "kube", return_value='{"items": []}'):
                 platform.verify_canary(self.cfg, Path(temp), "acme/project", 1)
             self.assertTrue(json.loads((Path(temp) / "canary-evidence.json").read_text())["ephemeral_cleanup"])
+
+    def test_canary_expected_failure_rejects_unrelated_failure(self):
+        jobs = [{"labels": [self.cfg["general_scale_set"]], "conclusion": "failure",
+                 "steps": [{"name": "Checkout", "conclusion": "failure"}]}]
+        with patch.object(platform, "identity"), patch.object(platform, "gh_json", return_value={
+            "status": "completed", "conclusion": "failure"}), patch.object(platform, "gh_pages", return_value=jobs):
+            with self.assertRaisesRegex(platform.PlatformError, "intentional"):
+                platform.verify_canary(self.cfg, Path("/unused"), "acme/project", 2, "failure")
+
+    def test_queued_cancellation_does_not_count_as_runner_cleanup(self):
+        with patch.object(platform, "identity"), patch.object(platform, "gh_json", return_value={
+            "status": "completed", "conclusion": "cancelled"}), patch.object(platform, "gh_pages", return_value=[{
+                "labels": [self.cfg["general_scale_set"]], "conclusion": "cancelled", "runner_name": "", "steps": []}]):
+            with self.assertRaisesRegex(platform.PlatformError, "before a runner"):
+                platform.verify_canary(self.cfg, Path("/unused"), "acme/project", 3, "cancelled")
+
+    def test_failure_and_cancellation_cleanup_keep_each_run_evidence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = Path(temp)
+            platform.save(state / "canary-evidence.json", {"run_id": 1, "ephemeral_cleanup": True})
+            cases = [(2, "failure", [{"name": "Optional failure", "conclusion": "failure"}]),
+                     (3, "cancelled", [{"name": "Set up job", "conclusion": "success"}])]
+            for run_id, conclusion, steps in cases:
+                with patch.object(platform, "identity"), patch.object(platform, "gh_json", return_value={
+                    "status": "completed", "conclusion": conclusion, "html_url": "https://example.org/run"}), patch.object(
+                    platform, "gh_pages", return_value=[{"labels": [self.cfg["general_scale_set"]], "conclusion": conclusion,
+                                                       "runner_name": "test-runner", "steps": steps}]), patch.object(
+                    platform, "kube", return_value='{"items": []}'):
+                    platform.verify_canary(self.cfg, state, "acme/project", run_id, conclusion)
+            for run_id in (1, 2, 3):
+                self.assertTrue(json.loads((state / f"canary-evidence-{run_id}.json").read_text())["ephemeral_cleanup"])
 
     def test_render_does_not_contact_hosts(self):
         with tempfile.TemporaryDirectory() as temp:
