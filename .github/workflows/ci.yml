@@ -5,12 +5,20 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      linux_runner:
+        description: Linux runner for this manual validation
+        type: choice
+        default: ubuntu-latest
+        options:
+          - ubuntu-latest
+          - ghostnet-linux-arm64
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.linux_runner || 'ubuntu-latest' }}
   cancel-in-progress: true
 
 # The lint job (Ubuntu; the macOS job skips the lint rows) installs these Ruff
@@ -50,15 +58,21 @@ jobs:
 
   test-linux:
     name: Lint and test on Ubuntu
-    runs-on: ubuntu-latest
+    # Pull requests and pushes keep the hosted route; manual runs can use ARC.
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
-      - name: Install test dependencies
+      - name: Install system test dependencies
+        if: runner.environment == 'github-hosted'
         run: |
           sudo apt-get update
           sudo apt-get install -y zsh tmux
+      - name: Install test dependencies
+        run: |
+          command -v zsh
+          command -v tmux
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1 "ruff==$RUFF_VERSION"
           echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
@@ -81,12 +95,17 @@ jobs:
           ATUIN_VERSION: 18.23.0
           GITLEAKS_VERSION: 8.30.1
         run: |
+          case "$(uname -m)" in
+            x86_64) fzf_arch=amd64; atuin_arch=x86_64; gitleaks_arch=x64 ;;
+            aarch64|arm64) fzf_arch=arm64; atuin_arch=aarch64; gitleaks_arch=arm64 ;;
+            *) printf '%s\n' "Unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
           mkdir -p "$RUNNER_TEMP/bin"
-          curl -sSfL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_amd64.tar.gz" |
+          curl -sSfL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/fzf-${FZF_VERSION}-linux_${fzf_arch}.tar.gz" |
             tar -xz -C "$RUNNER_TEMP/bin" fzf
-          curl -sSfL "https://github.com/atuinsh/atuin/releases/download/v${ATUIN_VERSION}/atuin-x86_64-unknown-linux-gnu.tar.gz" |
-            tar -xz -C "$RUNNER_TEMP/bin" --strip-components=1 atuin-x86_64-unknown-linux-gnu/atuin
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" |
+          curl -sSfL "https://github.com/atuinsh/atuin/releases/download/v${ATUIN_VERSION}/atuin-${atuin_arch}-unknown-linux-gnu.tar.gz" |
+            tar -xz -C "$RUNNER_TEMP/bin" --strip-components=1 atuin-${atuin_arch}-unknown-linux-gnu/atuin
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gitleaks_arch}.tar.gz" |
             tar -xz -C "$RUNNER_TEMP/bin" gitleaks
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
       # ./setup.sh --test skips lint rows when a linter is missing, and the
