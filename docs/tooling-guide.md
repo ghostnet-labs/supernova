@@ -15,15 +15,16 @@ Jump to [terminal history](#toolbox-and-atuin-what-is-automatic),
 
 | Tool | Use it when you want to… | Open it with |
 | --- | --- | --- |
-| **Toolbox** | Find a helper, a saved recipe, or an old command and put it into your terminal for editing | `toolbox --pick` |
+| **Toolbox** | Find a helper and put one of its examples into your terminal for editing; `--catalog` adds saved recipes and `--history` old commands | `toolbox` |
 | **Atuin** | Find something you previously typed in a terminal | **Ctrl+R** |
 | **Shell functions** | Do a common job with a short command and normal arguments | For example, `glog` or `rfind TODO` |
 | **Agent Control Center** | Browse agent chats, remember project decisions, and coordinate delegated work | `agent-control-center --open` |
 | **Hardware Planner** | Record exact parts, build a bill of materials, check documented compatibility, and compare changes | `hardware-planner --open` |
 
 Toolbox and Atuin overlap deliberately. Atuin supplies searchable local command
-history. Toolbox reads that history and also knows about the helpers currently
-loaded in your shell, available managed commands, and optional saved recipes.
+history. Toolbox reads that history when you pass `--history`, and also knows
+about the helpers currently loaded in your shell, available managed commands,
+and optional saved recipes (`--catalog`).
 A function is the actual reusable command; Toolbox helps you discover it.
 
 Agent Control Center and Hardware Planner are separate macOS apps. They exchange
@@ -37,12 +38,13 @@ In a terminal using this setup checkout:
 
 ```zsh
 source_zsh
-toolbox --pick
+toolbox
 ```
 
-Type `git`, choose a result, and press Enter. The selected text appears in your
-prompt. Edit it if needed, then press Enter again to run it. **Selecting a result
-does not run it.** Escape cancels the picker and preserves your original input.
+Type `git`, highlight a result, use ←/→ to pick one of the examples shown on the
+right, and press Enter. The selected text appears in your prompt. Edit it if
+needed, then press Enter again to run it. **Selecting a result does not run it.**
+Escape cancels the picker and preserves your original input.
 
 Try these ordinary functions inside a Git repository:
 
@@ -71,8 +73,8 @@ repository files alone does not rebuild an already installed app.
 | Action | What happens |
 | --- | --- |
 | Run a command in an interactive shell with Atuin enabled | Atuin records it in that shell's active scope |
-| Open Toolbox | It reads available helpers, optional catalogs, and the enabled local Atuin history |
-| Run the same command repeatedly | Toolbox offers one history entry per exact command text within each scope |
+| Open Toolbox | It reads available helpers and managed commands; `--catalog` adds optional catalogs and `--history` the enabled local Atuin history |
+| Run the same command repeatedly | `toolbox --history` offers one history entry per exact command text within each scope |
 | Change arguments, whitespace, or quoting | That variation remains a separate history entry |
 | Run `source_zsh`, or open a new shell | Updated function definitions and managed Atuin configuration are loaded |
 | Use a command frequently | It remains searchable; a new named function is **not** generated automatically |
@@ -97,17 +99,21 @@ counts; none were omitted from the verified source archive.
 ### Find and inspect commands
 
 ```zsh
-toolbox git                    # List matching helpers and history
-toolbox --pick 'git diff'      # Choose an example or previous invocation
-toolbox --describe glog        # Description, arguments, examples, and source
-glog --help                   # The function's own help
-toolbox --json history:        # Structured output containing local history
+toolbox git                        # List matching helpers
+toolbox --history git              # ...and matching history
+toolbox --pick 'git diff'          # Choose a helper's example
+toolbox --describe glog            # Description, arguments, examples, and source
+glog --help                        # The function's own help
+toolbox --history --json history:  # Structured output containing local history
 ```
 
-**Ctrl+X, then Ctrl+T** opens Toolbox from the current terminal input when that
-binding is available. Existing bindings are preserved. Helpers appear before
-catalog entries and history. History and catalog results have generated names;
-their preview shows the command text you will insert.
+**Ctrl+X, then Ctrl+T** opens the default Toolbox picker (helpers and managed
+commands) from the current terminal input when that binding is available.
+Existing bindings are preserved. The picker has one row per command; its
+examples are in the preview, and ←/→ choose the one to insert. With `--catalog`
+or `--history`, helpers appear before catalog entries and history. History and
+catalog results have generated names; their preview shows the command text you
+will insert.
 
 ### Personal and Work are separate
 
@@ -119,6 +125,8 @@ Use the normal setup scope controls when configuring a machine.
 | --- | --- | --- |
 | Personal | Personal history | Personal helpers, managed commands, catalog, and history |
 | Work (`JOB`) | Work history for that job | Personal tools/catalog/history plus the job's overlay tools and its catalog/history |
+
+Catalog and history entries appear only when you pass `--catalog` or `--history`.
 
 One-time helper suggestions can be added to both Atuin scopes, so Personal
 helper names are also discoverable in the Work Ctrl+R search. Other
@@ -186,7 +194,7 @@ A catalog is useful when you want to keep a particular recipe with a description
 
 ```zsh
 toolbox --save 'git log -5 --oneline' --description 'Review recent commits' --tag git
-toolbox --pick 'recent commits'
+toolbox --catalog --pick 'recent commits'
 ```
 
 Saving uses the active shell's scope. In a Work shell, add `--scope personal`
@@ -450,7 +458,8 @@ machines.
 ## Updates and other machines
 
 You do not need to maintain a second command-history file by hand. Each machine
-records its own new commands through Atuin. Toolbox sees them on its next use.
+records its own new commands through Atuin. `toolbox --history` sees them on its
+next use.
 Automatic Atuin cloud synchronization is disabled in this setup.
 
 For software updates, `newdev` updates Homebrew packages and eligible ordinary
@@ -496,8 +505,8 @@ a mixed legacy history file as Personal history.
 | An app still has the old interface | Check its `--status`, then rebuild with `--install` from the intended checkout |
 
 Setting `SETUP_ATUIN_ENABLED=false` before reloading disables Atuin recording and
-its Ctrl+R integration. It does not erase history; Toolbox can still read the
-existing scoped databases. Set it back to `true` and reload to resume recording.
+its Ctrl+R integration. It does not erase history; `toolbox --history` can still
+read the existing scoped databases. Set it back to `true` and reload to resume recording.
 
 For deeper details, see the [repository setup guide](../README.md),
 [Toolbox catalog reference](../dotfiles/toolbox/README.md),
