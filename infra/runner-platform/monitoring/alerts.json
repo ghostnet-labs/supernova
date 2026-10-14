@@ -1,0 +1,76 @@
+{
+  "apiVersion": "monitoring.coreos.com/v1",
+  "kind": "PrometheusRule",
+  "metadata": {
+    "name": "ci-platform",
+    "namespace": "monitoring",
+    "labels": {
+      "release": "ci-monitoring"
+    }
+  },
+  "spec": {
+    "groups": [
+      {
+        "name": "ci-platform",
+        "rules": [
+          {
+            "alert": "CIClusterNodeUnavailable",
+            "expr": "kube_node_status_condition{condition=\"Ready\",status=\"true\"} == 0",
+            "for": "5m",
+            "labels": {
+              "severity": "critical"
+            },
+            "annotations": {
+              "summary": "CI Kubernetes node is not Ready"
+            }
+          },
+          {
+            "alert": "CIRunnerPending",
+            "expr": "sum(kube_pod_status_phase{namespace=\"arc-runners\",phase=\"Pending\"}) > 0",
+            "for": "10m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "Runner pods are pending; check resource quota and node capacity"
+            }
+          },
+          {
+            "alert": "CIDiskLow",
+            "expr": "node_filesystem_avail_bytes{fstype!~\"tmpfs|overlay\",mountpoint=\"/\"} / node_filesystem_size_bytes < 0.15",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "Guest filesystem has less than 15% free"
+            }
+          },
+          {
+            "alert": "CIPodOOMKilled",
+            "expr": "sum(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"arc-.*|monitoring\"}) > 0",
+            "for": "2m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "A CI or monitoring container was OOM killed"
+            }
+          },
+          {
+            "alert": "CIScrapeFailed",
+            "expr": "up{job=~\"arc-metrics|actions-metrics|mac-.*\"} == 0",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "A CI metric target is unavailable"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+
