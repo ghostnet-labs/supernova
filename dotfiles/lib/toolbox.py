@@ -123,7 +123,7 @@ def history_records():
     return module.load_history_records()
 
 
-def describe(record):
+def describe(record, with_examples=True):
     lines = [record["name"], f"Source: {record['source']} ({record['kind']})",
              f"Location: {record['location']}", record["description"]]
     if record["argument_hint"]:
@@ -132,15 +132,23 @@ def describe(record):
         lines.append("Saved command: check required tools, paths, and arguments before running.")
     if record["kind"] == "history":
         lines.append("Local history: previous command text, not a verified or approved example.")
-    lines += ["Examples:"] + [f"  {example}" for example in record["examples"] or [record["invocation"]]]
+    if with_examples:
+        lines += ["Examples:"] + [f"  {example}" for example in record["examples"] or [record["invocation"]]]
     if record["shadowed"]:
         lines += ["Shadowed alternatives:"] + [
             f"  {item['source']} ({item['kind']}): {item['location']}" for item in record["shadowed"]]
     return "\n".join(clean(part) for line in lines for part in line.split("\n")) + "\n"
 
 
+HIDDEN_PAD = 400  # Columns of padding that push searchable example text off-screen.
+
+
 def render_picker(records, directory):
-    """Store inert text once; numeric selection reads it lazily from one private DB."""
+    """Store inert text once; numeric selection reads it lazily from one private DB.
+
+    One row per command. Its examples are chosen in the preview pane (see `step`),
+    and are appended past HIDDEN_PAD spaces so fzf can search them without showing them.
+    """
     rows = []
     path = directory / "picker.sqlite3"
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -148,54 +156,101 @@ def render_picker(records, directory):
     connection = sqlite3.connect(path)
     try:
         connection.execute("PRAGMA journal_mode=OFF")
-        connection.execute("CREATE TABLE choices (id INTEGER PRIMARY KEY, command TEXT, preview TEXT)")
+        connection.execute("CREATE TABLE choices (id INTEGER PRIMARY KEY, examples TEXT, display TEXT, header TEXT)")
         for record in records:
-            for example in record["examples"] or [record["invocation"]]:
-                number = len(rows) + 1
-                preview_example = "\n".join(clean(line) for line in example.split("\n"))
-                preview = describe(record) + f"\nInsert: {preview_example}\n\nEnter inserts; edit before running.\n"
-                connection.execute("INSERT INTO choices VALUES(?,?,?)", (number, example, preview))
-                rows.append("\t".join([str(number), clean(record["name"]), clean(record["source"]),
-                                       clean(record["description"]), clean(example)]))
+            examples = record["examples"] or [record["invocation"]]
+            display = ["\n".join(clean(line) for line in example.split("\n")).rstrip() for example in examples]
+            number = len(rows) + 1
+            connection.execute("INSERT INTO choices VALUES(?,?,?,?)", (
+                number, json.dumps(examples), json.dumps(display), describe(record, with_examples=False)))
+            rows.append((str(number), clean(record["name"]), clean(record["source"]),
+                         clean(record["description"]), " ".join(" ".join(example.split()) for example in display)))
         connection.commit()
     finally:
         connection.close()
-    print("\n".join(rows))
+    # Pad display columns ourselves: fzf renders tabs at tab stops, which misaligns them.
+    name_width = max((len(row[1]) for row in rows), default=0)
+    source_width = max((len(row[2]) for row in rows), default=0)
+    visible = [f"{name:<{name_width}}  {source:<{source_width}}  {description}"
+               for _, name, source, description, _ in rows]
+    # Tell the shell how wide the visible part is so it can size the preview pane.
+    layout = os.open(directory / "layout", os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(layout, "w") as handle:
+        handle.write(str(max(map(len, visible), default=0)))
+    padding = " " * HIDDEN_PAD
+    print("\n".join(f"{row[0]}\t{text}{padding}{row[4]}" for row, text in zip(rows, visible)))
 
 
-def picker_text(directory, number, mode):
+def load_choice(directory, number):
     if not re.fullmatch(r"[0-9]{1,12}", number):
         raise ValueError("invalid picker selection")
-    column = "preview" if mode == "preview" else "command"
     try:
         connection = sqlite3.connect((directory / "picker.sqlite3").resolve().as_uri() + "?mode=ro", uri=True)
         try:
             connection.execute("PRAGMA query_only=ON")
-            row = connection.execute(f"SELECT {column} FROM choices WHERE id=?", (int(number),)).fetchone()
+            row = connection.execute("SELECT examples, display, header FROM choices WHERE id=?",
+                                     (int(number),)).fetchone()
         finally:
             connection.close()
     except sqlite3.Error as error:
         raise ValueError("could not read picker selection") from error
     if row is None:
         raise ValueError("unknown picker selection")
-    return row[0]
+    return json.loads(row[0]), json.loads(row[1]), row[2]
+
+
+def chosen_index(directory, number, count):
+    """The example picked for this row; the state file only counts for the row it names."""
+    try:
+        row, index = (directory / "state").read_text().split()
+        if row == number:
+            return int(index) % count
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def step(directory, number, delta):
+    examples, _, _ = load_choice(directory, number)
+    index = (chosen_index(directory, number, len(examples)) + delta) % len(examples)
+    descriptor = os.open(directory / "state", os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(f"{int(number)} {index}")
+
+
+def picker_text(directory, number, mode):
+    examples, display, header = load_choice(directory, number)
+    index = chosen_index(directory, number, len(examples))
+    if mode != "preview":
+        return examples[index]
+    lines = [header.rstrip("\n"), "", f"Examples ({index + 1} of {len(display)}): \u2190/\u2192 choose, Enter inserts"]
+    for position, example in enumerate(display):
+        for offset, line in enumerate(example.split("\n")):
+            lines.append(("\u25b6 " if position == index and offset == 0 else "  ") + line)
+    return "\n".join(lines) + "\n"
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["table", "json", "describe", "pick", "preview", "select"])
+    parser.add_argument("mode", choices=["table", "json", "describe", "pick", "preview", "select", "step"])
     parser.add_argument("filter", nargs="?", default="")
     parser.add_argument("--directory", type=Path)
+    parser.add_argument("--delta", type=int, default=1)
+    parser.add_argument("--history", action="store_true", help="include local Atuin history")
+    parser.add_argument("--catalog", action="store_true", help="include reviewed command catalogs")
     args = parser.parse_args()
-    if args.mode in {"preview", "select", "pick"} and args.directory is None:
+    if args.mode in {"preview", "select", "pick", "step"} and args.directory is None:
         parser.error("--directory is required for picker operations")
+    if args.mode == "step":
+        step(args.directory, args.filter, args.delta)
+        return 0
     if args.mode in {"preview", "select"}:
         print(picker_text(args.directory, args.filter, args.mode), end="")
         return 0
-    history, notices = history_records()
+    history, notices = history_records() if args.history else ([], [])
     for notice in notices:
         print(f"toolbox: {notice}", file=sys.stderr)
-    records = inventory(sys.stdin.buffer.read()) + catalog_records() + history
+    records = inventory(sys.stdin.buffer.read()) + (catalog_records() if args.catalog else []) + history
     records.sort(key=lambda record: (record["kind"] == "history", record["kind"] == "catalog",
                                      record["source"] != "home", record["source"], record["name"]))
     if args.mode == "describe":

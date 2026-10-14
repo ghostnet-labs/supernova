@@ -195,7 +195,7 @@ class HistoryTests(unittest.TestCase):
         self.seed("personal", [command, "printf unrelated"])
         environment = dict(os.environ, **self.environment)
         result = subprocess.run(["python3", "-I", "-S", str(ROOT / "dotfiles/lib/toolbox.py"), "json",
-                                 "historyneedle"], input="", text=True, capture_output=True, env=environment)
+                                 "--history", "historyneedle"], input="", text=True, capture_output=True, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = json.loads(result.stdout)["commands"]
         self.assertEqual(len(rows), 1)
@@ -208,12 +208,12 @@ class HistoryTests(unittest.TestCase):
         snapshot = "\0".join(["work_fixture", "fixture", "function", "/missing", "function", "/missing", ""])
         environment = dict(os.environ, **self.environment)
         invocation = ["python3", "-I", "-S", str(ROOT / "dotfiles/lib/toolbox.py")]
-        result = subprocess.run([*invocation, "json"], input=snapshot, text=True,
+        result = subprocess.run([*invocation, "json", "--history"], input=snapshot, text=True,
                                 capture_output=True, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = json.loads(result.stdout)["commands"]
         self.assertEqual([row["kind"] for row in rows], ["function", "history"])
-        table = subprocess.run([*invocation, "table", "displayneedle"], input=snapshot, text=True,
+        table = subprocess.run([*invocation, "table", "--history", "displayneedle"], input=snapshot, text=True,
                                capture_output=True, env=environment)
         self.assertEqual(table.returncode, 0, table.stderr)
         self.assertIn("displayneedle", table.stdout)
@@ -223,7 +223,7 @@ class HistoryTests(unittest.TestCase):
     def test_json_surfaces_omissions_and_corruption_without_history_contents(self):
         path = self.seed("personal", ["bad\0private fixture"])
         environment = dict(os.environ, **self.environment)
-        invocation = ["python3", "-I", "-S", str(ROOT / "dotfiles/lib/toolbox.py"), "json"]
+        invocation = ["python3", "-I", "-S", str(ROOT / "dotfiles/lib/toolbox.py"), "json", "--history"]
         result = subprocess.run(invocation, input="", text=True, capture_output=True, env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(json.loads(result.stdout)["warnings"]), 1)
@@ -248,6 +248,42 @@ class HistoryTests(unittest.TestCase):
                 TOOLBOX.picker_text(self.directory, number, "select")
         with self.assertRaisesRegex(ValueError, "unknown picker"):
             TOOLBOX.picker_text(self.directory, "7001", "select")
+
+
+    def test_step_cycles_examples_and_applies_only_to_its_own_row(self):
+        def record(name, examples):
+            return {"name": name, "source": "home", "kind": "function", "location": "/x", "description": name,
+                    "argument_hint": "", "shadowed": [], "examples": examples, "invocation": name,
+                    "categories": []}
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            TOOLBOX.render_picker([record("alpha", ["a one", "a two", "a three\nsecond line"]),
+                                   record("beta", ["b one"])], self.directory)
+        rows = output.getvalue().splitlines()
+        self.assertEqual(len(rows), 2)
+        # Examples are searchable but pushed past the visible columns.
+        self.assertIn("a two", rows[0])
+        self.assertGreater(rows[0].index("a one"), TOOLBOX.HIDDEN_PAD)
+        self.assertEqual((self.directory / "layout").read_text(), str(len("alpha  home  alpha")))
+        def select(number):
+            return TOOLBOX.picker_text(self.directory, number, "select")
+
+        self.assertEqual(select("1"), "a one")
+        TOOLBOX.step(self.directory, "1", 1)
+        self.assertEqual(select("1"), "a two")
+        TOOLBOX.step(self.directory, "1", 1)
+        TOOLBOX.step(self.directory, "1", 1)
+        self.assertEqual(select("1"), "a one")  # wrapped forward
+        TOOLBOX.step(self.directory, "1", -1)
+        self.assertEqual(select("1"), "a three\nsecond line")  # wrapped backward
+        preview = TOOLBOX.picker_text(self.directory, "1", "preview")
+        self.assertIn("Examples (3 of 3)", preview)
+        self.assertIn("\u25b6 a three\n  second line", preview)
+        self.assertEqual(select("2"), "b one")  # another row ignores alpha's choice
+        TOOLBOX.step(self.directory, "2", 1)
+        self.assertEqual(select("2"), "b one")
+        self.assertEqual(select("1"), "a one")  # stepping beta moved the choice off alpha
+        self.assertEqual(len(list(self.directory.glob("picker*"))), 1)
+        self.assertEqual((self.directory / "state").stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

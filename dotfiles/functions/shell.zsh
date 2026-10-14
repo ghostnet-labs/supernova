@@ -564,10 +564,10 @@ topcmds() {
 _toolbox_help() {
   cat <<'EOF'
 Usage:
-  toolbox [FILTER]
-  toolbox --pick [FILTER]
-  toolbox --describe NAME
-  toolbox --json [FILTER]
+  toolbox [--history] [--catalog] [FILTER]
+  toolbox [--history] [--catalog] --pick [FILTER]
+  toolbox [--history] [--catalog] --describe NAME
+  toolbox [--history] [--catalog] --json [FILTER]
   toolbox --collect-history [--limit N] [--scope S]
   toolbox --pending [--json] [--scope S]
   toolbox --review [--scope S]
@@ -577,17 +577,21 @@ Usage:
   toolbox -h | --help
 
 Description:
-  List currently loaded managed functions, usable managed commands on PATH,
-  reviewed catalogs, and every distinct command in scoped local Atuin history.
-  Helpers appear first, then catalogs and history. Work requires the active Work
-  environment. History is read live; no collection or review is needed to search.
-  FILTER matches names, sources, descriptions, categories, and full command text.
-  Metadata is read
-  from comments; discovery never executes a helper. Shadowed alternatives are
+  List currently loaded managed functions and usable managed commands on PATH.
+  With no arguments at an interactive prompt, open the picker: one row per
+  command, with its examples in the preview, where ←/→ choose the one Enter
+  inserts. --catalog adds reviewed catalogs and --history adds every distinct
+  command in scoped local Atuin history; helpers appear first, then catalogs
+  and history. Work requires the active Work environment. History is read live;
+  no collection or review is needed to search. FILTER matches names, sources,
+  descriptions, categories, and full command text. Metadata is read from
+  comments; discovery never executes a helper. Shadowed alternatives are
   flagged in the table and detailed by --describe and --json.
 
 Options:
   FILTER              Show only matching commands.
+  --catalog           Include reviewed command catalogs (excluded by default).
+  --history           Include local Atuin history (excluded by default).
   --pick [FILTER]     Pick an example with fzf and insert it for editing, never run it.
   --describe NAME     Show source, argument hints, examples, and shadowed alternatives.
   --json [FILTER]     Emit schema_version 1 with a commands array (empty on no match).
@@ -604,6 +608,8 @@ Examples:
   toolbox
   toolbox git
   toolbox --pick network
+  toolbox --history --pick 'git diff'
+  toolbox --catalog --json catalog:
   toolbox --describe toolbox
   toolbox --json home
   toolbox --collect-history --limit 200
@@ -722,18 +728,34 @@ _toolbox_select() {
   local python="${commands[python3]}"
   directory="$(umask 077; command mktemp -d "${TMPDIR:-/tmp}/toolbox.XXXXXXXX")" || return 1
   {
-    _toolbox_render pick "$1" --directory "$directory" >"$directory/rows" || return $?
+    _toolbox_render pick "$1" "${@:2}" --directory "$directory" >"$directory/rows" || return $?
+    # Give the preview whatever width is left after the widest list row, so
+    # descriptions stay uncut; keep it between 30 columns and 60% of the screen.
+    local columns="${COLUMNS:-$(command tput cols 2>/dev/null)}" list_width preview_width
+    [[ "$columns" == <-> ]] || columns=120
+    list_width="$(<"$directory/layout")" 2>/dev/null
+    [[ "$list_width" == <-> ]] || list_width=0
+    preview_width=$(( columns - list_width - 10 ))
+    (( preview_width > columns * 6 / 10 )) && preview_width=$(( columns * 6 / 10 ))
+    (( preview_width < 30 )) && preview_width=30
     # Ignore inherited fzf actions (execute/become/accept bindings). Only the
     # numeric row ID enters the preview shell; source/example text is inert.
+    # Rows carry their examples past the screen edge so fzf can search them; left/right
+    # choose which example of the highlighted command the preview shows and Enter inserts.
+    # Options go before the mode, as in _toolbox_render.
+    local picker="${(q)python} -I -S ${(q)helper} --directory ${(q)directory}"
     selection="$(FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE=/dev/null command fzf \
-      --delimiter=$'\t' --with-nth=2.. --layout=reverse --height=80% \
-      --prompt='toolbox> ' --header='Enter: insert example for editing • Esc: cancel' \
-      --preview="${(q)python} -I -S ${(q)helper} preview {1} --directory ${(q)directory}" \
-      --preview-window=right:55%:wrap \
+      --delimiter=$'\t' --with-nth=2.. --no-hscroll --ellipsis=" " --layout=reverse --height=80% \
+      --prompt='toolbox> ' \
+      --header=$'Enter: insert example \u2022 \u2190/\u2192: choose example \u2022 Esc: cancel' \
+      --preview="$picker preview {1}" \
+      --preview-window=right:${preview_width}:wrap \
+      --bind="right:execute-silent($picker --delta=1 step {1})+refresh-preview" \
+      --bind="left:execute-silent($picker --delta=-1 step {1})+refresh-preview" \
       <"$directory/rows")" || return $?
     number="${selection%%$'\t'*}"
     [[ "$number" == <-> ]] || return 1
-    command "$python" -I -S "$helper" select "$number" --directory "$directory"
+    command "$python" -I -S "$helper" --directory "$directory" select "$number"
   } always {
     command rm -rf -- "$directory"
   }
@@ -759,14 +781,17 @@ _toolbox_init() {
   return 0
 }
 
-# toolbox: shell history | Search available commands, catalogs, and local Atuin history.
-# toolbox-args: [FILTER] | --pick [FILTER] | --describe NAME | --json [FILTER]
+# toolbox: shell history | Search available commands; --catalog and --history add saved commands and Atuin history.
+# toolbox-args: [--catalog] [--history] [FILTER] | --pick [FILTER] | --describe NAME | --json [FILTER]
 # toolbox-example: toolbox --pick git
+# toolbox-example: toolbox --history --pick 'git diff'
 # toolbox-example: toolbox --describe toolbox
 toolbox() {
   emulate -L zsh
   setopt localoptions pipefail
-  local mode=table selected
+  local mode= selected
+  local -a extra=()
+  while [[ "${1:-}" == --history || "${1:-}" == --catalog ]]; do extra+=("$1"); shift; done
   case "${1:-}" in
     -h|--help) _toolbox_help; return 0 ;;
     --collect-history) shift; _toolbox_catalog collect "$@"; return $? ;;
@@ -783,6 +808,11 @@ toolbox() {
     --) shift ;;
     -*) print -u2 -r -- "toolbox: unknown option: $1"; return 2 ;;
   esac
+  while [[ "${1:-}" == --history || "${1:-}" == --catalog ]]; do extra+=("$1"); shift; done
+  # Bare `toolbox` opens the picker when a prompt is available; otherwise list.
+  if [[ -z "$mode" ]]; then
+    if (( $# == 0 )) && [[ -o interactive && -o zle && -t 0 ]]; then mode=pick; else mode=table; fi
+  fi
   if (( $# > 1 )) || [[ "$mode" == describe && $# != 1 ]]; then
     print -u2 -r -- 'toolbox: --describe requires NAME; other modes accept one optional FILTER; see --help'
     return 2
@@ -792,12 +822,12 @@ toolbox() {
       print -u2 'toolbox: --pick requires an interactive Zsh prompt (use --describe or --json)'
       return 1
     }
-    selected="$(_toolbox_select "$1" && print -rn -- .)" || return $?
+    selected="$(_toolbox_select "$1" "${extra[@]}" && print -rn -- .)" || return $?
     selected="${selected%.}"
     # -r preserves backslashes; -z pushes onto ZLE's input stack without executing.
     print -rz -- "$selected"
   else
-    _toolbox_render "$mode" "$1"
+    _toolbox_render "$mode" "$1" "${extra[@]}"
   fi
 }
 
