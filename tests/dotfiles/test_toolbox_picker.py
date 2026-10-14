@@ -74,19 +74,25 @@ class CatalogIntegrationTests(unittest.TestCase):
 
     def test_catalogs_obey_shell_scope_and_search_command_text(self):
         personal, work = self.seed()
-        personal_result = self.run_toolbox("--json", "fixture")
+        personal_result = self.run_toolbox("--json", "--catalog", "fixture")
         self.assertEqual(personal_result.returncode, 0, personal_result.stderr)
         catalog = [row for row in json.loads(personal_result.stdout)["commands"] if row["kind"] == "catalog"]
         self.assertEqual([row["examples"][0] for row in catalog], [personal["command"]])
-        work_result = self.run_toolbox("--json", "fixture", work=True)
+        work_result = self.run_toolbox("--json", "--catalog", "fixture", work=True)
         self.assertEqual(work_result.returncode, 0, work_result.stderr)
         catalog = [row for row in json.loads(work_result.stdout)["commands"] if row["kind"] == "catalog"]
         self.assertEqual([row["examples"][0] for row in catalog], [personal["command"], work["command"]])
         self.assertTrue(all(row["name"].startswith("catalog:") for row in catalog))
-        description = self.run_toolbox("--describe", catalog[0]["name"])
+        description = self.run_toolbox("--describe", "--catalog", catalog[0]["name"])
         self.assertEqual(description.returncode, 0, description.stderr)
         self.assertIn(personal["command"], description.stdout)
         self.assertIn("Saved command", description.stdout)
+
+    def test_catalogs_are_excluded_unless_requested(self):
+        self.seed()
+        result = self.run_toolbox("--json", "fixture")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([row for row in json.loads(result.stdout)["commands"] if row["kind"] == "catalog"], [])
 
     def test_catalog_arguments_remain_inert_and_scope_is_forwarded(self):
         marker = self.directory / "executed"
@@ -109,7 +115,7 @@ class CatalogIntegrationTests(unittest.TestCase):
 
     def test_malformed_catalog_fails_without_showing_its_contents(self):
         (self.repository / "dotfiles/toolbox/personal.jsonl").write_text("private malformed text\n")
-        result = self.run_toolbox("--json")
+        result = self.run_toolbox("--json", "--catalog")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("private malformed text", result.stdout + result.stderr)
 
@@ -167,6 +173,8 @@ class PickerTests(unittest.TestCase):
         (helpers / "fixture.zsh").write_text(
             "# toolbox: fixture | PTY test command.\n"
             f"# toolbox-example: {self.example}\n"
+            "# toolbox-example: picker_fixture --second\n"
+            "# toolbox-example: picker_fixture --third\n"
             f"picker_fixture() {{ print executed >>{shlex.quote(str(self.marker))}; }}\n")
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
@@ -253,20 +261,36 @@ class PickerTests(unittest.TestCase):
         self.send("bindkey '^X^T' backward-char; _toolbox_init; _toolbox_init; bindkey '^X^T'\n")
         self.read_until(b'"^X^T" backward-char')
 
-    def test_catalog_widget_preserves_multiline_and_trailing_newlines(self):
-        self.send(b"old buffer\x18\x14")
-        self.read_until(b"toolbox>")
-        self.send("multilinefixture")
-        self.drain()
+    def pick_fixture_with_keys(self, *keys):
+        # Wait for what the picker draws rather than sleeping: on a loaded machine a key
+        # sent while fzf is still busy is swallowed when fzf exits.
+        self.send("toolbox --pick picker_fixture\n")
+        self.read_until(b"Examples (1 of 3)")
+        for key, shown in keys:
+            self.send(key)
+            self.read_until(f"Examples ({shown} of 3)".encode())
         self.send(b"\r")
-        time.sleep(0.15)
-        output = self.capture().replace(b"\r\n", b"\n")
-        self.assertIn(f"CAPTURE:{self.catalog_example}:CURSOR:{len(self.catalog_example)}:END".encode(), output)
-        self.assertFalse(self.marker.exists())
+        self.read_until(b"READY> ")
+        return self.capture().replace(b"\r\n", b"\n")
+
+    def test_right_arrow_chooses_the_next_example(self):
+        output = self.pick_fixture_with_keys((b"\x1b[C", 2))
+        self.assertIn(b"CAPTURE:picker_fixture --second:CURSOR:", output)
+
+    def test_arrows_cycle_through_examples(self):
+        output = self.pick_fixture_with_keys((b"\x1b[D", 3), (b"\x1b[C", 1), (b"\x1b[C", 2))
+        self.assertIn(b"CAPTURE:picker_fixture --second:CURSOR:", output)
+
+    def test_enter_without_arrows_inserts_the_first_example(self):
+        self.assertIn(f"CAPTURE:{self.example}:CURSOR:".encode(), self.pick_fixture_with_keys())
+
+    def test_catalog_is_excluded_from_default_picker(self):
+        self.send("toolbox --pick multilinefixture\n")
+        self.read_until(b"no commands match")
         self.assertFalse((self.directory / "NEVER").exists())
 
     def test_catalog_command_inserts_exact_text_at_next_prompt(self):
-        self.send("toolbox --pick multilinefixture\n")
+        self.send("toolbox --catalog --pick multilinefixture\n")
         self.read_until(b"toolbox>")
         self.send(b"\r")
         time.sleep(0.15)
@@ -274,19 +298,13 @@ class PickerTests(unittest.TestCase):
         self.assertIn(f"CAPTURE:{self.catalog_example}:CURSOR:{len(self.catalog_example)}:END".encode(), output)
         self.assertFalse((self.directory / "NEVER").exists())
 
-    def test_history_widget_preserves_exact_multiline_text_without_execution(self):
-        self.send(b"old buffer\x18\x14")
-        self.read_until(b"toolbox>")
-        self.send("localhistorysample")
-        self.drain()
-        self.send(b"\r")
-        time.sleep(0.15)
-        output = self.capture().replace(b"\r\n", b"\n")
-        self.assertIn(f"CAPTURE:{self.history_example}:CURSOR:{len(self.history_example)}:END".encode(), output)
+    def test_history_is_excluded_from_default_picker(self):
+        self.send("toolbox --pick localhistorysample\n")
+        self.read_until(b"no commands match")
         self.assertFalse((self.directory / "NEVER").exists())
 
     def test_history_command_inserts_exact_text_at_next_prompt(self):
-        self.send("toolbox --pick localhistorysample\n")
+        self.send("toolbox --history --pick localhistorysample\n")
         self.read_until(b"toolbox>")
         self.send(b"\r")
         time.sleep(0.15)
