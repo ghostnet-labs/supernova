@@ -1,0 +1,56 @@
+name: Build local CI runner image
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - infra/runner-platform/runner/**
+      - infra/runner-platform/config.example.json
+      - .github/workflows/runner-image.yml
+  push:
+    branches: [main]
+    paths:
+      - infra/runner-platform/runner/**
+      - infra/runner-platform/config.example.json
+      - .github/workflows/runner-image.yml
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: runner-image
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build ARM64 image
+        shell: bash
+        run: |
+          test "$(uname -m)" = aarch64
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/ci-runner"
+          tag="$image:sha-$GITHUB_SHA"
+          version="$(jq -r .versions.runner infra/runner-platform/config.example.json)"
+          docker build --platform linux/arm64 --build-arg "RUNNER_VERSION=$version" \
+            -t "$tag" infra/runner-platform/runner
+          docker run --rm --entrypoint bash "$tag" -c \
+            'test "$(uname -m)" = aarch64; git --version; zsh --version; tmux -V; yq --version; python3 -c "import rich, textual"'
+          printf 'RUNNER_IMAGE_TAG=%s\n' "$tag" >>"$GITHUB_ENV"
+      - name: Publish image and immutable reference
+        if: github.event_name != 'pull_request'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "$RUNNER_IMAGE_TAG"
+          docker pull "$RUNNER_IMAGE_TAG"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNNER_IMAGE_TAG")"
+          printf '%s\n' "$digest" >runner-image-digest.txt
+          printf 'Runner image: `%s`\n' "$digest" >>"$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: github.event_name != 'pull_request'
+        with:
+          name: runner-image-digest
+          path: runner-image-digest.txt
+

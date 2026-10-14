@@ -1,0 +1,39 @@
+name: Runner platform canary
+on:
+  workflow_dispatch:
+    inputs:
+      scale_set:
+        description: Exact ARC scale-set name
+        type: string
+        required: true
+        default: ci-linux-arm64
+      expected_failure:
+        description: Exercise cleanup after a failed job
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ${{ inputs.scale_set }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check architecture and tools
+        run: |
+          test "$(uname -m)" = aarch64
+          git --version
+          zsh --version
+          tmux -V
+          python3 -c 'import rich, textual'
+          python3 -m venv "$RUNNER_TEMP/test-venv"
+          yq --version | grep -q mikefarah
+          printf 'runner=%s\n' "$RUNNER_NAME" >"$RUNNER_TEMP/canary.txt"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: runner-canary
+          path: ${{ runner.temp }}/canary.txt
+      - name: Optional failure
+        if: inputs.expected_failure
+        run: exit 1
+
