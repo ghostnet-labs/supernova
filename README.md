@@ -192,7 +192,8 @@ name (work helpers appear in a work shell). The description and filter words com
 from a contiguous metadata comment block above each function. Executables in
 the managed command directories appear when their directory is on PATH and
 the command is usable. Work commands require `WORK_ENV=true` and the selected
-`JOB`; discovery never loads another environment or executes a command.
+`JOB`; discovery never loads another environment or executes a command. With
+no arguments at an interactive prompt, `toolbox` opens the picker instead.
 
 Use `toolbox --describe NAME` for a command's source location, examples, and
 argument hints. When an alias or another command with the same name hides a
@@ -203,7 +204,9 @@ with a `commands` array); no matches gives an empty array, while the table
 form exits 1.
 
 `toolbox --pick [FILTER]` uses fzf to choose an example and place it at the next
-editable prompt. Ctrl+X then Ctrl+T opens the same picker while you are typing
+editable prompt. The list has one row per command; the preview pane shows its
+examples, and ←/→ choose the one to insert. Searching matches example text too.
+Ctrl+X then Ctrl+T opens the same picker while you are typing
 a command, when nothing else uses that key, and replaces the line with your
 choice. Enter selects text without executing it; Escape
 preserves the original buffer and cursor. Existing bindings, fzf file search,
@@ -223,8 +226,9 @@ review() { ... }
 Examples are literal, single-line shell text intended for inspection and
 editing. Metadata is never evaluated or obtained by running `--help`.
 
-Toolbox searches every distinct command in the enabled local Atuin history as
-well as loaded helpers and saved catalog entries. There is no history collection
+With `--history`, Toolbox also searches every distinct command in the enabled
+local Atuin history, and `--catalog` adds saved catalog entries; by default it
+shows only loaded helpers and managed commands. There is no history collection
 or approval step. Personal shells read only Personal history; Work shells also
 read their active job's history. Raw commands stay local and are never written
 to the tracked catalog. Exact spelling, arguments, and multiline text are retained.
@@ -241,9 +245,9 @@ Common patterns from history are ordinary functions with positional arguments:
 glog
 gstaged --check
 rfind TODO
-toolbox --pick                    # Helpers first, plus complete local history
-toolbox --pick 'git diff'          # Find an exact prior invocation or a helper
-toolbox --json history:            # Inspect only local history entries
+toolbox                              # Pick a helper; ←/→ choose its example
+toolbox --history --pick 'git diff'  # Also find exact prior invocations
+toolbox --history --json history:    # Inspect only local history entries
 ```
 
 Use a helper's `--help` for arguments and defaults. The picker inserts the
@@ -252,6 +256,7 @@ commands or tools that are no longer installed.
 
 Optional catalogs are still available through `toolbox --save`, `--collect-history`,
 `--review`, `--pending`, `--accept`, and `--reject`. They are not needed for history search.
+Pass `--catalog` to list or pick saved entries.
 Saving a catalog entry requires a successful secret scan; raw history is not
 published. `newdev` updates tools without creating another review queue.
 See [catalog usage and local storage](dotfiles/toolbox/README.md) for these optional

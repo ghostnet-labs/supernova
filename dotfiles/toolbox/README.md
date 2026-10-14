@@ -1,13 +1,15 @@
 # Toolbox command catalogs
 
-Catalogs are optional saved commands. Toolbox already searches every distinct
-command in the enabled local Atuin databases alongside loaded helpers and usable
-managed executables. Common history patterns are named shell functions with ordinary
-positional arguments, so you don't need a catalog to reuse them.
-Saved entries remain available with names such as `catalog:personal:0123456789ab`.
+Catalogs are optional saved commands. With `--history`, Toolbox already searches
+every distinct command in the enabled local Atuin databases alongside loaded
+helpers and usable managed executables. Common history patterns are named shell
+functions with ordinary positional arguments, so you don't need a catalog to
+reuse them. Pass `--catalog` to include saved entries, which have names such as
+`catalog:personal:0123456789ab`.
 
-`toolbox --pick` searches everything. `toolbox --json history:` selects history
-entries only. Personal shells never open Work history; Work shells include
+By default Toolbox shows only helpers and managed executables;
+`toolbox --catalog --history --pick` searches everything.
+`toolbox --history --json history:` selects history entries only. Personal shells never open Work history; Work shells include
 Personal plus the active job. Reading history does not modify it, copy it into
 Git, or execute commands. A missing history database contributes no entries.
 Malformed databases produce a visible error. Records with invalid text, NUL
@@ -20,8 +22,8 @@ into a command intended for the catalog.
 
 ```zsh
 toolbox --save 'git log -5 --oneline' --description 'Review recent commits' --tag git
-toolbox --pick 'recent commits'
-toolbox --json catalog:
+toolbox --catalog --pick 'recent commits'
+toolbox --catalog --json catalog:
 ```
 
 `--save` chooses the active shell's scope. Add `--scope personal` in a Work shell
@@ -32,7 +34,7 @@ The picker previews the description, source, and exact command. Enter inserts
 the selection into the editable prompt; it never executes it. Multiline commands
 and trailing newlines are preserved. Review paths, arguments, and required tools
 before running a saved command on a different machine. To inspect a complete
-entry, use its name from the listing with `toolbox --describe NAME`.
+entry, use its name from the listing with `toolbox --catalog --describe NAME`.
 
 ## Collect and review history
 
