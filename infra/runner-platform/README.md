@@ -6,6 +6,35 @@ repair entry point. It does not alter current workflow routing.
 
 ## Start safely
 
+For the inspected Studio migration, `python3 infra/runner-platform/pilot.py start`
+checks the personal account, pinned K3s release assets, kubectl compatibility,
+host capacity and Lima configuration before touching the old builder. Install
+Helm and a current kubectl with `brew install helm kubernetes-cli`, with
+`/opt/homebrew/bin` first on PATH. The previous `/usr/local/bin/kubectl` is
+v1.32.2 and cannot administer the pinned v1.37 pilot.
+
+The command pauses the `studio-build-2` registration loop and its guest listener,
+checks for active workers and checks GitHub busy state again, then disables
+and unloads that exact LaunchAgent and stops `gh-build-2`. Its disk remains
+available for rollback. It creates the 4 CPU/6 GiB/60 GiB `ci-k3s` pilot and
+prints node/pod status. It refuses a loaded watchdog or unexpected slot layout.
+It does not install ARC or route workflows.
+
+If startup fails after draining the builder, correct the reported prerequisite
+and rerun `start`, or run `python3 infra/runner-platform/pilot.py rollback`.
+Rollback stops the pilot before restarting the old VM and enabling/bootstraping
+its JIT slot; GitHub will receive a fresh registration. Inspect pending jobs
+before using rollback after ARC has been installed. Private state, inventory and
+drain records live in `.local/` and are excluded from the deliverable archive.
+
+After the first pilot boot, run `python3 infra/runner-platform/pilot.py repair-ports`
+to apply corrected deny rules to the existing VM. The command backs up its Lima
+configuration, refuses an existing ARC workload, restarts the pilot with only
+the API forwarding exception, and waits for CoreDNS, local-path storage and
+metrics-server to become available. Future new VMs use the corrected rules.
+The deny rule covers both protocols and all bound guest interfaces; Lima's
+default loopback ignore rule does not suppress wildcard listeners.
+
 Prerequisites: Lima 2.2.1+, kubectl, Helm, Python 3, a working personal GitHub
 CLI login, and enough RAM/disk headroom. Use an ordinary host terminal;
 restricted execution sessions cannot start or inspect these VMs reliably.
@@ -51,6 +80,10 @@ mode-0600 token file with read-packages access using
 `registry-secret --username ACCOUNT --token-file /PRIVATE/registry-token`.
 ARC deployment checks that the secret exists, and runner pods reference it.
 The workflow's short-lived GITHUB_TOKEN cannot be reused for cluster pulls.
+Alternatively, use `registry-secret --username ACCOUNT --prompt` and paste a
+classic PAT with only `read:packages` at the hidden terminal prompt. This avoids
+writing a second local token file or putting the token in shell history. The
+personal CLI's administration token should not be reused for image pulls.
 For an already-public image, set image_pull_secret to an empty string;
 this tooling does not change package visibility.
 
@@ -69,10 +102,20 @@ Private key/password data go to Kubernetes through stdin; they are not
 printed or included in argv. Keep the credential file outside git and
 back it up encrypted. Host/cluster admin access can still read Secrets.
 
+Run `python3 infra/runner-platform/check_app.py --app-file /PRIVATE/app.json`
+from the host Terminal to verify the App/key pair, installation account,
+organization ownership, suspension status and runner permission. It signs a
+short-lived JWT with OpenSSL; neither the key nor JWT is printed. `deploy-arc`
+performs this check before creating any Kubernetes resources.
+
 Copy `examples/canary.yml` to the chosen repository on a review branch.
 Dispatch it against the exact scale-set name; test success, intentional
 failure and cancellation. Verify success and pod cleanup with
-`verify-canary --repository OWNER/REPO --run-id ID`.
+`verify-canary --repository OWNER/REPO --run-id ID`. For the other lifecycle
+tests, add `--expected-conclusion failure` or `--expected-conclusion cancelled`.
+The failure test must fail only at `Optional failure`; cancel the cancellation
+test after its runner has completed `Set up job`. Verification records each
+run separately and waits for ephemeral runner pods to disappear.
 Plain shell jobs are supported initially. Container/service jobs, Docker
 builds and firmware jobs stay on their existing route until tested with an
 appropriate isolated container-mode setup and dependency image.
@@ -85,8 +128,22 @@ disk to resize it. The `start --profile full` command verifies that the
 actual allocation matches the 8 vCPU/20 GiB/100 GiB profile before deployment.
 The host must retain its reserve; existing VMs may have to be stopped first.
 
-Run `monitor --profile full` for pinned kube-prometheus-stack, private Grafana,
-20 GiB Prometheus and 2 GiB Grafana PVCs, dashboard and alert rules.
+Run `monitor --profile pilot` for bounded monitoring in the existing 6 GiB VM.
+The pilot reserves room for the maximum runner allocation, checks live node
+pressure and pod memory budgets, and limits the monitoring namespace to
+1,280 MiB. Prometheus keeps 48 hours or 4 GB of samples on an 8 GiB PVC;
+Grafana and Alertmanager use 2 GiB and 1 GiB PVCs. The full profile uses
+larger retention and resources and requires its own checked VM allocation.
+Existing PVC sizes and Grafana credentials are preserved; incompatible storage
+changes are refused.
+
+Installation verifies storage, workload readiness, authenticated Grafana access,
+the provisioned dashboard, required scrape targets and real metric series.
+Rerun `verify-monitoring` to check them independently. Configured Actions
+collectors must also report fresh successful collection. Read
+`monitoring/README.md` for host/VM exporters, required read permissions and
+the limits of sampled workflow metrics.
+
 Use `dashboard` to forward Grafana to http://127.0.0.1:3000.
 Read the admin-password from the monitoring/grafana-admin Secret privately;
 it is generated once and preserved on reruns. Alert rules initially appear
@@ -95,9 +152,9 @@ in Grafana/Alertmanager; notification delivery needs an explicit destination.
 ARC metrics are scraped from controller/listener ports. GitHub-wide metrics
 and Mac host metrics need separate collection:
 - On each Mac, run `metrics.py --mode host` bound to a private VPN address.
-  It provides CPU-process usage, memory pages and disk capacity. It does not
-  provide disk I/O or network throughput; use a verified Darwin exporter
-  for those additional metrics.
+  This compatibility fallback provides a process CPU estimate, memory pages
+  and disk capacity. Use the official native node_exporter for complete host
+  CPU counters, memory, disk I/O and network metrics.
 - For GitHub metrics, run `metrics.py --mode github --listen PRIVATE_IP
   --token-file /PRIVATE/token --repository OWNER/REPO`.
   Use read-only Actions permission for selected repositories. It provides

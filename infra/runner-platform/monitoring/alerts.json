@@ -48,8 +48,8 @@
           },
           {
             "alert": "CIPodOOMKilled",
-            "expr": "sum(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"arc-.*|monitoring\"}) > 0",
-            "for": "2m",
+            "expr": "max by(namespace,pod)(kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\",namespace=~\"arc-.*|monitoring\"} * on(namespace,pod,container) group_left() increase(kube_pod_container_status_restarts_total[10m])) > 0",
+            "for": "0m",
             "labels": {
               "severity": "warning"
             },
@@ -59,7 +59,7 @@
           },
           {
             "alert": "CIScrapeFailed",
-            "expr": "up{job=~\"arc-metrics|actions-metrics|mac-.*\"} == 0",
+            "expr": "up == 0",
             "for": "5m",
             "labels": {
               "severity": "warning"
@@ -67,10 +67,75 @@
             "annotations": {
               "summary": "A CI metric target is unavailable"
             }
+          },
+          {
+            "alert": "CIMetricsCollectionFailed",
+            "expr": "ci_metrics_collection_success == 0",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "CI host or GitHub collector cannot refresh its measurements"
+            }
+          },
+          {
+            "alert": "CIMetricsCollectionStale",
+            "expr": "time() - ci_metrics_last_success_timestamp_seconds > 600",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "CI collector has not completed a successful collection in ten minutes"
+            }
+          },
+          {
+            "alert": "CIHostCollectorFailed",
+            "expr": "node_scrape_collector_success == 0",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "A node exporter collector failed; host metrics are incomplete"
+            }
+          },
+          {
+            "alert": "CIConventionalRunnerOffline",
+            "expr": "ci_github_runner_online == 0",
+            "for": "10m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "A registered conventional GitHub runner has been offline for ten minutes"
+            }
+          },
+          {
+            "alert": "CIHostMemoryLow",
+            "expr": "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "A Linux host has less than 10 percent available memory"
+            }
+          },
+          {
+            "alert": "CIArcRunnerFailed",
+            "expr": "gha_controller_failed_ephemeral_runners > 0",
+            "for": "5m",
+            "labels": {
+              "severity": "warning"
+            },
+            "annotations": {
+              "summary": "ARC has failed ephemeral runners"
+            }
           }
         ]
       }
     ]
   }
 }
-

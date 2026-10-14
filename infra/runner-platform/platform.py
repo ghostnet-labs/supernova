@@ -2,17 +2,23 @@
 """Provision a bounded local CI cluster and inventory runner migration."""
 import argparse
 import base64
+import contextlib
 import datetime as dt
+import getpass
 import json
-from pathlib import Path
-import re
 import plistlib
+import re
+import selectors
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 GIB = 1024 ** 3
@@ -169,6 +175,17 @@ def namespace(name):
             "metadata": {"name": name, "labels": {"ci-platform": "true"}}}
 
 
+def port_forwards(cfg):
+    return [
+        {"guestPort": 6443, "hostPort": cfg["api_host_port"],
+         "hostIP": "127.0.0.1", "proto": "tcp"},
+        # Ignore wildcard listeners as well as interface-specific ones. The
+        # default guestIP=127.0.0.1 ignore rule skips wildcard bind addresses.
+        {"guestIP": "0.0.0.0", "guestIPMustBeZero": False,
+         "guestPortRange": [1, 65535], "proto": "any", "ignore": True},
+    ]
+
+
 def quota(cfg, profile):
     return {"apiVersion": "v1", "kind": "ResourceQuota",
             "metadata": {"name": "runner-budget", "namespace": "arc-runners"},
@@ -208,11 +225,7 @@ def lima_template(cfg, profile):
         "ssh": {"localPort": cfg["ssh_host_port"], "forwardAgent": False,
                 "loadDotSSHPubKeys": False},
         "networks": [{"vzNAT": True}],
-        "portForwards": [
-            {"guestPort": 6443, "hostPort": cfg["api_host_port"],
-             "hostIP": "127.0.0.1", "proto": "tcp"},
-            {"guestPortRange": [1, 65535], "ignore": True},
-        ],
+        "portForwards": port_forwards(cfg),
         "provision": [{"mode": "system", "script": script}],
         "probes": [{
             "mode": "readiness", "description": "K3s API and node ready",
@@ -261,15 +274,30 @@ def runner_values(cfg, profile, *, heavy=False):
     return values
 
 
-def monitoring_values(cfg):
+def monitoring_resources(cpu, memory, cpu_limit, memory_limit):
+    return {"requests": {"cpu": cpu, "memory": memory},
+            "limits": {"cpu": cpu_limit, "memory": memory_limit}}
+
+
+def monitoring_values(cfg, profile="full"):
+    """Bound every enabled chart container, including hooks and sidecars.
+
+    Values verified against kube-prometheus-stack 92.6.0 and its pinned
+    Grafana 13.5.1 chart. Keep release/object names stable to retain PVCs.
+    """
+    pilot = profile == "pilot"
+    small = monitoring_resources("10m", "16Mi", "100m", "32Mi" if pilot else "64Mi")
+    reloader = monitoring_resources("10m", "16Mi", "100m", "32Mi")
     jobs = [{
         "job_name": "arc-metrics", "kubernetes_sd_configs": [
-            {"role": "pod", "namespaces": {"names": ["arc-system"]}}],
+            {"role": "pod", "namespaces": {"names": ["arc-system", "arc-runners"]}}],
         "relabel_configs": [
             {"source_labels": ["__meta_kubernetes_pod_container_port_name"],
              "regex": "metrics", "action": "keep"},
             {"source_labels": ["__meta_kubernetes_namespace"], "target_label": "namespace"},
             {"source_labels": ["__meta_kubernetes_pod_name"], "target_label": "pod"},
+            {"source_labels": ["__meta_kubernetes_pod_label_app_kubernetes_io_component"],
+             "target_label": "component"},
         ],
     }]
     for target in cfg.get("host_exporters", []):
@@ -277,34 +305,52 @@ def monitoring_values(cfg):
                      "static_configs": [{"targets": [target["address"]],
                                          "labels": {"os": target.get("os", "darwin")}}]})
     return {
-        "defaultRules": {"rules": {"kubeScheduler": False, "kubeControllerManager": False}},
+        "defaultRules": {"rules": {"kubeSchedulerAlerting": False, "kubeSchedulerRecording": False,
+                                    "kubeControllerManager": False, "kubeProxy": False, "etcd": False}},
         "kubeScheduler": {"enabled": False}, "kubeControllerManager": {"enabled": False},
         "kubeEtcd": {"enabled": False}, "kubeProxy": {"enabled": False},
+        "kubelet": {"serviceMonitor": {"interval": "60s", "cAdvisor": True,
+                                        "tlsConfig": {"insecureSkipVerify": False,
+                                                      "ca": {"configMap": {"name": "kube-root-ca.crt", "key": "ca.crt"}}}}},
         "alertmanager": {"enabled": True, "alertmanagerSpec": {
-            "resources": {"requests": {"cpu": "50m", "memory": "128Mi"},
-                          "limits": {"memory": "256Mi"}}}},
-        "prometheusOperator": {"resources": {"requests": {"cpu": "100m", "memory": "128Mi"},
-                                            "limits": {"memory": "256Mi"}}},
+            "persistentVolumeClaimRetentionPolicy": {"whenDeleted": "Retain", "whenScaled": "Retain"},
+            "replicas": 1, "retention": "24h", "storage": {"volumeClaimTemplate": {"spec": {
+                "storageClassName": "local-path", "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}}}}},
+            "resources": monitoring_resources("25m", "32Mi" if pilot else "128Mi", "200m", "64Mi" if pilot else "256Mi")}},
+        "prometheusOperator": {
+            "resources": monitoring_resources("50m", "64Mi" if pilot else "128Mi", "250m", "96Mi" if pilot else "256Mi"),
+            "kubeletEndpointsEnabled": False, "kubeletEndpointSliceEnabled": True,
+            "prometheusConfigReloader": {"resources": reloader},
+            "admissionWebhooks": {"patch": {"resources": small}}},
+        "kube-state-metrics": {"resources": monitoring_resources("25m", "32Mi", "200m", "64Mi" if pilot else "96Mi")},
+        "prometheus-node-exporter": {"resources": monitoring_resources("25m", "32Mi", "200m", "48Mi" if pilot else "64Mi")},
         "grafana": {
             "admin": {"existingSecret": "grafana-admin", "userKey": "admin-user",
                       "passwordKey": "admin-password"},
-            "persistence": {"enabled": True, "storageClassName": "local-path", "size": "2Gi"},
-            "resources": {"requests": {"cpu": "100m", "memory": "256Mi"},
-                          "limits": {"memory": "512Mi"}},
+            "persistence": {"enabled": True, "storageClassName": "local-path", "size": "2Gi",
+                            "annotations": {"helm.sh/resource-policy": "keep"}},
+            "resources": monitoring_resources("50m", "96Mi" if pilot else "256Mi", "500m", "192Mi" if pilot else "512Mi"),
+            "sidecar": {"resources": small}, "initChownData": {"resources": small},
+            "downloadDashboards": {"resources": small}, "testFramework": {"resources": small},
+            "grafana.ini": {"auth.anonymous": {"enabled": False}, "users": {"allow_sign_up": False}},
+            "deploymentStrategy": {"type": "Recreate"},
             "nodeSelector": {"ci.platform/persistent": "true"},
             "service": {"type": "ClusterIP"},
         },
         "prometheus": {"prometheusSpec": {
-            "retention": "7d", "retentionSize": "10GB",
-            "resources": {"requests": {"cpu": "500m", "memory": "1Gi"},
-                          "limits": {"memory": "2Gi"}},
+            "persistentVolumeClaimRetentionPolicy": {"whenDeleted": "Retain", "whenScaled": "Retain"},
+            "replicas": 1, "retention": "48h" if pilot else "7d", "retentionSize": "4GB" if pilot else "10GB",
+            "serviceDiscoveryRole": "EndpointSlice",
+            "scrapeInterval": "60s", "evaluationInterval": "60s",
+            "resources": monitoring_resources("200m" if pilot else "500m", "256Mi" if pilot else "1Gi", "1", "512Mi" if pilot else "2Gi"),
             "nodeSelector": {"ci.platform/persistent": "true"},
             "serviceMonitorSelectorNilUsesHelmValues": False,
             "podMonitorSelectorNilUsesHelmValues": False,
             "additionalScrapeConfigs": jobs,
             "storageSpec": {"volumeClaimTemplate": {"spec": {
                 "storageClassName": "local-path", "accessModes": ["ReadWriteOnce"],
-                "resources": {"requests": {"storage": "20Gi"}}}}},
+                "resources": {"requests": {"storage": "8Gi" if pilot else "20Gi"}}}}},
         }},
     }
 
@@ -323,7 +369,7 @@ def render(cfg, profile, state):
     })
     save(output / "general.yaml", runner_values(cfg, profile))
     save(output / "heavy.yaml", runner_values(cfg, profile, heavy=True))
-    save(output / "monitoring.yaml", monitoring_values(cfg))
+    save(output / "monitoring.yaml", monitoring_values(cfg, profile))
     return output
 
 
@@ -463,9 +509,26 @@ def start(cfg, profile, state):
         run(["limactl", "start", "--tty=false", "--name", cfg["vm_name"], output / "lima.yaml"],
             timeout=1200)
     get_kubeconfig(cfg, state)
-    kube(state, "wait", "--for=condition=Ready", "node", "--all", "--timeout=180s")
+    wait_cluster(state)
     save(state / "deployment.json", {"profile": profile, "vm": cfg["vm_name"],
                                     "started_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+
+
+def wait_cluster(state):
+    kube(state, "wait", "--for=condition=Ready", "node", "--all", "--timeout=180s")
+    required = {"coredns", "local-path-provisioner", "metrics-server"}
+    # K3s can report a Ready node before its bundled manifests are applied.
+    deadline = time.monotonic() + 90
+    while True:
+        deployments = json.loads(kube(state, "get", "deployments", "-n", "kube-system", "-o", "json", capture=True))
+        existing = {item["metadata"]["name"] for item in deployments["items"]}
+        if required <= existing:
+            break
+        if time.monotonic() >= deadline:
+            raise PlatformError("K3s system deployments are missing: " + ", ".join(sorted(required - existing)))
+        time.sleep(2)
+    for name in sorted(required):
+        kube(state, "rollout", "status", "deployment/" + name, "-n", "kube-system", "--timeout=180s")
 
 
 def check_deployment(cfg, profile, state):
@@ -493,6 +556,10 @@ def deploy_arc(cfg, profile, state, app_file):
         "github_app_id", "github_app_installation_id", "github_app_private_key")}
     if not values["github_app_id"] or "PRIVATE KEY" not in values["github_app_private_key"]:
         raise PlatformError("Invalid App credentials.")
+    scope = github_path(cfg["github_url"])
+    run([sys.executable, ROOT / "check_app.py", "--app-file", app_file,
+         "--organization", scope.split("/")[1], "--scope",
+         "organization" if scope.startswith("orgs/") else "repository"])
     for ns in ("arc-system", "arc-runners"):
         apply_object(state, namespace(ns))
     if cfg.get("image_pull_secret"):
@@ -510,51 +577,331 @@ def deploy_arc(cfg, profile, state, app_file):
     print("ARC installed. Run the canary workflow before routing real jobs.")
 
 
+def memory_bytes(value):
+    match = re.fullmatch(r"([0-9]+(?:[.][0-9]+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?", str(value))
+    if not match:
+        raise PlatformError("Unsupported Kubernetes memory quantity.")
+    units = {None: 1, "Ki": 1024, "Mi": 1024 ** 2, "Gi": GIB, "Ti": 1024 ** 4,
+             "K": 1000, "M": 1000 ** 2, "G": 1000 ** 3, "T": 1000 ** 4}
+    return int(float(match[1]) * units[match[2]])
+
+
+def monitoring_capacity(cfg, profile, state):
+    """Reserve room for every runner even when ARC is currently scaled to zero."""
+    nodes = json.loads(kube(state, "get", "nodes", "-o", "json", capture=True))["items"]
+    node = next((n for n in nodes if n["metadata"]["name"] == cfg["vm_name"]), None)
+    if not node:
+        raise PlatformError("Managed node was not found.")
+    if any(c["status"] == "True" and c["type"] in ("MemoryPressure", "DiskPressure", "PIDPressure")
+           for c in node["status"]["conditions"]):
+        raise PlatformError("Managed node is under resource pressure; monitoring install refused.")
+    allocatable = memory_bytes(node["status"]["allocatable"]["memory"])
+    pods = json.loads(kube(state, "get", "pods", "-A", "-o", "json", capture=True))["items"]
+    other = 0
+    active_runners = 0
+    for pod in pods:
+        if pod.get("status", {}).get("phase") in ("Succeeded", "Failed"):
+            continue
+        if pod["metadata"]["namespace"] == "monitoring":
+            continue
+        if pod["spec"].get("nodeName") != cfg["vm_name"]:
+            continue
+        if pod["metadata"].get("labels", {}).get("actions.github.com/scale-set-name") == cfg["general_scale_set"]:
+            active_runners += 1
+        # K3s system pods may omit limits. Reserve at least 128 MiB per such
+        # container, on top of the kubelet's system/kube-reserved allocation.
+        def container_memory(container):
+            resources = container.get("resources", {})
+            return memory_bytes(resources.get("limits", {}).get("memory")
+                                or resources.get("requests", {}).get("memory") or "128Mi")
+        steady = sum(container_memory(c) for c in pod["spec"]["containers"])
+        init = max((container_memory(c) for c in pod["spec"].get("initContainers", [])), default=0)
+        other += max(steady, init)
+    budget = memory_bytes("1280Mi" if profile == "pilot" else "5Gi")
+    remaining = max(0, cfg[profile]["max_runners"] - active_runners)
+    required = other + budget + remaining * memory_bytes(cfg[profile]["runner_memory_limit"])
+    if required > allocatable:
+        raise PlatformError(f"Monitoring needs {required // 1048576} MiB including runner headroom; "
+                            f"node allocatable is {allocatable // 1048576} MiB. Keep the current VM allocation.")
+    return {"allocatable_mib": allocatable // 1048576, "reserved_mib": required // 1048576,
+            "monitoring_limit_mib": budget // 1048576}
+
+
+def check_monitoring_pvcs(state, values):
+    claims = json.loads(kube(state, "get", "pvc", "-n", "monitoring", "-o", "json", capture=True))["items"]
+    expected = {"ci-monitoring-grafana": values["grafana"]["persistence"]["size"]}
+    for claim in claims:
+        name = claim["metadata"]["name"]
+        if "ci-monitoring" not in name:
+            continue
+        if name in expected:
+            desired = expected[name]
+        elif name.startswith("prometheus-"):
+            desired = values["prometheus"]["prometheusSpec"]["storageSpec"]["volumeClaimTemplate"]["spec"]["resources"]["requests"]["storage"]
+        elif name.startswith("alertmanager-"):
+            desired = "1Gi"
+        else:
+            raise PlatformError("Unrecognized monitoring PVC; inspect existing release before changing it.")
+        if memory_bytes(claim["spec"]["resources"]["requests"]["storage"]) != memory_bytes(desired):
+            raise PlatformError("Monitoring PVC size differs from this profile; refusing to resize or replace stored data.")
+
+
 def monitor(cfg, profile, state):
-    if profile != "full":
-        raise PlatformError("Full monitoring requires the full profile; keep the 6 GiB pilot small.")
     check_deployment(cfg, profile, state)
+    budget = monitoring_capacity(cfg, profile, state)
+    values = monitoring_values(cfg, profile)
     apply_object(state, namespace("monitoring"))
+    check_monitoring_pvcs(state, values)
     # Existing password survives reruns and is never printed.
-    secrets = json.loads(kube(state, "get", "secrets", "-n", "monitoring", "-o", "json", capture=True))
-    if not any(s["metadata"]["name"] == "grafana-admin" for s in secrets["items"]):
+    existing = kube(state, "get", "secret", "grafana-admin", "-n", "monitoring",
+                    "--ignore-not-found", "-o", "json", capture=True)
+    if not existing.strip():
         import secrets as secrets_module
         secret(state, "grafana-admin", "monitoring",
                {"admin-user": "admin", "admin-password": secrets_module.token_urlsafe(32)})
+    elif not all(json.loads(existing).get("data", {}).get(key) for key in ("admin-user", "admin-password")):
+        raise PlatformError("Existing Grafana credential is incomplete; refusing to replace it.")
+    apply_object(state, {"apiVersion": "v1", "kind": "ResourceQuota",
+                        "metadata": {"name": "monitoring-budget", "namespace": "monitoring"},
+                        "spec": {"hard": {"requests.cpu": "1500m", "limits.cpu": "4",
+                                          "requests.memory": "1Gi" if profile == "pilot" else "3Gi",
+                                          "limits.memory": "1280Mi" if profile == "pilot" else "5Gi",
+                                          "requests.storage": "11Gi" if profile == "pilot" else "23Gi",
+                                          "persistentvolumeclaims": "3", "pods": "12"}}})
     output = render(cfg, profile, state)
     helm(state, "repo", "add", "prometheus-community", "https://prometheus-community.github.io/helm-charts")
     helm(state, "repo", "update", "prometheus-community")
-    install_release(state, "ci-monitoring", "monitoring",
-                    "prometheus-community/kube-prometheus-stack",
-                    cfg["versions"]["monitoring"], output / "monitoring.yaml")
+    # Helm 4 renamed --atomic; use the supported rollback flag for each major.
+    version = run(["helm", "version", "--short"], capture=True)
+    rollback = "--rollback-on-failure" if re.match(r"v4[.]", version) else "--atomic"
+    helm(state, "upgrade", "--install", "ci-monitoring", "prometheus-community/kube-prometheus-stack",
+         "--namespace", "monitoring", "--version", cfg["versions"]["monitoring"],
+         "--values", output / "monitoring.yaml", rollback, "--wait", "--timeout", "10m")
     for path in (ROOT / "monitoring").glob("*.json"):
         obj = json.loads(path.read_text())
-        if obj.get("kind") == "ConfigMap":
-            apply_object(state, obj)
-        else:
-            apply_object(state, obj)
-    kube(state, "get", "pods", "-n", "monitoring")
+        apply_object(state, obj)
+    verify_monitoring(cfg, state)
+    save(state / "monitoring-deployment.json", {"profile": profile, "budget": budget,
+                                              "chart_version": cfg["versions"]["monitoring"]})
 
 
-def verify_canary(cfg, state, repository, run_id):
+@contextlib.contextmanager
+def monitoring_forward(state, service, port):
+    """Private ephemeral localhost forwarding; no password in argv or logs."""
+    command_exists("kubectl")
+    process = subprocess.Popen(["kubectl", "--kubeconfig", str(state / "kubeconfig"),
+                                "-n", "monitoring", "port-forward", "--address", "127.0.0.1",
+                                "service/" + service, ":" + str(port)],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and process.poll() is None:
+            if selector.select(timeout=0.25):
+                line = process.stdout.readline()
+                match = re.match(r"Forwarding from 127[.]0[.]0[.]1:([0-9]+) ->", line)
+                if match:
+                    yield "http://127.0.0.1:" + match[1]
+                    return
+        raise PlatformError("Monitoring service forwarding did not become ready.")
+    finally:
+        selector.close()
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        process.stdout.close()
+
+
+def monitoring_request(base, path, authorization=None):
+    headers = {"Authorization": authorization} if authorization else {}
+    request = urllib.request.Request(base + path, headers=headers)
+    # Never send a loopback request (and its credential) through a host proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=10) as response:
+            return response.read().decode()
+    except (urllib.error.URLError, OSError) as error:
+        raise PlatformError("Monitoring HTTP health/authentication check failed.") from error
+
+
+def monitoring_target_gaps(cfg, targets):
+    healthy = [t for t in targets if t.get("health") == "up"]
+    checks = {
+        "apiserver": lambda t: t.get("labels", {}).get("job") == "apiserver",
+        "node-exporter": lambda t: t.get("labels", {}).get("job") == "node-exporter",
+        "kube-state-metrics": lambda t: "kube-state-metrics" in t.get("labels", {}).get("job", ""),
+        "kubelet": lambda t: t.get("scrapeUrl", "").endswith("/metrics") and t.get("labels", {}).get("job") == "kubelet",
+        "cadvisor": lambda t: t.get("scrapeUrl", "").endswith("/metrics/cadvisor"),
+        "arc-controller": lambda t: t.get("labels", {}).get("job") == "arc-metrics"
+                                   and t.get("labels", {}).get("component") == "controller-manager",
+        "arc-listener": lambda t: t.get("labels", {}).get("job") == "arc-metrics"
+                                 and t.get("labels", {}).get("component") == "runner-scale-set-listener",
+    }
+    for exporter in cfg.get("host_exporters", []):
+        name = exporter["name"]
+        checks[name] = lambda t, name=name: t.get("labels", {}).get("job") == name
+    gaps = [name for name, predicate in checks.items() if not any(predicate(t) for t in healthy)]
+    # A single healthy replica must not hide a failed scrape for another node.
+    gaps += sorted({"down:" + t.get("labels", {}).get("job", "unknown") for t in targets
+                    if t.get("health") != "up"})
+    return gaps
+
+
+def verify_actions_collectors(cfg, base):
+    for exporter in cfg.get("host_exporters", []):
+        if exporter.get("kind") != "actions" and not exporter["address"].endswith(":9108"):
+            continue
+        matcher = "{job=" + json.dumps(exporter["name"]) + "}"
+        for query, condition in (
+                ("ci_metrics_collection_success" + matcher, lambda value: value == 1),
+                ("time() - ci_metrics_last_success_timestamp_seconds" + matcher,
+                 lambda value: -60 <= value <= 300)):
+            response = json.loads(monitoring_request(base, "/api/v1/query?" + urllib.parse.urlencode({"query": query})))
+            results = response.get("data", {}).get("result", [])
+            if response.get("status") != "success" or not results or not all(
+                    condition(float(item["value"][1])) for item in results):
+                raise PlatformError("Actions metrics collector is failing or stale: " + exporter["name"])
+
+
+def verify_monitoring_metrics(base):
+    required = ["node_cpu_seconds_total", "node_memory_MemAvailable_bytes", "node_filesystem_avail_bytes",
+                "node_disk_read_bytes_total", "node_network_receive_bytes_total",
+                'container_memory_working_set_bytes{container!=""}',
+                'kube_node_status_condition{condition="Ready",status="true"} == 1',
+                "gha_desired_runners", "gha_busy_runners", "gha_idle_runners", "gha_max_runners"]
+    for query in required:
+        response = json.loads(monitoring_request(base, "/api/v1/query?" + urllib.parse.urlencode({"query": query})))
+        if response.get("status") != "success" or not response.get("data", {}).get("result"):
+            raise PlatformError("Required monitoring metric has no data: " + query)
+
+
+def verify_grafana_dashboards(base, authorization):
+    configmap = json.loads((ROOT / "monitoring" / "dashboard.json").read_text())
+    expected_dashboards = [json.loads(raw) for raw in configmap["data"].values()]
+    verified = []
+    for expected in expected_dashboards:
+        uid = expected["uid"]
+        path = "/api/dashboards/uid/" + urllib.parse.quote(uid, safe="")
+        for attempt in range(30):
+            try:
+                result = json.loads(monitoring_request(base, path, authorization))
+                actual = result.get("dashboard", {})
+                if (result.get("meta", {}).get("provisioned") is True
+                        and actual.get("uid") == uid and actual.get("title") == expected["title"]
+                        and len(actual.get("panels", [])) == len(expected["panels"])):
+                    verified.append(uid)
+                    break
+            except PlatformError:
+                # The sidecar provisions asynchronously after Grafana is ready.
+                pass
+            if attempt == 29:
+                raise PlatformError("Expected provisioned Grafana dashboard is missing or incomplete: " + uid)
+            time.sleep(2)
+    if not verified:
+        raise PlatformError("No expected Grafana dashboards are configured.")
+    return verified
+
+
+def verify_monitoring(cfg, state):
+    for attempt in range(60):
+        claims = json.loads(kube(state, "get", "pvc", "-n", "monitoring", "-o", "json", capture=True))["items"]
+        if len(claims) == 3 and all(p.get("status", {}).get("phase") == "Bound" for p in claims):
+            break
+        if attempt == 59:
+            raise PlatformError("Monitoring storage is not fully Bound.")
+        time.sleep(2)
+    for kind in ("deployment", "statefulset", "daemonset"):
+        items = json.loads(kube(state, "get", kind, "-n", "monitoring", "-o", "json", capture=True))["items"]
+        if not items:
+            raise PlatformError("Monitoring is missing an expected workload type: " + kind)
+        for item in items:
+            kube(state, "rollout", "status", kind + "/" + item["metadata"]["name"],
+                 "-n", "monitoring", "--timeout=180s")
+    services = json.loads(kube(state, "get", "services", "-n", "monitoring", "-o", "json", capture=True))["items"]
+    prometheus = next((s["metadata"]["name"] for s in services if
+                       s["spec"].get("selector", {}).get("app.kubernetes.io/name") == "prometheus"
+                       and s["spec"].get("type") == "ClusterIP"
+                       and s["metadata"].get("labels", {}).get("release") == "ci-monitoring"), None)
+    if not prometheus:
+        raise PlatformError("Managed Prometheus service was not found.")
+    credential = json.loads(kube(state, "get", "secret", "grafana-admin", "-n", "monitoring", "-o", "json", capture=True))["data"]
+    auth = "Basic " + base64.b64encode(base64.b64decode(credential["admin-user"]) + b":"
+                                     + base64.b64decode(credential["admin-password"])).decode()
+    with monitoring_forward(state, "ci-monitoring-grafana", 80) as base:
+        health = json.loads(monitoring_request(base, "/api/health"))
+        user = json.loads(monitoring_request(base, "/api/user", auth))
+        if health.get("database") != "ok" or not user.get("isGrafanaAdmin"):
+            raise PlatformError("Grafana database or authenticated admin login is not healthy.")
+        dashboards = verify_grafana_dashboards(base, auth)
+    with monitoring_forward(state, prometheus, 9090) as base:
+        monitoring_request(base, "/-/ready")
+        for attempt in range(30):
+            response = json.loads(monitoring_request(base, "/api/v1/targets?state=active"))
+            if response.get("status") != "success":
+                raise PlatformError("Prometheus target API did not report success.")
+            targets = response["data"]["activeTargets"]
+            gaps = monitoring_target_gaps(cfg, targets)
+            problem = "Monitoring scrape targets are missing or unhealthy: " + ", ".join(gaps)
+            if not gaps:
+                try:
+                    verify_actions_collectors(cfg, base)
+                    verify_monitoring_metrics(base)
+                    break
+                except PlatformError as error:
+                    # A newly healthy endpoint can precede its first complete
+                    # GitHub poll or metric sample. Give it a bounded warm-up.
+                    problem = str(error)
+            if attempt == 29:
+                raise PlatformError(problem)
+            time.sleep(5)
+    evidence = {"verified_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                "grafana_authenticated": True, "grafana_dashboard_uids": dashboards, "storage_bound": True,
+                "healthy_target_jobs": sorted({t["labels"]["job"] for t in targets})}
+    save(state / "monitoring-evidence.json", evidence)
+    print("Monitoring ready: authenticated Grafana, persistent storage and required scrapes verified.")
+
+
+def verify_canary(cfg, state, repository, run_id, expected_conclusion="success"):
     identity(cfg)
     record = gh_json(f"repos/{repository}/actions/runs/{run_id}")
-    if record["status"] != "completed" or record["conclusion"] != "success":
-        raise PlatformError("Canary has not completed successfully.")
+    if record["status"] != "completed" or record["conclusion"] != expected_conclusion:
+        raise PlatformError("Canary has not completed with the expected " + expected_conclusion + " result.")
     jobs = gh_pages(f"repos/{repository}/actions/runs/{run_id}/jobs?per_page=100", "jobs")
     expected = cfg["general_scale_set"]
-    if not jobs or not all(expected in j.get("labels", []) and j["conclusion"] == "success" for j in jobs):
-        raise PlatformError("Canary did not run successfully on the intended scale set.")
+    if not jobs or not all(expected in j.get("labels", []) and j["conclusion"] == expected_conclusion for j in jobs):
+        raise PlatformError("Canary did not run with the expected result on the intended scale set.")
+    if expected_conclusion == "failure":
+        for job in jobs:
+            failed = [step["name"] for step in job.get("steps", []) if step.get("conclusion") == "failure"]
+            if failed != ["Optional failure"]:
+                raise PlatformError("Failure was not confined to the intentional canary failure step.")
+    elif expected_conclusion == "cancelled":
+        if not all(job.get("runner_name") and any(
+                step["name"] == "Set up job" and step.get("conclusion") == "success"
+                for step in job.get("steps", [])) for job in jobs):
+            raise PlatformError("Canary was cancelled before a runner started; this does not test running-job cleanup.")
     # Require observable cleanup, not just a workflow success.
     for _ in range(30):
         pods = json.loads(kube(state, "get", "pods", "-n", "arc-runners",
                               "-l", "ci-platform-runner=true", "-o", "json", capture=True))
         if not pods["items"]:
-            save(state / "canary-evidence.json", {
+            evidence = {
                 "run_id": run_id, "url": record["html_url"], "scale_set": expected,
+                "expected_conclusion": expected_conclusion,
                 "verified_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                "ephemeral_cleanup": True})
-            print("Canary success and ephemeral cleanup verified.")
+                "ephemeral_cleanup": True}
+            latest = state / "canary-evidence.json"
+            if latest.exists():
+                previous = json.loads(latest.read_text())
+                if "run_id" in previous:
+                    save(state / f"canary-evidence-{int(previous['run_id'])}.json", previous)
+            save(state / f"canary-evidence-{run_id}.json", evidence)
+            save(latest, evidence)
+            print("Canary " + expected_conclusion + " and ephemeral cleanup verified.")
             return
         time.sleep(2)
     raise PlatformError("Runner pods are still present; cleanup/scale-to-zero unverified.")
@@ -572,15 +919,20 @@ def parser():
     sub.add_parser("inventory", help="Read GitHub runner registrations and all branch workflows.")
     registry = sub.add_parser("registry-secret", help="Store a private registry read credential via stdin.")
     registry.add_argument("--username", required=True)
-    registry.add_argument("--token-file", type=Path, required=True)
+    token_source = registry.add_mutually_exclusive_group(required=True)
+    token_source.add_argument("--token-file", type=Path)
+    token_source.add_argument("--prompt", action="store_true", help="Read the token from a hidden terminal prompt.")
     for name in ("preflight", "render", "start", "deploy-arc", "monitor"):
         child = sub.add_parser(name)
         child.add_argument("--profile", choices=["pilot", "full"], default="pilot")
         if name == "deploy-arc":
             child.add_argument("--app-file", type=Path, required=True)
+    sub.add_parser("verify-monitoring", help="Verify storage, authenticated Grafana and Prometheus scrape health.")
     child = sub.add_parser("verify-canary")
     child.add_argument("--repository", required=True)
     child.add_argument("--run-id", type=int, required=True)
+    child.add_argument("--expected-conclusion", choices=("success", "failure", "cancelled"), default="success",
+                       help="Expected lifecycle test result; cancellations must have started a runner.")
     child = sub.add_parser("dashboard", help="Forward private Grafana to localhost:3000.")
     child.add_argument("--port", type=int, default=3000)
     return p
@@ -598,11 +950,16 @@ def main(argv=None):
             return 0
         cfg = load_config(args.config)
         if args.command == "registry-secret":
-            if args.token_file.stat().st_mode & 0o077:
-                raise PlatformError("Registry token file must be mode 0600.")
             if not cfg.get("image_pull_secret"):
                 raise PlatformError("Configure image_pull_secret first.")
-            token = args.token_file.read_text().strip()
+            if args.prompt:
+                if not sys.stdin.isatty():
+                    raise PlatformError("Hidden token prompt requires an interactive terminal.")
+                token = getpass.getpass("Registry PAT (read:packages only): ").strip()
+            else:
+                if args.token_file.stat().st_mode & 0o077:
+                    raise PlatformError("Registry token file must be mode 0600.")
+                token = args.token_file.read_text().strip()
             if not token:
                 raise PlatformError("Empty registry token.")
             auth = base64.b64encode((args.username + ":" + token).encode()).decode()
@@ -624,10 +981,12 @@ def main(argv=None):
             deploy_arc(cfg, args.profile, state, args.app_file)
         elif args.command == "monitor":
             monitor(cfg, args.profile, state)
+        elif args.command == "verify-monitoring":
+            verify_monitoring(cfg, state)
         elif args.command == "verify-canary":
             if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
                 raise PlatformError("Invalid repository name.")
-            verify_canary(cfg, state, args.repository, args.run_id)
+            verify_canary(cfg, state, args.repository, args.run_id, args.expected_conclusion)
         elif args.command == "dashboard":
             kube(state, "-n", "monitoring", "port-forward", "--address", "127.0.0.1",
                  "service/ci-monitoring-grafana", f"{args.port}:80", timeout=None)
