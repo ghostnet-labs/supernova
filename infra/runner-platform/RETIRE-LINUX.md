@@ -23,6 +23,21 @@ repository, branch and path. Static routes matching any retiring runner's
 labels also block retirement. An old registration name is never assumed to
 be a working label route.
 
+The audit resolves a bounded subset of Actions expressions, literal matrices,
+closed dispatch choices, and local reusable workflows at the caller's exact
+commit. SHA-pinned external reusable workflows are fetched and inspected.
+Unknown conditions retain every possible route; unsupported routing values,
+mutable external references, cycles, and excessive expansion remain blockers.
+Repeated mutable-reference errors are summarized with reference counts.
+
+Changing the default branch alone does not migrate retained dispatchable
+branches or open PR heads. A closed PR does not make its retained workflow
+unreachable. Keep the old VM until those routes have a documented migration
+or archival disposition; do not delete branches just to clear the audit.
+Before selecting ARC, validate each job's dependencies and memory needs against
+the runner image and profile. A safely parsed route is not evidence that its
+workload will run successfully on the replacement.
+
 `retire` writes and syncs `.local/linux-retirement.json` with mode `0600`
 before pausing any process. It validates the exact host process and guest
 executable paths, freezes all five listeners, rechecks GitHub queues and busy

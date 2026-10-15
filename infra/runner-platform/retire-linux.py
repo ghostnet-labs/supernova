@@ -199,44 +199,308 @@ def input_choices(document, name):
     return options
 
 
-def route_labels(route, document):
-    if isinstance(route, str) and route == CI_EXPRESSION:
-        return [[choice] for choice in input_choices(document, "linux_runner")] + [["ubuntu-latest"]]
-    if isinstance(route, str):
-        match = re.fullmatch(r"\$\{\{\s*inputs[.]([A-Za-z_][A-Za-z_0-9]*)\s*\}\}", route)
-        if match:
-            return [[choice] for choice in input_choices(document, match[1])]
-        if "${{" in route:
+UNKNOWN = object()
+MAX_VALUES = 256
+
+
+def finite(values):
+    result = []
+    for value in values:
+        if not any(value is prior or (value is not UNKNOWN and prior is not UNKNOWN
+                                     and type(value) is type(prior) and value == prior) for prior in result):
+            result.append(value)
+        if len(result) > MAX_VALUES:
+            raise platform.PlatformError("Runner expression exceeds finite audit limit.")
+    return result
+
+
+def truth(value):
+    return None if value is UNKNOWN else not (value is None or value is False or value == 0 or value == "")
+
+
+class RouteExpression:
+    """Interpret a deliberately small Actions expression subset, never Python eval."""
+    token = re.compile(r"\s*('(?:[^']|'')*'|&&|\|\||==|!=|[!(),]|[A-Za-z_][A-Za-z_0-9.-]*|-?\d+(?:\.\d+)?)")
+
+    def __init__(self, source, context):
+        self.tokens = []
+        while source.strip():
+            match = self.token.match(source)
+            if not match or len(self.tokens) >= 256:
+                raise platform.PlatformError("Unmapped dynamic runs-on expression.")
+            self.tokens.append(match[1])
+            source = source[match.end():]
+        self.index, self.context = 0, context
+
+    def accept(self, token):
+        if self.index < len(self.tokens) and self.tokens[self.index] == token:
+            self.index += 1
+            return True
+        return False
+
+    def parse(self):
+        result = self.binary(0)
+        if self.index != len(self.tokens):
             raise platform.PlatformError("Unmapped dynamic runs-on expression.")
-        return [[route]]
-    if isinstance(route, list) and route and all(isinstance(label, str) and "${{" not in label for label in route):
-        return [route]
+        return result
+
+    def binary(self, level):
+        if level == 3:
+            return self.atom()
+        left = self.binary(level + 1)
+        operators = (("||",), ("&&",), ("==", "!="))[level]
+        while self.index < len(self.tokens) and self.tokens[self.index] in operators:
+            operator = self.tokens[self.index]
+            self.index += 1
+            right = self.binary(level + 1)
+            output = []
+            for a in left:
+                for b in right:
+                    if operator in ("==", "!="):
+                        if a is UNKNOWN or b is UNKNOWN or isinstance(a, (list, dict)) or isinstance(b, (list, dict)):
+                            # Actions arrays/objects compare by identity, not Python deep equality.
+                            output.extend([True, False])
+                        elif type(a) is type(b):
+                            equal = a.lower() == b.lower() if isinstance(a, str) else a == b
+                            output.append(equal if operator == "==" else not equal)
+                        else:
+                            # Actions coerces mixed comparison types. Overapproximate both outcomes.
+                            output.extend([True, False])
+                    elif operator == "&&":
+                        output.extend([False, b] if truth(a) is None else [b if truth(a) else a])
+                    else:
+                        output.extend([UNKNOWN, b] if truth(a) is None else [a if truth(a) else b])
+            left = finite(output)
+        return left
+
+    def atom(self):
+        if self.accept("!"):
+            return finite(answer for value in self.atom() for answer in
+                          ([True, False] if truth(value) is None else [not truth(value)]))
+        if self.accept("("):
+            value = self.binary(0)
+            if not self.accept(")"):
+                raise platform.PlatformError("Unbalanced runner expression.")
+            return value
+        if self.index >= len(self.tokens):
+            raise platform.PlatformError("Incomplete runner expression.")
+        token = self.tokens[self.index]
+        self.index += 1
+        if token.startswith("'"):
+            return [token[1:-1].replace("''", "'")]
+        if token.lower() == "fromjson":
+            if not self.accept("("):
+                raise platform.PlatformError("Unmapped fromJSON expression.")
+            values = self.binary(0)
+            if not self.accept(")") or any(not isinstance(value, str) for value in values):
+                raise platform.PlatformError("fromJSON needs finite literal strings.")
+            return finite(json.loads(value) for value in values)
+        if token in ("true", "false", "null"):
+            return [{"true": True, "false": False, "null": None}[token]]
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", token):
+            return [json.loads(token)]
+        return self.context.get(token, [UNKNOWN])
+
+
+def expression_values(value, context):
+    if isinstance(value, str) and "${{" in value:
+        match = re.fullmatch(r"\s*\$\{\{(.*?)\}\}\s*", value, re.S)
+        if not match:
+            raise platform.PlatformError("Unmapped interpolated runner expression.")
+        return RouteExpression(match[1], context).parse()
+    return [value]
+
+
+def context_values(value, context):
+    """Unknown data is harmless until it participates in a runner route."""
+    try:
+        return expression_values(value, context)
+    except (platform.PlatformError, ValueError):
+        return [UNKNOWN]
+
+
+def input_context(document, supplied=None):
+    supplied = supplied or {}
+    context = dict(supplied)
+    events = document.get("on", {})
+    if not isinstance(events, dict):
+        return context
+    for event in ("workflow_dispatch", "workflow_call"):
+        definition = events.get(event) or {}
+        for name, value in definition.get("inputs", {}).items():
+            key = "inputs." + name
+            if key in supplied:
+                continue
+            if value.get("type") == "choice" and event == "workflow_dispatch":
+                values = input_choices(document, name)
+            elif value.get("type") == "boolean":
+                values = [True, False]
+            else:
+                # A workflow_call default does not constrain a caller's supplied string.
+                values = [UNKNOWN]
+            context[key] = finite(context.get(key, []) + values)
+    for key in set(context) - set(supplied):
+        name = key.removeprefix("inputs.")
+        if any(event not in ("workflow_dispatch", "workflow_call") or
+               name not in (definition or {}).get("inputs", {})
+               for event, definition in events.items()):
+            # Push/PR/schedule events have no dispatch inputs. Their absent value
+            # is falsy, so an || fallback must remain part of the route audit.
+            context[key] = finite(context[key] + [None])
+    return context
+
+
+def job_context(document, job, supplied=None):
+    context = input_context(document, supplied)
+    matrix = (job.get("strategy") or {}).get("matrix", {})
+    alternatives = []
+    try:
+        matrices = context_values(matrix, context)
+    except platform.PlatformError:
+        matrices = [UNKNOWN]
+    for matrix in matrices:
+        dimensions = {}
+        if isinstance(matrix, dict):
+            for name, values in matrix.items():
+                if name in ("include", "exclude"):
+                    continue
+                dimensions["matrix." + name] = finite(
+                    v for value in values for v in context_values(value, context)) if isinstance(values, list) and values else [UNKNOWN]
+            includes = matrix.get("include", [])
+            if isinstance(includes, list) and all(isinstance(row, dict) for row in includes):
+                for row in includes:
+                    for key, value in row.items():
+                        key = "matrix." + key
+                        dimensions[key] = finite(dimensions.get(key, []) + context_values(value, context))
+                base_dimensions = set(matrix) - {"include", "exclude"}
+                for key in {key for row in includes for key in row} - base_dimensions:
+                    if base_dimensions or any(key not in row for row in includes):
+                        dimensions["matrix." + key] = finite(dimensions["matrix." + key] + [UNKNOWN])
+            else:
+                # Unknown include entries may alter any matrix routing property.
+                dimensions = {}
+            # Ignoring excludes broadens the audit, so cannot hide legacy routes.
+        alternatives.append(dimensions)
+    for key in {key for alternative in alternatives for key in alternative}:
+        context[key] = finite(value for alternative in alternatives for value in alternative.get(key, [UNKNOWN]))
+    return context
+
+
+def route_labels(route, document, context=None):
+    context = input_context(document) if context is None else context
     if isinstance(route, dict) and set(route) == {"labels"}:
-        return route_labels(route["labels"], document)
-    raise platform.PlatformError("Unmapped runs-on structure or runner group.")
+        return route_labels(route["labels"], document, context)
+    result = []
+    for value in expression_values(route, context):
+        if isinstance(value, str) and value and "${{" not in value:
+            result.append([value])
+        elif isinstance(value, list) and value:
+            combinations = [[]]
+            for label in value:
+                choices = expression_values(label, context)
+                if any(not isinstance(choice, str) or not choice or "${{" in choice for choice in choices):
+                    raise platform.PlatformError("Unmapped dynamic runner label.")
+                combinations = finite(prior + [choice] for prior in combinations for choice in choices)
+            result.extend(combinations)
+        else:
+            raise platform.PlatformError("Unmapped runs-on structure or runner group.")
+    return finite(result)
 
 
 def workflow_routes(workflows, legacy_labels):
-    blockers = []
-    for entry in workflows:
-        where = f"{entry['repository']}@{entry['branch']}:{entry['path']}"
-        try:
-            document = json.loads(platform.run(["yq", "-o=json", ".", "-"],
-                                               input_text=entry["content"], capture=True))
-            if not isinstance(document, dict) or not isinstance(document.get("jobs"), dict):
+    blockers, documents, remote, visits = [], {}, {}, [0]
+    index = {(entry["repository"], entry.get("commit"), entry["path"]): entry for entry in workflows}
+
+    def document(entry):
+        key = (entry["repository"], entry.get("commit"), entry["path"], entry["content"])
+        if key not in documents:
+            value = json.loads(platform.run(["yq", "-o=json", ".", "-"],
+                                            input_text=entry["content"], capture=True))
+            if not isinstance(value, dict) or not isinstance(value.get("jobs"), dict):
                 raise platform.PlatformError("Workflow jobs cannot be inspected.")
-            for job_id, job in document["jobs"].items():
+            documents[key] = value
+        return documents[key]
+
+    def called(entry, uses):
+        if not isinstance(uses, str):
+            raise platform.PlatformError("Unmapped reusable workflow reference.")
+        if re.fullmatch(r"\./\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", uses):
+            key = (entry["repository"], entry.get("commit"), uses[2:])
+            if not key[1] or key not in index:
+                raise platform.PlatformError("Reusable workflow missing at exact caller commit: " + uses)
+            return index[key]
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml)@([a-fA-F0-9]{40})", uses)
+        if not match:
+            raise platform.PlatformError("Reusable workflow requires immutable SHA audit: " + uses)
+        repository, path, commit = match.groups()
+        key = (repository, commit, path)
+        if key not in remote:
+            if len(remote) >= 100:
+                raise platform.PlatformError("Remote reusable workflow audit limit exceeded.")
+            payload = platform.gh_json(f"repos/{repository}/contents/{path}?ref={commit}")
+            if payload.get("encoding") != "base64":
+                raise platform.PlatformError("Reusable workflow content unavailable.")
+            content = base64.b64decode(payload["content"], validate=False).decode("utf-8")
+            if len(content) > 1024 * 1024:
+                raise platform.PlatformError("Reusable workflow exceeds audit size limit.")
+            remote[key] = dict(repository=repository, commit=commit, branch=commit, path=path, content=content)
+        return remote[key]
+
+    def inspect(entry, supplied=None, stack=()):
+        key = (entry["repository"], entry.get("commit"), entry["path"])
+        visits[0] += 1
+        if key in stack or len(stack) >= 10 or visits[0] > 10000:
+            raise platform.PlatformError("Reusable workflow cycle/depth/breadth audit limit exceeded.")
+        data = document(entry)
+        for job_id, job in data["jobs"].items():
+            if not isinstance(job, dict):
+                raise platform.PlatformError("Workflow job cannot be inspected.")
+            try:
+                context = job_context(data, job, supplied)
                 if "uses" in job:
-                    raise platform.PlatformError("Reusable workflow routing needs an explicit audit: " + job_id)
-                for labels in route_labels(job.get("runs-on"), document):
+                    target = called(entry, job["uses"])
+                    child = document(target)
+                    definitions = (child.get("on", {}).get("workflow_call") or {}).get("inputs", {})
+                    passed = job.get("with", {})
+                    if not isinstance(passed, dict):
+                        raise platform.PlatformError("Reusable workflow inputs cannot be inspected.")
+                    values = {"inputs." + name: context_values(value, context) for name, value in passed.items()}
+                    for name, definition in definitions.items():
+                        if name not in passed and "default" in definition:
+                            # Child defaults cannot be evaluated in the caller input context.
+                            default = definition["default"]
+                            values["inputs." + name] = [UNKNOWN] if isinstance(default, str) and "${{" in default else [default]
+                    inspect(target, values, stack + (key,))
+                    continue
+                for labels in route_labels(job.get("runs-on"), data, context):
                     lower = {label.lower() for label in labels}
                     if any(lower <= known for known in legacy_labels) or any(
                             label.lower().startswith("studio-ubuntu-") for label in labels):
-                        blockers.append(where + ":" + job_id + " still routes to legacy Linux")
-        except (platform.PlatformError, ValueError, KeyError, TypeError) as error:
+                        where = f"{entry['repository']}@{entry['branch']}:{entry['path']}:{job_id}"
+                        blockers.append(where + " still routes to legacy Linux")
+            except (platform.PlatformError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
+                where = f"{entry['repository']}@{entry['branch']}:{entry['path']}:{job_id}"
+                blockers.append(where + ": " + str(error))
+
+    for entry in workflows:
+        where = f"{entry['repository']}@{entry['branch']}:{entry['path']}"
+        try:
+            inspect(entry)
+        except (platform.PlatformError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as error:
             blockers.append(where + ": " + str(error))
     if blockers:
-        raise platform.PlatformError("Retirement workflow blockers:\n" + "\n".join(blockers))
+        # Mutable external targets recur across many branch snapshots: retain one
+        # exact context and a count instead of flooding the operator with copies.
+        summaries = {}
+        for blocker in blockers:
+            marker = ": Reusable workflow requires immutable SHA audit: "
+            key = blocker.split(marker, 1)[1] if marker in blocker else blocker
+            if key not in summaries:
+                summaries[key] = [blocker, 0]
+            summaries[key][1] += 1
+        messages = [message + (f" ({count} inventory references)" if count > 1 else "")
+                    for message, count in summaries.values()]
+        raise platform.PlatformError("Retirement workflow blockers:\n" + "\n".join(messages))
 
 
 def registrations(cfg):
