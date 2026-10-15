@@ -122,6 +122,19 @@ appropriate isolated container-mode setup and dependency image.
 
 ## Grow and monitor
 
+For the verified pilot, complete host/VM exporters, private monitoring and a
+persistent loopback Grafana forward with one host command:
+
+```sh
+python3 infra/runner-platform/rollout.py run --repository OWNER/REPO --validation-run RUN_ID
+```
+
+Supply the successful full Linux CI run on the intended ARC scale set.
+The command rechecks evidence and live capacity, preserves existing runner
+routes, and records any remaining migration gates. Exit 2 means monitoring
+completed while broader migration remains gated. See `ROLLOUT.md`,
+`RETIRE-LINUX.md` and `macos/MIGRATION.md` for the guarded follow-on commands.
+
 Drain the pilot, stop/back up the VM and resize its CPU/RAM/disk explicitly
 with the installed Lima version's supported operations. Never recreate the
 disk to resize it. The `start --profile full` command verifies that the

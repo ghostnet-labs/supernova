@@ -1,0 +1,37 @@
+name: macOS VM canary
+on:
+  workflow_dispatch:
+    inputs:
+      expected_failure:
+        description: Exercise cleanup after an intentional failure
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  canary:
+    # The one-job guest advertises only this custom label, so broad native
+    # macOS routes cannot assign it work before acceptance.
+    runs-on: macos-vm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check isolated guest architecture
+        run: |
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(cat /etc/ci-runner-vm)" = runner-platform-macos-v1
+          swift --version
+      - name: Install test dependencies
+        run: |
+          brew install yq fzf atuin gitleaks tmux
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install rich==14.3.3 textual==8.0.1
+          echo "$RUNNER_TEMP/venv/bin" >>"$GITHUB_PATH"
+      - name: Run full repository suite
+        env:
+          NO_COLOR: "1"
+        run: ./setup.sh --test
+      - name: Optional failure
+        if: inputs.expected_failure
+        run: exit 1
