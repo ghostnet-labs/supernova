@@ -224,6 +224,115 @@ class RouteTests(unittest.TestCase):
         with self.assertRaisesRegex(retire.platform.PlatformError, "Reusable workflow"):
             self.check({"jobs": {"build": {"uses": "acme/workflows/.github/workflows/build.yml@main"}}})
 
+    def test_unknown_event_condition_keeps_both_runner_branches(self):
+        route = "${{ github.event_name == 'pull_request' && fromJSON('[\"self-hosted\",\"Linux\",\"ARM64\"]') || 'ubuntu-latest' }}"
+        with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+            self.check({"jobs": {"build": {"runs-on": route}}})
+        self.check({"jobs": {"build": {"runs-on": route.replace("Linux", "macOS")}}})
+
+    def test_finite_matrix_dimensions_and_includes_detect_legacy(self):
+        job = {"runs-on": "${{ matrix.os }}", "strategy": {"matrix": {
+            "os": ["ubuntu-latest", "macos-latest"], "include": [{"os": "Linux"}]}}}
+        with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+            self.check({"jobs": {"build": job}})
+        job["strategy"]["matrix"]["include"] = [{"os": "ubuntu-24.04-arm"}]
+        self.check({"jobs": {"build": job}})
+
+    def test_fromjson_matrix_and_literal_label_elements(self):
+        self.check({"jobs": {"build": {"runs-on": ["self-hosted", "${{ matrix.os }}"],
+            "strategy": {"matrix": "${{ fromJSON('{\"os\":[\"macOS\"]}') }}"}}}})
+
+    def test_unmapped_interpolation_and_functions_fail_closed(self):
+        for route in ("ubuntu-${{ matrix.version }}", "${{ format('ubuntu-{0}', inputs.os) }}"):
+            with self.assertRaises(retire.platform.PlatformError):
+                self.check({"jobs": {"build": {"runs-on": route}}})
+
+    def test_matrix_incomplete_include_does_not_prove_unknown_route(self):
+        with self.assertRaises(retire.platform.PlatformError):
+            self.check({"jobs": {"build": {"runs-on": "${{ matrix.os }}", "strategy": {
+                "matrix": {"include": [{"os": "ubuntu-latest"}, {"version": 1}]}}}}})
+
+    def reusable_check(self, documents, supplied=None):
+        workflows = [{"repository": "acme/toolbox", "branch": "main", "commit": "a" * 40,
+                      "path": path, "content": json.dumps(document)} for path, document in documents.items()]
+        with patch.object(retire.platform, "run", side_effect=lambda args, **kwargs: kwargs["input_text"]):
+            retire.workflow_routes(workflows, [{"self-hosted", "linux", "arm64"}])
+
+    def test_alternative_matrices_keep_absent_dimension_unknown(self):
+        route = "${{ matrix.os || 'self-hosted' }}"
+        matrix = "${{ inputs.choice && fromJSON('{\"os\":[\"ubuntu-latest\"]}') || fromJSON('{\"arch\":[\"ARM64\"]}') }}"
+        with self.assertRaises(retire.platform.PlatformError):
+            self.check({"jobs": {"build": {"runs-on": route, "strategy": {"matrix": matrix}}}})
+
+    def test_dispatch_choice_does_not_constrain_workflow_call_string(self):
+        with self.assertRaises(retire.platform.PlatformError):
+            self.check({"on": {"workflow_dispatch": {"inputs": {"runner": {
+                "type": "choice", "options": ["ubuntu-latest"], "default": "ubuntu-latest"}}},
+                "workflow_call": {"inputs": {"runner": {"type": "string"}}}},
+                "jobs": {"build": {"runs-on": "${{ inputs.runner }}"}}})
+
+    def test_dispatch_inputs_absent_on_push_keep_legacy_fallback(self):
+        with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+            self.check({"on": {"push": {}, "workflow_dispatch": {"inputs": {"runner": {
+                "type": "choice", "options": ["ubuntu-latest"], "default": "ubuntu-latest"}}}},
+                "jobs": {"build": {"runs-on": "${{ inputs.runner || 'self-hosted' }}"}}})
+
+    def test_unknown_matrix_does_not_block_static_route(self):
+        self.check({"jobs": {"build": {"runs-on": "ubuntu-latest", "strategy": {
+            "matrix": "${{ fromJSON(needs.prepare.outputs.matrix) }}"}}}})
+
+    def test_object_identity_equality_never_hides_legacy_branch(self):
+        with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+            self.check({"jobs": {"build": {"runs-on":
+                "${{ fromJSON('[]') == fromJSON('[]') && 'ubuntu-latest' || 'self-hosted' }}"}}})
+
+    def test_local_reusable_resolves_at_exact_caller_commit(self):
+        self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+            "uses": "./.github/workflows/child.yml"}}}, 
+            ".github/workflows/child.yml": {"on": {"workflow_call": {}},
+                "jobs": {"build": {"runs-on": "ubuntu-latest"}}}})
+        with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+            self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+                "uses": "./.github/workflows/child.yml"}}},
+                ".github/workflows/child.yml": {"jobs": {"build": {"runs-on": "Linux"}}}})
+
+    def test_local_reusable_missing_commit_and_cycle_fail_closed(self):
+        with self.assertRaisesRegex(retire.platform.PlatformError, "exact caller commit"):
+            self.check({"jobs": {"call": {"uses": "./.github/workflows/child.yml"}}})
+        with self.assertRaisesRegex(retire.platform.PlatformError, "cycle"):
+            self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+                "uses": "./.github/workflows/main.yml"}}}})
+
+    def test_reusable_inputs_propagate_without_rejecting_unrelated_unknown_values(self):
+        self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+            "uses": "./.github/workflows/child.yml", "with": {"irrelevant": "${{ format('build-{0}', github.sha) }}"}}}},
+            ".github/workflows/child.yml": {"on": {"workflow_call": {"inputs": {
+                "irrelevant": {"type": "string"}}}}, "jobs": {"build": {"runs-on": "ubuntu-latest"}}}})
+
+    def test_reusable_default_expression_never_uses_caller_input_context(self):
+        import base64
+        child = json.dumps({"on": {"workflow_call": {"inputs": {
+            "x": {"type": "string", "default": "self-hosted"},
+            "runner": {"type": "string", "default": "${{ inputs.x }}"}}}},
+            "jobs": {"build": {"runs-on": "${{ inputs.runner }}"}}})
+        response = {"encoding": "base64", "content": base64.b64encode(child.encode()).decode()}
+        with patch.object(retire.platform, "gh_json", return_value=response):
+            with self.assertRaises(retire.platform.PlatformError):
+                self.reusable_check({".github/workflows/main.yml": {"on": {"workflow_dispatch": {
+                    "inputs": {"x": {"type": "choice", "options": ["ubuntu-latest"], "default": "ubuntu-latest"}}}},
+                    "jobs": {"call": {"uses": "acme/other/.github/workflows/build.yml@" + "b" * 40}}}})
+
+    def test_sha_pinned_remote_reusable_audited_and_cached(self):
+        import base64
+        child = json.dumps({"jobs": {"build": {"runs-on": "Linux"}}})
+        response = {"encoding": "base64", "content": base64.b64encode(child.encode()).decode()}
+        with patch.object(retire.platform, "gh_json", return_value=response) as fetch:
+            with self.assertRaisesRegex(retire.platform.PlatformError, "legacy Linux"):
+                self.reusable_check({".github/workflows/main.yml": {"jobs": {
+                    name: {"uses": "acme/other/.github/workflows/build.yml@" + "b" * 40}
+                    for name in ("first", "second")}}})
+        fetch.assert_called_once()
+
     def test_unreadable_fork_pr_head_blocks_inventory(self):
         with patch.object(retire.rollout, "repositories", return_value=["acme/toolbox"]), \
                 patch.object(retire.platform, "gh_pages", return_value=[{"head": {"repo": None}}]):
