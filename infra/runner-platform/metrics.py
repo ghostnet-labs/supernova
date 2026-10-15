@@ -2,6 +2,7 @@
 """Small host and GitHub metrics endpoint; no credentials in output."""
 import argparse
 import datetime as dt
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -10,8 +11,10 @@ import stat
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import threading
 import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -113,7 +116,6 @@ def github_metrics(repositories, token_file=None, organizations=(), *, client=No
     api = client or GitHubAPI(token_file)
     text = ""
     cache = getattr(api, "cache", {})
-    keep_cache = set()
     for org in dict.fromkeys(organizations):
         runners = paginated(api, f"orgs/{org}/actions/runners", "runners", max_pages=max_pages)
         text += sample("ci_github_registered_runners", len(runners), organization=org)
@@ -124,67 +126,94 @@ def github_metrics(repositories, token_file=None, organizations=(), *, client=No
                 raise ValueError("Unknown runner status.")
             text += sample("ci_github_runner_online", int(runner["status"] == "online"), **labels)
             text += sample("ci_github_runner_busy", int(runner["busy"]), **labels)
-    for repo in dict.fromkeys(repositories):
-        scope = f"repos/{repo}/actions/runs"
-        active = {}
-        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
-            runs = paginated(api, scope, "workflow_runs", {"status": status}, max_pages)
-            text += sample("ci_actions_runs", len(runs), repository=repo, status=status)
-            active.update((run["id"], run) for run in runs)
-        completed = api(scope + "?" + urlencode({"status": "completed", "per_page": recent_runs}))
-        recent = completed["workflow_runs"]
-        text += sample("ci_actions_recent_run_window", recent_runs, repository=repo)
-        aggregates = {}
-        conclusions = {}
-        jobs_counts = {}
-        runs_by_id = dict(active)
-        runs_by_id.update((run["id"], run) for run in recent)
-        for run in runs_by_id.values():
-            workflow = str(run["workflow_id"])
-            complete = run["status"] == "completed"
-            key = (repo, run["id"], run.get("run_attempt", 1))
-            jobs = cache.get(key)
-            if jobs is None:
-                jobs = paginated(api, f"repos/{repo}/actions/runs/{run['id']}/jobs", "jobs",
-                                 {"filter": "latest"}, max_pages)
-            if complete:
-                cache[key] = jobs
-                keep_cache.add(key)
-                result = (workflow, run.get("conclusion") or "unknown")
-                conclusions[result] = conclusions.get(result, 0) + 1
-            for job in jobs:
-                if not complete:
-                    count_key = (workflow, job["status"])
-                    jobs_counts[count_key] = jobs_counts.get(count_key, 0) + 1
-                if complete and job.get("started_at") and job.get("completed_at"):
-                    value = seconds(job["started_at"], job["completed_at"])
-                    if value is not None:
-                        aggregates.setdefault((workflow, "job_duration"), []).append(value)
-            # REST jobs lack documented creation times. This is run startup delay,
-            # not job queue time; do not include retry attempts measured from run creation.
-            starts = [job["started_at"] for job in jobs if job.get("started_at")]
-            if complete and starts and run.get("created_at") and run.get("run_attempt", 1) == 1:
-                value = seconds(run["created_at"], min(starts))
-                if value is not None:
-                    aggregates.setdefault((workflow, "run_start_delay"), []).append(value)
-        for (workflow, status), count in jobs_counts.items():
-            text += sample("ci_actions_jobs", count, repository=repo, workflow=workflow, status=status)
-        # An empty active run list proves these totals are zero, rather than absent.
-        for status in ("queued", "in_progress", "waiting", "pending", "requested"):
-            text += sample("ci_actions_active_jobs", sum(
-                value for (workflow, state), value in jobs_counts.items() if state == status),
-                repository=repo, status=status)
-        for (workflow, conclusion), count in conclusions.items():
-            text += sample("ci_actions_recent_completed_runs", count,
-                           repository=repo, workflow=workflow, conclusion=conclusion)
-        for (workflow, metric), values in aggregates.items():
-            labels = dict(repository=repo, workflow=workflow)
-            text += sample(f"ci_actions_recent_{metric}_seconds_sum", sum(values), **labels)
-            text += sample(f"ci_actions_recent_{metric}_seconds_count", len(values), **labels)
-    for key in list(cache):
-        if key not in keep_cache:
-            del cache[key]
+    # Workers only mutate private repository snapshots. Publish caches after every
+    # scope succeeds, so failures cannot turn a partial snapshot into success.
+    repos = list(dict.fromkeys(repositories))
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="github-metrics") as pool:
+        futures = [pool.submit(repository_metrics, api, repo,
+                               {key: value for key, value in cache.items() if key[0] == repo},
+                               recent_runs, max_pages) for repo in repos]
+        results = [future.result() for future in futures]
+    refreshed = {}
+    for repository_text, repository_cache in results:
+        text += repository_text
+        refreshed.update(repository_cache)
+    cache.clear()
+    cache.update(refreshed)
     return text
+
+
+def repository_metrics(api, repo, cache, recent_runs, max_pages):
+    """Collect one repository serially, retaining only its sampled completed jobs."""
+    text = ""
+    keep_cache = set()
+    scope = f"repos/{repo}/actions/runs"
+    active = {}
+    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+        runs = paginated(api, scope, "workflow_runs", {"status": status}, max_pages)
+        text += sample("ci_actions_runs", len(runs), repository=repo, status=status)
+        active.update((run["id"], run) for run in runs)
+    completed = api(scope + "?" + urlencode({"status": "completed", "per_page": recent_runs}))
+    recent = completed["workflow_runs"]
+    text += sample("ci_actions_recent_run_window", recent_runs, repository=repo)
+    aggregates = {}
+    conclusions = {}
+    jobs_counts = {}
+    runs_by_id = dict(active)
+    runs_by_id.update((run["id"], run) for run in recent)
+    for run in runs_by_id.values():
+        workflow = str(run["workflow_id"])
+        complete = run["status"] == "completed"
+        key = (repo, run["id"], run.get("run_attempt", 1))
+        jobs = cache.get(key)
+        if jobs is None:
+            jobs = paginated(api, f"repos/{repo}/actions/runs/{run['id']}/jobs", "jobs",
+                             {"filter": "latest"}, max_pages)
+        if complete:
+            cache[key] = jobs
+            keep_cache.add(key)
+            result = (workflow, run.get("conclusion") or "unknown")
+            conclusions[result] = conclusions.get(result, 0) + 1
+        for job in jobs:
+            if not complete:
+                count_key = (workflow, job["status"])
+                jobs_counts[count_key] = jobs_counts.get(count_key, 0) + 1
+            if complete and job.get("started_at") and job.get("completed_at"):
+                value = seconds(job["started_at"], job["completed_at"])
+                if value is not None:
+                    aggregates.setdefault((workflow, "job_duration"), []).append(value)
+        # REST jobs lack documented creation times. This is run startup delay,
+        # not job queue time; do not include retry attempts measured from run creation.
+        starts = [job["started_at"] for job in jobs if job.get("started_at")]
+        if complete and starts and run.get("created_at") and run.get("run_attempt", 1) == 1:
+            value = seconds(run["created_at"], min(starts))
+            if value is not None:
+                aggregates.setdefault((workflow, "run_start_delay"), []).append(value)
+    for (workflow, status), count in jobs_counts.items():
+        text += sample("ci_actions_jobs", count, repository=repo, workflow=workflow, status=status)
+    # An empty active run list proves these totals are zero, rather than absent.
+    for status in ("queued", "in_progress", "waiting", "pending", "requested"):
+        text += sample("ci_actions_active_jobs", sum(
+            value for (workflow, state), value in jobs_counts.items() if state == status),
+            repository=repo, status=status)
+    for (workflow, conclusion), count in conclusions.items():
+        text += sample("ci_actions_recent_completed_runs", count,
+                       repository=repo, workflow=workflow, conclusion=conclusion)
+    for (workflow, metric), values in aggregates.items():
+        labels = dict(repository=repo, workflow=workflow)
+        text += sample(f"ci_actions_recent_{metric}_seconds_sum", sum(values), **labels)
+        text += sample(f"ci_actions_recent_{metric}_seconds_count", len(values), **labels)
+    return text, {key: cache[key] for key in keep_cache}
+
+
+def collection_error(error):
+    """Classify failures without exposing URLs, headers, bodies or credentials."""
+    if isinstance(error, HTTPError):
+        return f"HTTPError (HTTP {int(error.code)})"
+    for kind in (URLError, TimeoutError, subprocess.CalledProcessError, ValueError, OSError):
+        if isinstance(error, kind):
+            return kind.__name__
+    return "Exception"
 
 
 def collect(args):
@@ -197,7 +226,8 @@ def collect(args):
                 recent_runs=args.recent_runs, max_pages=args.max_pages)
             with LOCK:
                 STATE.update(text=result, ok=1, updated=time.time())
-        except Exception:
+        except Exception as error:
+            print("Metrics collection failed: " + collection_error(error), file=sys.stderr, flush=True)
             # Never print HTTP request headers, tokens, or private response bodies.
             with LOCK:
                 STATE["ok"] = 0

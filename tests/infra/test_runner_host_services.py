@@ -73,6 +73,18 @@ class HostServicesTests(unittest.TestCase):
         with patch.object(host.platform, "run", return_value="p123\nn127.0.0.1:9100\n"):
             host.loopback_only(123, 9100)
 
+    def test_verification_reports_waiting_stage_without_error_details(self):
+        records = {host.LABELS[kind]: {} for kind in host.BASE_KINDS}
+        output = io.StringIO()
+        with patch.object(host, "manifest", return_value=records), patch.object(
+            host, "loaded", return_value={host.LABELS["node"]: 123}), patch.object(
+            host, "check_managed"), patch.object(host, "loopback_only", side_effect=OSError("private detail")), patch(
+            "sys.stdout", output):
+            with self.assertRaises(host.platform.PlatformError):
+                host.verify({}, self.state, home=self.home, attempts=1)
+        self.assertIn("Waiting for native host exporter", output.getvalue())
+        self.assertNotIn("private detail", output.getvalue())
+
     def test_failed_new_bootstrap_removes_only_its_managed_plist(self):
         calls = []
         def run(args, **kwargs):
