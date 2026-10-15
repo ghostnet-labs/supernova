@@ -66,7 +66,9 @@ def trusted(path, mode):
 def unit_text(binary, port):
     return ('[Unit]\nDescription=Private runner platform node exporter\nAfter=network.target\n'
             '[Service]\nType=simple\nUser=nobody\nGroup=nogroup\n'
-            'ExecStart=' + str(binary) + ' --web.listen-address=127.0.0.1:' + str(port) + '\n'
+            'ExecStart=' + str(binary) + ' --web.listen-address=127.0.0.1:' + str(port) +
+            ' --collector.disable-defaults --collector.cpu --collector.meminfo'
+            ' --collector.filesystem --collector.diskstats --collector.netdev --collector.uname\n'
             'Restart=on-failure\nRestartSec=5\nNoNewPrivileges=yes\nPrivateTmp=yes\n'
             'ProtectKernelTunables=yes\n'
             'ProtectKernelModules=yes\nProtectControlGroups=yes\nMemoryMax=96M\nCPUQuota=15%\n'
@@ -128,8 +130,11 @@ def metric_text(text):
              'node_network_receive_bytes_total', 'node_uname_info')
     if not all(re.search(r'^' + name + r'(?:\{|\s)', text, re.M) for name in names):
         raise RuntimeError('Guest exporter lacks required node metric families.')
-    if re.search(r'^node_scrape_collector_success\{[^\n]*\} 0(?:\.0)?$', text, re.M):
-        raise RuntimeError('A guest node exporter collector failed.')
+    failed = re.findall(r'^node_scrape_collector_success\{([^\n]*)\} 0(?:\.0)?$', text, re.M)
+    if failed:
+        names = sorted({match.group(1) if (match := re.search(r'\bcollector="([a-zA-Z0-9_]+)"', labels)) else 'unknown'
+                        for labels in failed})
+        raise RuntimeError('Guest node exporter collectors failed: ' + ', '.join(names))
 
 def verify(record, allow_pending=False):
     if not record or (record.get('pending') and not allow_pending) or not active() or not enabled():
@@ -334,8 +339,11 @@ def metrics_match(text, hostname):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", hostname) or not re.search(
             r'^node_uname_info\{[^\n]*\bnodename="' + re.escape(hostname) + r'"', text, re.M):
         raise platform.PlatformError("Forwarded exporter does not identify the intended guest hostname.")
-    if re.search(r"^node_scrape_collector_success\{[^\n]*\} 0(?:\.0)?$", text, re.M):
-        raise platform.PlatformError("A legacy VM node exporter collector is failing.")
+    failed = re.findall(r"^node_scrape_collector_success\{([^\n]*)\} 0(?:\.0)?$", text, re.M)
+    if failed:
+        names = sorted({match.group(1) if (match := re.search(r'\bcollector="([a-zA-Z0-9_]+)"', labels)) else "unknown"
+                        for labels in failed})
+        raise platform.PlatformError("Legacy VM node exporter collectors failed: " + ", ".join(names))
 
 
 def reachable(cfg, vm, record, *, attempts=30):
@@ -393,11 +401,13 @@ def install_locked(cfg, state, *, vms=None):
         # interrupted, rerunning can inspect/reconcile the root-owned guest record.
         owned.setdefault(vm, {"port": port, "pending": True})
         atomic(state / RECORD, owned)
+        print(f"Installing and checking private node exporter in {vm}…", flush=True)
         result = guest(vm, "install", {"port": port})
         owned[vm] = result
         atomic(state / RECORD, owned)  # Recovery ownership survives an interrupted host process.
         try:
             proof.append(reachable(cfg, vm, result))
+            print(f"Guest exporter verified: {vm}.", flush=True)
         except BaseException:
             if result.get("changed"):
                 guest(vm, "rollback", result)
