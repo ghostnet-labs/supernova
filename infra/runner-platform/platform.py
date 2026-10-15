@@ -103,7 +103,20 @@ def gh_json(endpoint, *, paginate=False):
     args = ["gh", "api"]
     if paginate:
         args += ["--paginate", "--slurp"]
-    return json.loads(run(args + [endpoint], capture=True, timeout=120))
+    for attempt in range(3):
+        try:
+            return json.loads(run(args + [endpoint], capture=True, timeout=120))
+        except (PlatformError, subprocess.TimeoutExpired) as error:
+            transient = isinstance(error, subprocess.TimeoutExpired) or any(
+                marker in str(error).lower() for marker in (
+                    "tls handshake timeout", "i/o timeout", "connection reset by peer",
+                    "unexpected eof", "context deadline exceeded", "http 429", "http 502",
+                    "http 503", "http 504"))
+            if not transient or attempt == 2:
+                raise
+            delay = 2 ** (attempt + 1)
+            print(f"GitHub API read temporarily failed; retrying ({attempt + 2}/3) in {delay}s…", flush=True)
+            time.sleep(delay)
 
 
 def gh_pages(endpoint, key=None):
@@ -464,7 +477,15 @@ def inventory(cfg, state):
                        "labels": [label["name"] for label in r["labels"]],
                        "host_vm": None, "replacement": None, "retire": False})
     workflows = []
+    # Git objects are immutable. Reuse them only within this audit, while still
+    # visiting every live branch and recording every workflow/ref relationship.
+    objects = {}
+    def object_json(endpoint):
+        if endpoint not in objects:
+            objects[endpoint] = gh_json(endpoint)
+        return objects[endpoint]
     for repo in repos:
+        print(f"Auditing workflow routes: {repo['full_name']}…", flush=True)
         repo_scope = "repos/" + repo["full_name"]
         if scope.startswith("orgs/"):
             for r in gh_pages(repo_scope + "/actions/runners?per_page=100", "runners"):
@@ -475,12 +496,12 @@ def inventory(cfg, state):
         branches = gh_pages(repo_scope + "/branches?per_page=100")
         for branch in branches:
             sha = branch["commit"]["sha"]
-            tree = gh_json(repo_scope + f"/git/trees/{sha}?recursive=1")
+            tree = object_json(repo_scope + f"/git/trees/{sha}?recursive=1")
             if tree.get("truncated"):
                 raise PlatformError("Truncated repository tree; inventory is incomplete.")
             for entry in tree["tree"]:
                 if entry["type"] == "blob" and re.fullmatch(r"[.]github/workflows/[^/]+[.]ya?ml", entry["path"]):
-                    blob = gh_json(repo_scope + "/git/blobs/" + entry["sha"])
+                    blob = object_json(repo_scope + "/git/blobs/" + entry["sha"])
                     text = base64.b64decode(blob["content"]).decode()
                     workflows.append({"repository": repo["full_name"], "branch": branch["name"],
                                       "commit": sha, "path": entry["path"], "content": text})
