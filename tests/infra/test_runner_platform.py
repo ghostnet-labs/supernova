@@ -133,8 +133,69 @@ class DeploymentTests(unittest.TestCase):
             {"runners": [{"id": 1}]}, {"runners": [{"id": 2}]}]):
             self.assertEqual(platform.gh_pages("endpoint", "runners"), [{"id": 1}, {"id": 2}])
 
+    def test_github_reads_retry_transient_failures_with_paginate_flags(self):
+        messages = ["TLS handshake timeout", "i/o timeout", "connection reset by peer",
+                    "unexpected EOF", "context deadline exceeded", "HTTP 429", "HTTP 502",
+                    "HTTP 503", "HTTP 504"]
+        command = ["gh", "api", "--paginate", "--slurp", "repos/acme/project/branches"]
+        for message in messages:
+            with self.subTest(message=message), patch.object(platform, "run", side_effect=[
+                    platform.PlatformError(message), '[{"name":"main"}]']) as run, patch.object(
+                    platform.time, "sleep") as sleep, patch("builtins.print"):
+                result = platform.gh_json(command[-1], paginate=True)
+                self.assertEqual(result, [{"name": "main"}])
+                self.assertEqual(run.call_count, 2)
+                for invocation in run.call_args_list:
+                    self.assertEqual(invocation.args, (command,))
+                    self.assertEqual(invocation.kwargs, {"capture": True, "timeout": 120})
+                sleep.assert_called_once_with(2)
+
+    def test_github_read_timeout_retries_use_bounded_backoff(self):
+        timeout = subprocess.TimeoutExpired(["gh", "api"], 120)
+        with patch.object(platform, "run", side_effect=[timeout, timeout, '{"ok":true}']) as run, patch.object(
+                platform.time, "sleep") as sleep, patch("builtins.print"):
+            self.assertEqual(platform.gh_json("endpoint"), {"ok": True})
+            self.assertEqual(run.call_count, 3)
+            self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (4,)])
+            for invocation in run.call_args_list:
+                self.assertEqual(invocation.args, (["gh", "api", "endpoint"],))
+
+    def test_github_read_retries_stop_after_three_failures(self):
+        for error in (platform.PlatformError("HTTP 503"),
+                      subprocess.TimeoutExpired(["gh", "api"], 120)):
+            with self.subTest(error=type(error).__name__), patch.object(platform, "run", side_effect=error) as run, patch.object(
+                    platform.time, "sleep") as sleep, patch("builtins.print"):
+                with self.assertRaises(type(error)) as raised:
+                    platform.gh_json("endpoint")
+                self.assertIs(raised.exception, error)
+                self.assertEqual(run.call_count, 3)
+                self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (4,)])
+
+    def test_github_read_permissions_and_not_found_errors_are_not_retried(self):
+        for message in ("HTTP 403: Resource not accessible", "HTTP 404: Not Found"):
+            error = platform.PlatformError(message)
+            with self.subTest(message=message), patch.object(platform, "run", side_effect=error) as run, patch.object(
+                    platform.time, "sleep") as sleep:
+                with self.assertRaises(platform.PlatformError) as raised:
+                    platform.gh_json("endpoint", paginate=True)
+                self.assertIs(raised.exception, error)
+                run.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_github_read_invalid_json_is_not_retried(self):
+        with patch.object(platform, "run", return_value="not valid JSON") as run, patch.object(
+                platform.time, "sleep") as sleep:
+            with self.assertRaises(json.JSONDecodeError):
+                platform.gh_json("endpoint")
+            run.assert_called_once()
+            sleep.assert_not_called()
+
     def test_inventory_all_branches_and_scopes(self):
+        api_calls = []
+        pages_calls = []
+
         def pages(endpoint, key=None):
+            pages_calls.append(endpoint)
             if "/actions/runners" in endpoint:
                 return [{"id": 1, "name": "old", "os": "linux", "status": "online",
                          "busy": False, "labels": [{"name": "ARM64"}]}]
@@ -144,10 +205,11 @@ class DeploymentTests(unittest.TestCase):
                 return [{"full_name": "acme/project"}]
             if "/branches?" in endpoint:
                 return [{"name": "main", "commit": {"sha": "aaa"}},
-                        {"name": "release", "commit": {"sha": "bbb"}}]
+                        {"name": "release", "commit": {"sha": "aaa"}}]
             self.fail(endpoint)
 
         def api(endpoint):
+            api_calls.append(endpoint)
             if "/git/trees/" in endpoint:
                 return {"tree": [{"path": ".github/workflows/test.yml",
                                   "type": "blob", "sha": "ccc"}]}
@@ -159,10 +221,22 @@ class DeploymentTests(unittest.TestCase):
             with patch.object(platform, "identity"), patch.object(platform, "gh_pages", side_effect=pages), patch.object(
                 platform, "gh_json", side_effect=api):
                 platform.inventory(self.cfg, Path(temp))
+                self.assertEqual(api_calls, ["repos/acme/project/git/trees/aaa?recursive=1",
+                                             "repos/acme/project/git/blobs/ccc"])
+                first_workflows = json.loads((Path(temp) / "workflow-inventory.json").read_text())
+                self.assertEqual(len(first_workflows), 2)
+                self.assertEqual({row["branch"] for row in first_workflows}, {"main", "release"})
+                # Cache belongs to this audit: a later inventory must re-read live
+                # refs and independently fetch its immutable Git objects.
+                platform.inventory(self.cfg, Path(temp))
+                self.assertEqual(api_calls[:2], api_calls[2:])
+                self.assertEqual(len(api_calls), 4)
+                self.assertEqual(pages_calls.count("repos/acme/project/branches?per_page=100"), 2)
             ledger = json.loads((Path(temp) / "migration-ledger.json").read_text())
             self.assertEqual(len(ledger), 2)
             self.assertFalse(ledger[0]["retire"])
             workflows = json.loads((Path(temp) / "workflow-inventory.json").read_text())
+            self.assertEqual(len(workflows), 2)
             self.assertEqual({w["branch"] for w in workflows}, {"main", "release"})
             self.assertEqual((Path(temp) / "migration-ledger.json").stat().st_mode & 0o777, 0o600)
 

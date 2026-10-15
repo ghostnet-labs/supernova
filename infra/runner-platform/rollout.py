@@ -113,7 +113,9 @@ def require_idle(snapshot):
     if any(runner.get("busy") for runner in snapshot["runners"]):
         raise platform.PlatformError("GitHub reports a busy runner; retry after it finishes.")
     if snapshot["active_runs"]:
-        raise platform.PlatformError("GitHub has queued, running or waiting workflows; retry after they finish.")
+        blockers = "\n".join(f"{run.get('repository', 'unknown repository')} run {run['id']} ({run.get('status', 'unknown')})"
+                             for run in snapshot["active_runs"])
+        raise platform.PlatformError("GitHub has queued, running or waiting workflows; retry after they finish.\n" + blockers)
     if any(value != "idle" for value in snapshot["workers"].values()):
         raise platform.PlatformError("A Runner.Worker exists or guest worker state is unknown; refusing changes.")
     if snapshot["arc_runner_pods"]:
