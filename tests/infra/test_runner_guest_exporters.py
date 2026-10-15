@@ -4,6 +4,7 @@
 import ast
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -95,6 +96,26 @@ class GuestExporterTests(unittest.TestCase):
         self.assertIn("--web.listen-address=127.0.0.1:19100", unit)
         self.assertIn("NoNewPrivileges=yes", unit)
         self.assertIn("MemoryMax=96M", unit)
+        self.assertIn("--collector.disable-defaults", unit)
+        collectors = set(re.findall(r"--collector\.([a-z]+)(?: |\n)", unit))
+        self.assertEqual(collectors, {"cpu", "meminfo", "filesystem", "diskstats", "netdev", "uname"})
+
+    def test_guest_and_forwarded_checks_name_failed_collectors(self):
+        tree = ast.parse(guest.GUEST)
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "metric_text")
+        namespace = {"re": re}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "guest-metrics", "exec"), namespace)
+        names = ("node_exporter_build_info", "node_cpu_seconds_total", "node_memory_MemTotal_bytes",
+                 "node_filesystem_size_bytes", "node_disk_read_bytes_total", "node_network_receive_bytes_total")
+        text = "\n".join(name + " 1" for name in names) + '\nnode_uname_info{nodename="legacy-vm"} 1\n'
+        namespace["metric_text"](text)
+        for check, error in ((namespace["metric_text"], RuntimeError),
+                             (lambda value: guest.metrics_match(value, "legacy-vm"), guest.platform.PlatformError)):
+            with self.subTest(check=check), self.assertRaisesRegex(error, "diskstats, filesystem$"):
+                check(text + 'node_scrape_collector_success{collector="filesystem"} 0\n'
+                      'node_scrape_collector_success{collector="diskstats"} 0.0\n')
+            with self.assertRaisesRegex(error, "unknown$"):
+                check(text + 'node_scrape_collector_success{collector="private/url"} 0\n')
 
 
 if __name__ == "__main__":
