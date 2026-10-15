@@ -238,7 +238,7 @@ def main():
     parser.add_argument("--delta", type=int, default=1)
     parser.add_argument("--history", action="store_true", help="include local Atuin history")
     parser.add_argument("--catalog", action="store_true", help="include reviewed command catalogs")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     if args.mode in {"preview", "select", "pick", "step"} and args.directory is None:
         parser.error("--directory is required for picker operations")
     if args.mode == "step":
