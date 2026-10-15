@@ -330,8 +330,9 @@ def monitoring_values(cfg, profile="full"):
                       "passwordKey": "admin-password"},
             "persistence": {"enabled": True, "storageClassName": "local-path", "size": "2Gi",
                             "annotations": {"helm.sh/resource-policy": "keep"}},
-            "resources": monitoring_resources("50m", "96Mi" if pilot else "256Mi", "500m", "192Mi" if pilot else "512Mi"),
-            "sidecar": {"resources": small}, "initChownData": {"resources": small},
+            "resources": monitoring_resources("50m", "256Mi", "500m", "512Mi"),
+            "sidecar": {"resources": monitoring_resources("10m", "64Mi", "100m", "128Mi")},
+            "initChownData": {"resources": small},
             "downloadDashboards": {"resources": small}, "testFramework": {"resources": small},
             "grafana.ini": {"auth.anonymous": {"enabled": False}, "users": {"allow_sign_up": False}},
             "deploymentStrategy": {"type": "Recreate"},
@@ -617,7 +618,7 @@ def monitoring_capacity(cfg, profile, state):
         steady = sum(container_memory(c) for c in pod["spec"]["containers"])
         init = max((container_memory(c) for c in pod["spec"].get("initContainers", [])), default=0)
         other += max(steady, init)
-    budget = memory_bytes("1280Mi" if profile == "pilot" else "5Gi")
+    budget = memory_bytes("1792Mi" if profile == "pilot" else "5Gi")
     remaining = max(0, cfg[profile]["max_runners"] - active_runners)
     required = other + budget + remaining * memory_bytes(cfg[profile]["runner_memory_limit"])
     if required > allocatable:
@@ -665,7 +666,7 @@ def monitor(cfg, profile, state):
                         "metadata": {"name": "monitoring-budget", "namespace": "monitoring"},
                         "spec": {"hard": {"requests.cpu": "1500m", "limits.cpu": "4",
                                           "requests.memory": "1Gi" if profile == "pilot" else "3Gi",
-                                          "limits.memory": "1280Mi" if profile == "pilot" else "5Gi",
+                                          "limits.memory": "1792Mi" if profile == "pilot" else "5Gi",
                                           "requests.storage": "11Gi" if profile == "pilot" else "23Gi",
                                           "persistentvolumeclaims": "3", "pods": "12"}}})
     output = render(cfg, profile, state)

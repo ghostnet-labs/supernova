@@ -126,7 +126,7 @@ class DeploymentTests(unittest.TestCase):
         values = platform.monitoring_values(self.cfg, "pilot")
         self.assertEqual(values["prometheus"]["prometheusSpec"]["resources"]["limits"]["memory"], "512Mi")
         self.assertEqual(values["prometheus"]["prometheusSpec"]["retention"], "48h")
-        self.assertEqual(values["grafana"]["resources"]["limits"]["memory"], "192Mi")
+        self.assertEqual(values["grafana"]["resources"]["limits"]["memory"], "512Mi")
 
     def test_pagination_combines_pages(self):
         with patch.object(platform, "gh_json", return_value=[

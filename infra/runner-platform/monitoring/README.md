@@ -6,6 +6,13 @@ PrometheusRule. The platform installs both with kube-prometheus-stack. Open the
 Every absent series displays **No data**. Check scrape inventory and collector
 health before interpreting runner availability.
 
+The pilot reserves a 1792 MiB monitoring namespace budget, including 512 MiB
+for Grafana and 128 MiB for each of its two provisioning sidecars. The steady
+container limits total 1616 MiB, leaving room for installation hooks. The live
+capacity check also reserves the configured runner memory before installation;
+these limits do not change the VM allocation. Lower Grafana and sidecar limits
+caused confirmed container OOM kills during the pilot's first installation.
+
 ## Coverage and endpoints
 
 | Layer | Collection | Evidence |

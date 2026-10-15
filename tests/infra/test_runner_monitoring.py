@@ -49,7 +49,8 @@ class MonitoringTests(unittest.TestCase):
             for kind in ("requests", "limits"):
                 self.assertEqual(set(item[kind]), {"cpu", "memory"})
         self.assertEqual(sum(platform.memory_bytes(r["limits"]["memory"]) for r in resources),
-                         platform.memory_bytes("1104Mi"))
+                         platform.memory_bytes("1616Mi"))
+        self.assertEqual(values["grafana"]["sidecar"]["resources"]["limits"]["memory"], "128Mi")
         self.assertFalse(values["grafana"]["grafana.ini"]["auth.anonymous"]["enabled"])
         self.assertFalse(values["kubelet"]["serviceMonitor"]["tlsConfig"]["insecureSkipVerify"])
         self.assertTrue(values["kubelet"]["serviceMonitor"]["cAdvisor"])
@@ -59,7 +60,8 @@ class MonitoringTests(unittest.TestCase):
             "allocatable": {"memory": "4Gi"}, "conditions": []}}
         with patch.object(platform, "kube", side_effect=[json.dumps({"items": [node]}), '{"items": []}']):
             budget = platform.monitoring_capacity(self.cfg, "pilot", Path("/unused"))
-        self.assertEqual(budget["reserved_mib"], 3328)
+        self.assertEqual(budget["reserved_mib"], 3840)
+        self.assertEqual(budget["monitoring_limit_mib"], 1792)
         node["status"]["allocatable"]["memory"] = "3Gi"
         with patch.object(platform, "kube", side_effect=[json.dumps({"items": [node]}), '{"items": []}']):
             with self.assertRaisesRegex(platform.PlatformError, "runner headroom"):
