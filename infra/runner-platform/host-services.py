@@ -194,7 +194,7 @@ def metric_text(kind, text):
         raise platform.PlatformError("GitHub metrics have not completed a successful collection.")
 
 
-def verify(cfg, state, *, home=None, attempts=60):
+def verify(cfg, state, *, home=None, attempts=120):
     home = Path(home) if home else Path.home()
     records = manifest(state)
     services = loaded()
@@ -203,10 +203,14 @@ def verify(cfg, state, *, home=None, attempts=60):
         raise platform.PlatformError("Host monitoring services are not installed by this command.")
     opener = build_opener(ProxyHandler({}))
     last = None
+    started = time.monotonic()
+    stage = "host services"
+    reported = None
     for attempt in range(attempts):
         try:
             services = loaded()
             for kind in BASE_KINDS:
+                stage = "native host exporter" if kind == "node" else "GitHub fleet collection"
                 label = LABELS[kind]
                 pid = services.get(label)
                 if not pid:
@@ -226,6 +230,10 @@ def verify(cfg, state, *, home=None, attempts=60):
             return evidence
         except (platform.PlatformError, OSError, URLError, UnicodeError) as error:
             last = error
+            if stage != reported or attempt % 6 == 0:
+                print(f"Waiting for {stage}: {int(time.monotonic() - started)}s elapsed "
+                      f"(check {attempt + 1}/{attempts}).", flush=True)
+                reported = stage
             if attempt + 1 < attempts:
                 time.sleep(5)
     raise platform.PlatformError("Private host monitoring verification failed: " + str(last))

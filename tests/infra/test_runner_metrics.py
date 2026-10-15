@@ -5,8 +5,10 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,6 +88,62 @@ class MetricsTests(unittest.TestCase):
         metrics.github_metrics(["acme/project"], client=client)
         self.assertEqual(sum('/jobs?' in endpoint for endpoint in client.calls), 2)
         self.assertEqual(len(client.cache), 1)
+
+    def test_parallel_repositories_are_bounded_and_keep_independent_caches(self):
+        class ParallelAPI(FakeAPI):
+            def __init__(self):
+                super().__init__()
+                self.barrier = threading.Barrier(4, timeout=3)
+                self.threads = set()
+                self.lock = threading.Lock()
+
+            def __call__(self, endpoint):
+                if "status=queued" in endpoint:
+                    with self.lock:
+                        self.threads.add(threading.get_ident())
+                    self.barrier.wait()
+                return super().__call__(endpoint)
+
+        client = ParallelAPI()
+        repos = [f"acme/project-{index}" for index in range(8)]
+        first = metrics.github_metrics(repos, organizations=["acme", "acme"], client=client)
+        self.assertEqual(len(client.threads), 4)
+        client.threads.clear()
+        second = metrics.github_metrics(repos, organizations=["acme"], client=client)
+        self.assertEqual(first, second)
+        self.assertEqual(len(client.threads), 4)
+        self.assertEqual(len(client.cache), 8)
+        self.assertEqual({key[0] for key in client.cache}, set(repos))
+        self.assertEqual(sum("/jobs?" in call for call in client.calls), 8)
+        self.assertEqual(sum("actions/runners?" in call for call in client.calls), 2)
+
+    def test_failed_repository_does_not_publish_partial_cache(self):
+        class FailingAPI(FakeAPI):
+            def __call__(self, endpoint):
+                if endpoint.startswith("repos/acme/broken/"):
+                    raise ValueError("private response")
+                return super().__call__(endpoint)
+
+        client = FailingAPI()
+        original = {("acme/old", 1, 1): [{"status": "completed"}]}
+        client.cache.update(original)
+        with self.assertRaises(ValueError):
+            metrics.github_metrics(["acme/healthy", "acme/broken"], client=client)
+        self.assertEqual(client.cache, original)
+
+    def test_failure_diagnosis_does_not_expose_private_exception_details(self):
+        errors = [
+            (HTTPError("https://private/token", 403, "secret response", {}, None),
+             "HTTPError (HTTP 403)"),
+            (URLError("private token"), "URLError"),
+            (ValueError("private body"), "ValueError"),
+            (RuntimeError("private headers"), "Exception"),
+        ]
+        for error, expected in errors:
+            with self.subTest(expected=expected):
+                self.assertEqual(metrics.collection_error(error), expected)
+            if isinstance(error, HTTPError):
+                error.close()
 
     def test_rerun_excluded_from_creation_delay(self):
         text = metrics.github_metrics(["acme/project"], client=FakeAPI(retry=True))
