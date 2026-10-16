@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location("retire_rollout", ROOT / "rollout.py")
@@ -421,23 +422,21 @@ def workflow_routes(workflows, legacy_labels):
             documents[key] = value
         return documents[key]
 
-    def called(entry, uses):
-        if not isinstance(uses, str):
-            raise platform.PlatformError("Unmapped reusable workflow reference.")
-        if re.fullmatch(r"\./\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", uses):
-            key = (entry["repository"], entry.get("commit"), uses[2:])
-            if not key[1] or key not in index:
-                raise platform.PlatformError("Reusable workflow missing at exact caller commit: " + uses)
-            return index[key]
-        match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml)@([a-fA-F0-9]{40})", uses)
-        if not match:
-            raise platform.PlatformError("Reusable workflow requires immutable SHA audit: " + uses)
-        repository, path, commit = match.groups()
+    def fetched(repository, commit, path):
+        # Workflow text is untrusted, including the coordinates inherited by a
+        # local sibling. Validate before constructing any GitHub API endpoint.
+        if (not isinstance(repository, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)
+                or any(part in (".", "..") for part in repository.split("/"))
+                or not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40}", commit)
+                or not isinstance(path, str)
+                or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", path)):
+            raise platform.PlatformError("Invalid immutable reusable workflow coordinates.")
         key = (repository, commit, path)
         if key not in remote:
             if len(remote) >= 100:
                 raise platform.PlatformError("Remote reusable workflow audit limit exceeded.")
-            payload = platform.gh_json(f"repos/{repository}/contents/{path}?ref={commit}")
+            payload = platform.gh_json(f"repos/{repository}/contents/{quote(path, safe='/')}?ref={commit}")
             if payload.get("encoding") != "base64":
                 raise platform.PlatformError("Reusable workflow content unavailable.")
             content = base64.b64decode(payload["content"], validate=False).decode("utf-8")
@@ -445,6 +444,25 @@ def workflow_routes(workflows, legacy_labels):
                 raise platform.PlatformError("Reusable workflow exceeds audit size limit.")
             remote[key] = dict(repository=repository, commit=commit, branch=commit, path=path, content=content)
         return remote[key]
+
+    def called(entry, uses):
+        if not isinstance(uses, str):
+            raise platform.PlatformError("Unmapped reusable workflow reference.")
+        if re.fullmatch(r"\./\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", uses):
+            key = (entry["repository"], entry.get("commit"), uses[2:])
+            if key[1] and key in index:
+                return index[key]
+            caller = (entry["repository"], entry.get("commit"), entry["path"])
+            # Only already-fetched external callers may expand their immutable
+            # dependency closure. Missing inventory entries remain blockers.
+            if caller in remote and remote[caller] is entry:
+                return fetched(key[0], key[1], key[2])
+            raise platform.PlatformError("Reusable workflow missing at exact caller commit: " + uses)
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/(\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml)@([a-fA-F0-9]{40})", uses)
+        if not match:
+            raise platform.PlatformError("Reusable workflow requires immutable SHA audit: " + uses)
+        repository, path, commit = match.groups()
+        return fetched(repository, commit, path)
 
     def inspect(entry, supplied=None, stack=()):
         key = (entry["repository"], entry.get("commit"), entry["path"])

@@ -333,6 +333,99 @@ class RouteTests(unittest.TestCase):
                     for name in ("first", "second")}}})
         fetch.assert_called_once()
 
+    def external_check(self, documents, fetch):
+        import base64
+        from urllib.parse import quote
+        responses = {
+            "repos/acme/other/contents/" + quote(path, safe="/") + "?ref=" + "b" * 40:
+                {"encoding": "base64", "content": base64.b64encode(json.dumps(document).encode()).decode()}
+            for path, document in documents.items()}
+        fetch.side_effect = lambda endpoint: responses[endpoint]
+        self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+            "uses": "acme/other/.github/workflows/build.yml@" + "b" * 40}}}})
+
+    def test_external_local_sibling_uses_exact_repository_sha_and_encoded_path(self):
+        documents = {".github/workflows/build.yml": {"jobs": {
+            name: {"uses": "./.github/workflows/child.yml"} for name in ("first", "second")}},
+            ".github/workflows/child.yml": {"jobs": {"build": {"runs-on": "ubuntu-latest"}}}}
+        with patch.object(retire.platform, "gh_json") as fetch:
+            self.external_check(documents, fetch)
+        self.assertEqual([call.args[0] for call in fetch.call_args_list], [
+            "repos/acme/other/contents/.github/workflows/build.yml?ref=" + "b" * 40,
+            "repos/acme/other/contents/.github/workflows/child.yml?ref=" + "b" * 40])
+
+    def test_external_local_sibling_legacy_route_and_unknown_route_fail_closed(self):
+        for route in ("Linux", "${{ inputs.runner }}"):
+            with self.subTest(route=route), patch.object(retire.platform, "gh_json") as fetch:
+                with self.assertRaises(retire.platform.PlatformError):
+                    self.external_check({".github/workflows/build.yml": {"jobs": {"call": {
+                        "uses": "./.github/workflows/child.yml"}}}, ".github/workflows/child.yml": {
+                            "jobs": {"build": {"runs-on": route}}}}, fetch)
+                self.assertEqual(fetch.call_count, 2)
+
+    def test_external_local_sibling_propagates_supplied_runner_input(self):
+        with patch.object(retire.platform, "gh_json") as fetch:
+            self.external_check({".github/workflows/build.yml": {"jobs": {"call": {
+                "uses": "./.github/workflows/child.yml", "with": {"runner": "ubuntu-latest"}}}},
+                ".github/workflows/child.yml": {"on": {"workflow_call": {"inputs": {
+                    "runner": {"type": "string"}}}}, "jobs": {"build": {"runs-on": "${{ inputs.runner }}"}}}}, fetch)
+
+    def test_invalid_external_coordinates_are_rejected_before_any_fetch(self):
+        references = ["../other/.github/workflows/build.yml@" + "b" * 40,
+                      "acme/../.github/workflows/build.yml@" + "b" * 40,
+                      "acme/other/.github/workflows/build.yml@main",
+                      "acme/other/.github/workflows/build.yml@" + "b" * 40 + "?ref=main"]
+        for reference in references:
+            with self.subTest(reference=reference), patch.object(retire.platform, "gh_json") as fetch:
+                with self.assertRaises(retire.platform.PlatformError):
+                    self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {"uses": reference}}}})
+                fetch.assert_not_called()
+
+    def test_external_local_sibling_rejects_path_injection_and_mutable_refs_before_fetch(self):
+        for target in ("../child.yml", "./.github/workflows/../child.yml",
+                       "./.github/workflows/child.yml?ref=main", "./.github/workflows/child.yml#fragment",
+                       "./.github/workflows/%2e%2e%2fchild.yml", "./.github/workflows/child.yml@main",
+                       "acme/other/.github/workflows/child.yml@main"):
+            with self.subTest(target=target), patch.object(retire.platform, "gh_json") as fetch:
+                with self.assertRaises(retire.platform.PlatformError):
+                    self.external_check({".github/workflows/build.yml": {"jobs": {"call": {"uses": target}}}}, fetch)
+                self.assertEqual(fetch.call_count, 1)
+
+    def test_missing_inventory_local_sibling_never_fetches(self):
+        with patch.object(retire.platform, "gh_json") as fetch:
+            with self.assertRaisesRegex(retire.platform.PlatformError, "exact caller commit"):
+                self.reusable_check({".github/workflows/main.yml": {"jobs": {"call": {
+                    "uses": "./.github/workflows/missing.yml"}}}})
+        fetch.assert_not_called()
+
+    def test_external_local_sibling_cycle_and_depth_remain_bounded(self):
+        with patch.object(retire.platform, "gh_json") as fetch:
+            with self.assertRaisesRegex(retire.platform.PlatformError, "cycle/depth/breadth"):
+                self.external_check({".github/workflows/build.yml": {"jobs": {"call": {
+                    "uses": "./.github/workflows/build.yml"}}}}, fetch)
+            self.assertEqual(fetch.call_count, 1)
+        documents = {".github/workflows/child" + str(n) + ".yml": {"jobs": {"call": {
+            "uses": "./.github/workflows/child" + str(n + 1) + ".yml"}}} for n in range(20)}
+        documents[".github/workflows/build.yml"] = {"jobs": {"call": {"uses": "./.github/workflows/child0.yml"}}}
+        with patch.object(retire.platform, "gh_json") as fetch:
+            with self.assertRaisesRegex(retire.platform.PlatformError, "cycle/depth/breadth"):
+                self.external_check(documents, fetch)
+            self.assertEqual(fetch.call_count, 10)
+
+    def test_external_siblings_share_the_100_target_remote_limit(self):
+        for count in (99, 100):
+            documents = {".github/workflows/child" + str(n) + ".yml": {
+                "jobs": {"build": {"runs-on": "ubuntu-latest"}}} for n in range(count)}
+            documents[".github/workflows/build.yml"] = {"jobs": {"call" + str(n): {
+                "uses": "./.github/workflows/child" + str(n) + ".yml"} for n in range(count)}}
+            with self.subTest(count=count), patch.object(retire.platform, "gh_json") as fetch:
+                if count == 99:
+                    self.external_check(documents, fetch)
+                else:
+                    with self.assertRaisesRegex(retire.platform.PlatformError, "audit limit"):
+                        self.external_check(documents, fetch)
+                self.assertEqual(fetch.call_count, 100)
+
     def test_unreadable_fork_pr_head_blocks_inventory(self):
         with patch.object(retire.rollout, "repositories", return_value=["acme/toolbox"]), \
                 patch.object(retire.platform, "gh_pages", return_value=[{"head": {"repo": None}}]):
