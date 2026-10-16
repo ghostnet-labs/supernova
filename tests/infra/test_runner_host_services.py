@@ -59,12 +59,21 @@ class HostServicesTests(unittest.TestCase):
         node = definitions[host.LABELS["node"]]
         collector = definitions[host.LABELS["github"]]
         self.assertIn("--web.listen-address=127.0.0.1:9100", node["ProgramArguments"])
+        self.assertIn("--no-collector.thermal", node["ProgramArguments"])
         self.assertIn("--use-gh-auth", collector["ProgramArguments"])
         self.assertIn("127.0.0.1", collector["ProgramArguments"])
         self.assertEqual(set(collector["EnvironmentVariables"]), {"PATH"})
         copied = Path(collector["ProgramArguments"][1])
         self.assertEqual(copied.stat().st_mode & 0o777, 0o400)
         self.assertTrue(copied.is_absolute())
+
+    def test_failed_collector_cannot_pass_required_metric_verification(self):
+        metrics = "\n".join(name + " 1" for name in (
+            "node_exporter_build_info", "node_cpu_seconds_total", "node_filesystem_size_bytes",
+            "node_network_receive_bytes_total", "node_disk_read_bytes_total", "node_memory_total_bytes"))
+        host.metric_text("node", metrics + '\nnode_scrape_collector_success{collector="cpu"} 1\n')
+        with self.assertRaisesRegex(host.platform.PlatformError, "collector failed"):
+            host.metric_text("node", metrics + '\nnode_scrape_collector_success{collector="cpu"} 0\n')
 
     def test_wildcard_listener_is_rejected(self):
         with patch.object(host.platform, "run", return_value="p123\nn*:9100\n"):

@@ -337,7 +337,11 @@ def monitoring_values(cfg, profile="full"):
             "prometheusConfigReloader": {"resources": reloader},
             "admissionWebhooks": {"patch": {"resources": small}}},
         "kube-state-metrics": {"resources": monitoring_resources("25m", "32Mi", "200m", "64Mi" if pilot else "96Mi")},
-        "prometheus-node-exporter": {"resources": monitoring_resources("25m", "32Mi", "200m", "48Mi" if pilot else "64Mi")},
+        "prometheus-node-exporter": {
+            "extraArgs": ["--collector.disable-defaults", "--collector.cpu", "--collector.meminfo",
+                          "--collector.filesystem", "--collector.diskstats", "--collector.netdev",
+                          "--collector.uname", "--collector.loadavg", "--collector.time"],
+            "resources": monitoring_resources("25m", "32Mi", "200m", "48Mi" if pilot else "64Mi")},
         "grafana": {
             "admin": {"existingSecret": "grafana-admin", "userKey": "admin-user",
                       "passwordKey": "admin-password"},

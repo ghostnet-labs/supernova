@@ -125,7 +125,8 @@ def definitions(cfg, state, repositories, node_binary, python_binary, gh_binary,
     if not repositories and not scope.startswith("orgs/"):
         raise platform.PlatformError("A repository is required for the GitHub collector.")
     definitions = {}
-    for kind, argv in (("node", [node_binary, "--web.listen-address=127.0.0.1:9100"]), ("github", args)):
+    for kind, argv in (("node", [node_binary, "--web.listen-address=127.0.0.1:9100",
+                                "--no-collector.thermal"]), ("github", args)):
         label = LABELS[kind]
         definitions[label] = {"Label": label, "ProgramArguments": argv,
                               "EnvironmentVariables": {"PATH": str(Path(gh_binary).parent) + ":/usr/bin:/bin:/usr/sbin:/sbin"},
@@ -190,6 +191,9 @@ def metric_text(kind, text):
             raise platform.PlatformError("Native node exporter is missing required host metric families.")
         if not re.search(r"^node_memory_(?:total|MemTotal)_bytes(?:\{|\s)", text, re.M):
             raise platform.PlatformError("Native node exporter is missing host memory metrics.")
+        for labels, value in re.findall(r"^node_scrape_collector_success(\{[^}\n]+\})\s+(\S+)", text, re.M):
+            if float(value) != 1:
+                raise platform.PlatformError("Native node exporter collector failed: " + labels)
     elif not re.search(r"^ci_metrics_collection_success 1(?:\.0)?$", text, re.M):
         raise platform.PlatformError("GitHub metrics have not completed a successful collection.")
 

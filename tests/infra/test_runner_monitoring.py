@@ -36,6 +36,10 @@ class MonitoringTests(unittest.TestCase):
 
     def test_pilot_bounds_include_auxiliary_containers(self):
         values = platform.monitoring_values(self.cfg, "pilot")
+        collectors = values["prometheus-node-exporter"]["extraArgs"]
+        self.assertIn("--collector.disable-defaults", collectors)
+        for name in ("cpu", "meminfo", "filesystem", "diskstats", "netdev", "uname", "loadavg", "time"):
+            self.assertIn("--collector." + name, collectors)
         resources = [values["prometheus"]["prometheusSpec"]["resources"],
                      values["grafana"]["resources"], values["grafana"]["sidecar"]["resources"],
                      values["grafana"]["sidecar"]["resources"],
