@@ -150,6 +150,81 @@ class HostDriverTests(unittest.TestCase):
             self.assertEqual(command.call_args.args[0][1], "validate")
             self.assertEqual(command.call_count, 1)
 
+    def test_supervisor_requires_repository_scope(self):
+        args = self.args()
+        args.repository = None
+        with patch.object(driver, "run_one") as run, self.assertRaises(ValueError):
+            driver.supervise(args)
+        run.assert_not_called()
+
+    def test_supervisor_drains_after_current_job_without_second_registration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args()
+            args.state, args.repository = Path(directory), "acme/project"
+            args.max_jobs = 10
+            def finish_job(_):
+                args.drain_file.touch()
+                return True
+            with patch.object(driver, "run_one", side_effect=finish_job) as run:
+                driver.supervise(args)
+            self.assertEqual(run.call_count, 1)
+            self.assertTrue(args.drain_file.exists())
+
+    def test_supervisor_never_restarts_failed_or_uncertain_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args()
+            args.state, args.repository = Path(directory), "acme/project"
+            args.max_jobs = 10
+            with patch.object(driver, "run_one", side_effect=ValueError("cleanup unknown")) as run, \
+                    self.assertRaisesRegex(ValueError, "cleanup unknown"):
+                driver.supervise(args)
+            self.assertEqual(run.call_count, 1)
+
+    def test_supervisor_budget_and_existing_drain_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args()
+            args.state, args.repository = Path(directory), "acme/project"
+            args.max_jobs = 2
+            with patch.object(driver, "run_one", return_value=True) as run:
+                driver.supervise(args)
+            self.assertEqual(run.call_count, 2)
+            args.drain_file.touch()
+            with patch.object(driver, "run_one") as run:
+                driver.supervise(args)
+            run.assert_not_called()
+
+    def test_drain_arriving_during_preparation_prevents_jit_issue(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.args()
+            args.drain_file = Path(directory) / "drain"
+            def observe(_):
+                args.drain_file.touch()
+            with patch.object(driver, "command", return_value=SimpleNamespace(stdout="maintainer\n")) as command, \
+                    patch.object(driver, "observe_guest", side_effect=observe), \
+                    patch.object(driver, "release_digest", return_value="a" * 64), patch.object(driver, "guest"):
+                self.assertFalse(driver.run_one(args))
+            self.assertEqual(command.call_count, 1)
+
+    def test_repository_registration_and_revocation_share_scope(self):
+        args = self.args()
+        args.repository = "acme/project"
+        calls = []
+        def command(argv, **kwargs):
+            calls.append(argv)
+            if argv[-1] == ".login":
+                return SimpleNamespace(stdout="maintainer\n")
+            if "--input" in argv:
+                return SimpleNamespace(stdout=json.dumps({"encoded_jit_config": "secret", "runner": {"id": 1}}))
+            if "--slurp" in argv:
+                return SimpleNamespace(stdout=json.dumps([{"runners": [{"id": 1, "busy": False}]}]))
+            return SimpleNamespace(stdout="")
+        with patch.object(driver, "command", side_effect=command), patch.object(driver, "observe_guest"), \
+                patch.object(driver, "release_digest", return_value="a" * 64), patch.object(driver, "guest"):
+            self.assertTrue(driver.run_one(args))
+        self.assertIn("repos/acme/project/actions/runners/generate-jitconfig", str(calls))
+        self.assertIn("repos/acme/project/actions/runners/1", str(calls))
+        self.assertNotIn("orgs/", str(calls))
+
     def test_failed_start_preserves_durable_private_ownership_record(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(name="new-macos", state=Path(directory))

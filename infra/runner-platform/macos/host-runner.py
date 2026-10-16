@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start an isolated macOS VM or run one foreground JIT canary in an existing guest."""
+"""Start an isolated macOS VM or supervise foreground JIT jobs in an existing guest."""
 import argparse
 import datetime as dt
 import fcntl
@@ -115,8 +115,13 @@ def run_one(args):
     guest(args.name, INSTALL, args.runner_version, digest, timeout=300)
     # Check isolation and idleness again immediately before issuing the JIT registration.
     observe_guest(args.name)
+    drain = getattr(args, "drain_file", None)
+    if drain is not None and (drain.exists() or drain.is_symlink()):
+        return False
     registration_name = f"{args.name}-{int(time.time())}"
-    endpoint = f"orgs/{args.organization}/actions/runners/generate-jitconfig"
+    scope = (f"repos/{args.repository}" if getattr(args, "repository", None)
+             else f"orgs/{args.organization}")
+    endpoint = f"{scope}/actions/runners/generate-jitconfig"
     request = {"name": registration_name, "runner_group_id": args.runner_group_id,
                # Avoid matching generic native macOS/ARM64 workflow routes during validation.
                "labels": ["macos-vm"], "work_folder": "_work"}
@@ -134,16 +139,34 @@ def run_one(args):
         config = None
         # Revoke an idle/abandoned registration if runner failure interrupted GitHub's automatic removal.
         # An active job is never deleted merely because the driver's timeout elapsed.
-        pages = json.loads(command(["gh", "api", f"orgs/{args.organization}/actions/runners?per_page=100",
+        pages = json.loads(command(["gh", "api", f"{scope}/actions/runners?per_page=100",
                                     "--paginate", "--slurp"]).stdout)
         remaining = [row for page in pages for row in page.get("runners", []) if row.get("id") == runner_id]
         if remaining and remaining[0].get("busy") is False:
             command(["gh", "api", "--method", "DELETE",
-                     f"orgs/{args.organization}/actions/runners/{runner_id}"], capture=False)
+                     f"{scope}/actions/runners/{runner_id}"], capture=False)
         elif remaining:
             raise ValueError("Runner is still busy or its state is unknown; registration retained and cleanup unverified")
     guest(args.name, CLEANUP_CHECK)
     print("The one-job runner exited. Reimage the guest before running another untrusted job.")
+    return True
+
+
+def supervise(args):
+    """Reuse a guest only for explicitly trusted repository jobs; never restart errors."""
+    if not args.repository:
+        raise ValueError("supervise requires a scoped --repository")
+    args.drain_file = args.state / f"{args.name}.drain"
+    completed = 0
+    while completed < args.max_jobs:
+        if args.drain_file.exists() or args.drain_file.is_symlink():
+            break
+        # run_one rechecks capacity, isolation, tools and credentials each time.
+        # Any timeout, busy/unknown registration or failed cleanup escapes this loop.
+        if not run_one(args):
+            break
+        completed += 1
+    print(f"Supervisor drained after {completed} jobs; no further registration will be issued.")
 
 
 def save_record(path, record):
@@ -215,13 +238,15 @@ def start_guest(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  host-runner.py start\n  host-runner.py run-one --organization acme --expected-login maintainer\n\n"
+        epilog="Examples:\n  host-runner.py start\n  host-runner.py run-one --organization acme --expected-login maintainer\n  host-runner.py supervise --repository acme/project --expected-login maintainer --max-jobs 10\n\n"
                "Environment:\n  Run in the normal host terminal with limactl and authenticated gh. No host credentials enter the guest.")
-    parser.add_argument("command", choices=("start", "run-one"))
+    parser.add_argument("command", choices=("start", "run-one", "supervise"))
     parser.add_argument("--name", default="ci-macos", help="Guest VM name")
     parser.add_argument("--state", type=Path, default=ROOT.parent / ".local", help="Local rendered configuration directory")
     parser.add_argument("--organization", help="GitHub organization for the one-job registration")
+    parser.add_argument("--repository", help="Repository owner/name for repository-scoped JIT registration")
     parser.add_argument("--expected-login", help="Required personal gh login for run-one")
+    parser.add_argument("--max-jobs", type=int, default=10, help="Supervisor registration budget (1-1000); never restarts failures")
     parser.add_argument("--runner-group-id", type=int, default=1, help="Runner group allowed to accept the canary")
     parser.add_argument("--runner-version", default="2.338.0", help="Official Actions runner release version")
     parser.add_argument("--timeout-minutes", type=int, default=60, help="Maximum foreground wait (1-240 minutes)")
@@ -230,15 +255,23 @@ def main(argv=None):
         parser.error("--name must be a lowercase VM name")
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.runner_version) or not 1 <= args.timeout_minutes <= 240:
         parser.error("Invalid runner version or timeout")
-    if args.command == "run-one" and (not args.organization or not args.expected_login):
-        parser.error("run-one requires --organization and --expected-login")
+    if args.command != "start" and (not (args.organization or args.repository) or not args.expected_login):
+        parser.error("runner commands require --organization or --repository, and --expected-login")
+    if args.repository and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository):
+        parser.error("Invalid repository name")
+    if args.organization and args.repository:
+        parser.error("Select either --organization or --repository")
+    if not 1 <= args.max_jobs <= 1000:
+        parser.error("--max-jobs must be between 1 and 1000")
+    if args.command == "supervise" and not args.repository:
+        parser.error("supervise requires --repository")
     if args.organization and not re.fullmatch(r"[A-Za-z0-9-]+", args.organization):
         parser.error("Invalid organization name")
     try:
         args.state.mkdir(mode=0o700, parents=True, exist_ok=True)
         with (args.state / f"{args.name}.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            start_guest(args) if args.command == "start" else run_one(args)
+            {"start": start_guest, "run-one": run_one, "supervise": supervise}[args.command](args)
         return 0
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         # Do not echo CalledProcessError command output: it could contain registration data.
