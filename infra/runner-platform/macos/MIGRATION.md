@@ -124,6 +124,62 @@ Only then stop new assignments to the native route, wait for all active jobs,
 freeze/recheck the selected native listeners and retire one slot at a time.
 Retain a tested restore route. Do not bulk-delete native registrations or disks.
 
+## Trusted job supervision and rollback
+
+`run-one` exits after one job. After the acceptance runs above pass, the optional
+foreground supervisor can issue consecutive repository-scoped JIT registrations.
+It is inactive unless explicitly invoked; no launchd service is installed or
+started. Keep all untrusted fork jobs on GitHub-hosted runners until clean-image
+recycling is implemented and accepted. Repository scope limits where the runner
+registers; it does not make that repository's pull requests or workflow code
+trusted. Audit every workflow matching `macos-vm` first, and permit only manually
+dispatched trusted refs on this route. Repository scope is not proof that
+arbitrary workflow code is safe to reuse.
+
+```bash
+python3 "$runner_platform/macos/host-runner.py" supervise \
+  --repository OWNER/REPOSITORY --expected-login LOGIN \
+  --max-jobs 10
+```
+
+The same per-VM host lock remains held across the entire batch. Every registration
+rechecks host capacity, guest isolation, tools and idleness. Each job must exit,
+lose its idle registration and pass guest cleanup before the next registration.
+Any failure, timeout or unknown/busy state ends supervision without retrying.
+The finite registration budget defaults to ten and accepts 1–1000. No native
+runner label changes automatically, so this prepares a service without claiming
+production migration or ten concurrent guest slots.
+
+To drain, create the sentinel in the same state directory selected for the
+supervisor (the default is `$runner_platform/.local`):
+
+```bash
+touch "$runner_platform/.local/ci-macos.drain"
+```
+
+The sentinel remains until deliberately removed. It prevents the next JIT
+registration and is checked again after preparation. A registration already
+issued remains available for its one job; the sentinel does not interrupt it.
+Do not kill the foreground process to drain: allow the accepted job and cleanup
+to finish. If it is waiting for work, wait for its configured timeout, then
+inspect the registration and guest before further action. Do not wrap supervision
+in an automatic restart loop: this would hide failed cleanup and rollback gates.
+
+For an idle VM shutdown, first wait for the supervisor to exit, verify GitHub has
+no busy or queued job on its route, verify no `Runner.Worker` or `Runner.Listener`
+remains in the guest, and confirm `_work` and runner credentials are absent.
+Compare the VM name and configuration digest against the driver-created
+`ci-macos-created.json` ownership record. Only then may the operator stop that
+specific guest with `limactl stop ci-macos`; retain its disk, configuration,
+ownership record, logs and acceptance run URLs. Unknown state blocks shutdown.
+This sequence is intentionally manual and never stops unrelated VMs.
+
+Rollback routes new jobs to the retained native labels only after this drain and
+idle check, and restores only the individually recorded native listeners already
+retired. Recheck host capacity before starting a stopped VM. Remove the drain
+sentinel only after inspecting the failure and explicitly deciding to resume.
+Do not run the VM route and restored native route against the same queued job.
+
 ## Firmware migration is a separate build contract
 
 The observed firmware default branch is `24.10`. Its reusable
