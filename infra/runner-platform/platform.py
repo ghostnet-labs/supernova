@@ -100,7 +100,10 @@ def load_config(path):
 
 
 def gh_json(endpoint, *, paginate=False):
-    args = ["gh", "api"]
+    destination = urllib.parse.urlsplit(endpoint)
+    if destination.scheme or destination.netloc or endpoint.startswith("-"):
+        raise PlatformError("GitHub API reads require a relative endpoint on github.com.")
+    args = ["gh", "api", "--hostname", "github.com"]
     if paginate:
         args += ["--paginate", "--slurp"]
     for attempt in range(3):
