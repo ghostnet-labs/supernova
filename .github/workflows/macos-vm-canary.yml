@@ -6,6 +6,10 @@ on:
         description: Exercise cleanup after an intentional failure
         type: boolean
         default: false
+      cancellation_hold:
+        description: Pause after validation so an operator can cancel an active job
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -32,6 +36,25 @@ jobs:
         env:
           NO_COLOR: "1"
         run: ./setup.sh --test
+      - name: Create artifact roundtrip payload
+        run: printf '%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$RUNNER_TEMP/macos-canary.txt"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: macos-vm-canary-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-canary.txt
+          if-no-files-found: error
+          retention-days: 1
+      - uses: actions/download-artifact@v7
+        with:
+          name: macos-vm-canary-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-canary-downloaded
+      - name: Verify artifact roundtrip
+        run: cmp "$RUNNER_TEMP/macos-canary.txt" "$RUNNER_TEMP/macos-canary-downloaded/macos-canary.txt"
+      - name: Cancellation acceptance hold
+        if: inputs.cancellation_hold
+        run: |
+          printf '%s\n' 'Validation passed; cancel this running job now to exercise cleanup.'
+          sleep 300
       - name: Optional failure
         if: inputs.expected_failure
         run: exit 1

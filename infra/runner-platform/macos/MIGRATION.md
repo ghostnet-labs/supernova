@@ -102,6 +102,15 @@ app builds, tests and artifact upload/download. A GitHub-hosted `macos-latest`
 pass validates repository compatibility only; it does not validate this guest.
 
 Exercise success, intentional failure and cancellation after work starts.
+The manually dispatched `macOS VM canary` uploads and downloads a run-specific
+artifact and compares its contents. Use the default inputs for success,
+`expected_failure: true` for failure, and `cancellation_hold: true` for the
+cancellation run. Cancel only after the `Cancellation acceptance hold` step is
+running; cancelling a queued job does not validate guest cleanup. The hold lasts
+five minutes and is disabled for normal validation. This workflow checks out
+only its selected repository ref and accepts no fork/PR checkout input. Keep it
+manually dispatched; do not add untrusted pull-request events before clean-image
+recycling is implemented and accepted.
 Check registration and work-directory cleanup as well as job conclusion. The
 host driver creates one JIT registration, runs one job, removes work and runner
 credential files and verifies the guest is idle afterward. It retains a busy
