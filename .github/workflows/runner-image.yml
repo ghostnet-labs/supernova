@@ -44,6 +44,14 @@ jobs:
             --cap-drop ALL --security-opt no-new-privileges \
             --mount "type=bind,src=$GITHUB_WORKSPACE/infra/runner-platform/runner/native-link-smoke.sh,dst=/tmp/native-link-smoke.sh,readonly" \
             --entrypoint bash "$RUNNER_IMAGE_TAG" /tmp/native-link-smoke.sh
+      - name: Verify legacy Python and pilot defaults without privileges
+        shell: bash
+        run: |
+          docker run --rm --platform linux/arm64 --user 1001:1001 \
+            --cpus 1 --memory 2g --memory-swap 2g --network none \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/infra/runner-platform/runner/runtime-smoke.sh,dst=/tmp/runtime-smoke.sh,readonly" \
+            --entrypoint bash "$RUNNER_IMAGE_TAG" /tmp/runtime-smoke.sh
       - name: Publish image and immutable reference
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:

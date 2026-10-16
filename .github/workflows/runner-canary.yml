@@ -13,6 +13,10 @@ on:
         description: Exercise cleanup after a failed job
         type: boolean
         default: false
+      compatibility_probe:
+        description: Verify seeded Python 3.8 and pilot defaults after image rollout
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -31,6 +35,24 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/test-venv"
           yq --version | grep -q mikefarah
           printf 'runner=%s\n' "$RUNNER_NAME" >"$RUNNER_TEMP/canary.txt"
+      - name: Select retained workflow Python from toolcache
+        if: inputs.compatibility_probe
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.8'
+      - name: Verify retained workflow runtime compatibility
+        if: inputs.compatibility_probe
+        run: |
+          test "$(id -u)" -eq 1001
+          test "$pythonLocation" = /opt/hostedtoolcache/Python/3.8.20/arm64
+          test "$GOFLAGS" = -p=1
+          test "$GOMAXPROCS" = 1
+          test "$GOMEMLIMIT" = 1400MiB
+          test "$CODEQL_THREADS" = 1
+          test "$CODEQL_RAM" = 2048
+          python3 -c 'import platform, ssl, sys; assert sys.version_info[:3] == (3, 8, 20); assert platform.machine() == "aarch64"'
+          python3 -m venv "$RUNNER_TEMP/compatibility-venv"
+          "$RUNNER_TEMP/compatibility-venv/bin/python" -m pip --version
       - uses: actions/upload-artifact@v6
         with:
           name: runner-canary
