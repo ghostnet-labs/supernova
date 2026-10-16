@@ -34,10 +34,18 @@ jobs:
           docker build --platform linux/arm64 --build-arg "RUNNER_VERSION=$version" \
             -t "$tag" infra/runner-platform/runner
           docker run --rm --entrypoint bash "$tag" -c \
-            'test "$(uname -m)" = aarch64; git --version; zsh --version; tmux -V; yq --version; python3 -c "import rich, textual"'
+            'set -e; test "$(uname -m)" = aarch64; git --version; zsh --version; tmux -V; yq --version; python3 -c "import rich, textual"'
           printf 'RUNNER_IMAGE_TAG=%s\n' "$tag" >>"$GITHUB_ENV"
+      - name: Verify native dependencies without privileges
+        shell: bash
+        run: |
+          docker run --rm --platform linux/arm64 --user 1001:1001 \
+            --cpus 1 --memory 2g --memory-swap 2g \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/infra/runner-platform/runner/native-link-smoke.sh,dst=/tmp/native-link-smoke.sh,readonly" \
+            --entrypoint bash "$RUNNER_IMAGE_TAG" /tmp/native-link-smoke.sh
       - name: Publish image and immutable reference
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
           REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -49,8 +57,7 @@ jobs:
           printf '%s\n' "$digest" >runner-image-digest.txt
           printf 'Runner image: `%s`\n' "$digest" >>"$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           name: runner-image-digest
           path: runner-image-digest.txt
-
