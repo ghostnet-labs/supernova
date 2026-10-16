@@ -137,7 +137,7 @@ class DeploymentTests(unittest.TestCase):
         messages = ["TLS handshake timeout", "i/o timeout", "connection reset by peer",
                     "unexpected EOF", "context deadline exceeded", "HTTP 429", "HTTP 502",
                     "HTTP 503", "HTTP 504"]
-        command = ["gh", "api", "--paginate", "--slurp", "repos/acme/project/branches"]
+        command = ["gh", "api", "--hostname", "github.com", "--paginate", "--slurp", "repos/acme/project/branches"]
         for message in messages:
             with self.subTest(message=message), patch.object(platform, "run", side_effect=[
                     platform.PlatformError(message), '[{"name":"main"}]']) as run, patch.object(
@@ -158,7 +158,15 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual(run.call_count, 3)
             self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (4,)])
             for invocation in run.call_args_list:
-                self.assertEqual(invocation.args, (["gh", "api", "endpoint"],))
+                self.assertEqual(invocation.args, (["gh", "api", "--hostname", "github.com", "endpoint"],))
+
+    def test_github_api_destination_cannot_be_overridden_by_endpoint(self):
+        for endpoint in ("https://example.invalid/repos/acme/project", "//example.invalid/repos/acme/project",
+                         "--hostname=example.invalid"):
+            with self.subTest(endpoint=endpoint), patch.object(platform, "run") as run:
+                with self.assertRaisesRegex(platform.PlatformError, "relative endpoint"):
+                    platform.gh_json(endpoint)
+                run.assert_not_called()
 
     def test_github_read_retries_stop_after_three_failures(self):
         for error in (platform.PlatformError("HTTP 503"),
