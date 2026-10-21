@@ -106,6 +106,7 @@ SETUP_DEPENDENCIES=(
   "base|all|brew|neovim|command|nvim"
   "base|all|brew|parallel|command|parallel"
   "base|all|brew|pipx|command|pipx"
+  "base|all|brew|pyright|command|pyright-langserver"
   "base|all|brew|python|command|python3"
   "base|all|brew|powerlevel10k|brew_file|share/powerlevel10k/powerlevel10k.zsh-theme"
   "base|all|brew|ripgrep|command|rg"
