@@ -14,7 +14,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - `tests/` — Regression tests run by `./setup.sh --test`:
   - `tests/setup/` covers `setup.sh`, `bootstrap.sh`, `setup/`, the Git hooks, and repository-wide rules such as no here-documents
   - `tests/dotfiles/` covers `dotfiles/` and the apps under `apps/`; a topic's functions are usually covered by `test_functions_<topic>.zsh`
-  - `tests/github/` covers `.github/scripts/`, the ruleset, and the linter pins in `ci.yml`
+  - `tests/github/` covers `.github/scripts/`, the ruleset, the linter pins in `ci.yml`, and `.claude/settings.json`
   - `tests/fixtures/overlay/` is the fake `acme` work overlay the work-scope tests use
   - Put new tests here, never in a PATH directory such as `dotfiles/.bin`. Any `tests/*/test_*.{sh,zsh,py}` file is found automatically. Give it a `# setup-test: Label` header in its first five lines naming what it covers (for example `Git hooks`, shown as `Tests: Git hooks`), and add `# setup-test-scope: work` when it exercises Work scope (a work overlay's own `$WORK_ROOT/tests/$JOB/` tests always are)
   - New shell tests source `tests/lib/assert.sh` for `fail_test`, `assert_contains`, `assert_not_contains`, and `assert_equals` instead of defining their own. Python tests that need Textual must skip, not fail, when it is missing
@@ -36,6 +36,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - `.local/` — Machine-local and gitignored except `env.zsh.example`: fix mode writes `.local/.env.zsh` and work setups get `.local/<job>-venv`
 - `ruff.toml` — Ruff settings: a pinned rule set and `extend-include` for Python commands without a `.py` suffix; add new extensionless Python commands there
 - `CLAUDE.md` — Points Claude Code at this file; keep the rules here
+- `.claude/settings.json` — Shared Claude Code settings: turns on the official `pyright-lsp`, `swift-lsp`, and `claude-md-management` plugins and nothing else (`tests/github/test_claude_settings.py` checks this). Cloud sessions don't load plugins, so they help local sessions only; `pyright-langserver` comes from the managed `pyright` package, and `sourcekit-lsp` from Xcode on macOS
 - `LICENSE` — MIT. Vendored files keep their own licenses (Octicons, `dotfiles/nvim/LICENSE`, the Vim colour schemes)
 - `.githooks/` — Tracked Git hooks, enabled by fix mode through `core.hooksPath`:
   - `pre-commit` scans staged changes with gitleaks through `dotfiles/lib/toolbox_secrets.py`, so it needs `python3`. gitleaks must be 8.29.0 or newer (`SETUP_GITLEAKS_MIN_VERSION` in `setup/dependencies.sh`, which `--check` enforces and `--fix` upgrades)
