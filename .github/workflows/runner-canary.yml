@@ -37,7 +37,7 @@ jobs:
           printf 'runner=%s\n' "$RUNNER_NAME" >"$RUNNER_TEMP/canary.txt"
       - name: Select retained workflow Python from toolcache
         if: inputs.compatibility_probe
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.8'
       - name: Verify retained workflow runtime compatibility
@@ -53,7 +53,7 @@ jobs:
           python3 -c 'import platform, ssl, sys; assert sys.version_info[:3] == (3, 8, 20); assert platform.machine() == "aarch64"'
           python3 -m venv "$RUNNER_TEMP/compatibility-venv"
           "$RUNNER_TEMP/compatibility-venv/bin/python" -m pip --version
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: runner-canary
           path: ${{ runner.temp }}/canary.txt

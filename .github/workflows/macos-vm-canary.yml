@@ -38,13 +38,13 @@ jobs:
         run: ./setup.sh --test
       - name: Create artifact roundtrip payload
         run: printf '%s:%s\n' "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$RUNNER_TEMP/macos-canary.txt"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-vm-canary-${{ github.run_attempt }}
           path: ${{ runner.temp }}/macos-canary.txt
           if-no-files-found: error
           retention-days: 1
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: macos-vm-canary-${{ github.run_attempt }}
           path: ${{ runner.temp }}/macos-canary-downloaded

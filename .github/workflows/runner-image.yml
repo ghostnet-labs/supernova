@@ -64,7 +64,7 @@ jobs:
           digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$RUNNER_IMAGE_TAG")"
           printf '%s\n' "$digest" >runner-image-digest.txt
           printf 'Runner image: `%s`\n' "$digest" >>"$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         with:
           name: runner-image-digest
