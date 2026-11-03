@@ -1,0 +1,32 @@
+name: Dependabot auto-merge
+
+# Turns on auto-merge for Dependabot's minor and patch GitHub Actions bumps, so
+# they land on their own once the required checks pass. Major bumps stay open for
+# review: the canary and image workflows only run on demand, so a passing PR
+# doesn't prove a new major version still works there. The job never checks out
+# or runs the PR's code.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge for Dependabot
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'ghostnet-labs/supernova'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Read the update's metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+      - name: Enable rebase auto-merge for minor and patch updates
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --rebase "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
