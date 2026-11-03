@@ -17,6 +17,7 @@ final class WorkspaceModel: ObservableObject {
     let defaults: UserDefaults
     @Published private(set) var page: WorkspacePage
     @Published private(set) var backStack: [WorkspacePage] = []
+    @Published private(set) var forwardStack: [WorkspacePage] = []
     @Published var search = ""
     @Published var showArchived = false
     @Published var onlyPinned = false
@@ -82,11 +83,11 @@ final class WorkspaceModel: ObservableObject {
         }
         sessions.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
         worktrees.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }.store(in: &subscriptions)
-        sessions.$sessions.combineLatest(sessions.$subagents, sessions.$providerHealth)
+        sessions.$sessions.combineLatest(sessions.$subagents, sessions.$providerHealth, sessions.$remoteHealth)
             .debounce(for: .milliseconds(150), scheduler: DispatchQueue.main)
-            .sink { [weak self] _, _, _ in
+            .sink { [weak self] _, _, _, _ in
                 guard let self else { return }
-                let paths = Set(self.sessions.sessions.map(\.project.path).filter { !$0.isEmpty })
+                let paths = Set(self.sessions.sessions.filter { !$0.isRemote }.map(\.project.path).filter { !$0.isEmpty })
                 let changed = paths != self.sessionProjects
                 self.sessionProjects = paths
                 self.updateAssociations()
@@ -107,12 +108,12 @@ final class WorkspaceModel: ObservableObject {
     }
 
     var agentPaths: [String: [String]] {
-        Dictionary(grouping: (sessions.sessions + sessions.subagents).filter { $0.isLive && $0.cwd.hasPrefix("/") }, by: { WorktreeScanner.canonical($0.cwd) })
+        Dictionary(grouping: (sessions.sessions + sessions.subagents).filter { !$0.isRemote && $0.isLive && $0.cwd.hasPrefix("/") }, by: { WorktreeScanner.canonical($0.cwd) })
             .mapValues { $0.map(\.id) }
     }
     /// Reuse the provider streams for worktree rows instead of starting another pair of session commands.
     var agentSessions: [AgentSession] {
-        var live = (sessions.sessions + sessions.subagents).filter { $0.isLive && $0.cwd.hasPrefix("/") }.compactMap { session -> AgentSession? in
+        var live = (sessions.sessions + sessions.subagents).filter { !$0.isRemote && $0.isLive && $0.cwd.hasPrefix("/") }.compactMap { session -> AgentSession? in
             guard var agent = AgentSession(row: ["session_id": session.nativeID, "cwd": WorktreeScanner.canonical(session.cwd)],
                                            kind: session.source == .claude ? .claude : .codex) else { return nil }
             agent.title = session.title.oneLine(limit: 180)
@@ -139,7 +140,7 @@ final class WorkspaceModel: ObservableObject {
     }
     var agentsKnown: Bool {
         [SessionSource.codex, .claude].allSatisfy { sessions.providerHealth[$0] == .ok }
-            && (sessions.sessions + sessions.subagents).allSatisfy { !$0.isLive || $0.cwd.hasPrefix("/") }
+            && (sessions.sessions + sessions.subagents).allSatisfy { $0.isRemote || !$0.isLive || $0.cwd.hasPrefix("/") }
     }
 
     func updateAssociations() {
@@ -147,19 +148,19 @@ final class WorkspaceModel: ObservableObject {
         linkedPaths = [:]
         var byDirectory: [String: String] = [:]
         // Large histories often share a handful of directories. Resolve each only once.
-        for directory in Set(sessions.sessions.map(\.cwd)) {
+        for directory in Set(sessions.sessions.filter { !$0.isRemote }.map(\.cwd)) {
             var isDirectory: ObjCBool = false
             guard directory.hasPrefix("/"), FileManager.default.fileExists(atPath: directory, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
             let cwd = WorktreeScanner.canonical(directory)
             byDirectory[directory] = paths.first { cwd == $0 || cwd.hasPrefix($0 + "/") }
         }
-        for session in sessions.sessions {
+        for session in sessions.sessions where !session.isRemote {
             linkedPaths[session.id] = byDirectory[session.cwd]
         }
         worktrees.updateAgents(agentSessions, known: agentsKnown)
         var statuses: [String: GitStatus] = [:]
         let records = Dictionary(uniqueKeysWithValues: worktrees.records.map { ($0.path, $0) })
-        for session in sessions.sessions {
+        for session in sessions.sessions where !session.isRemote {
             if let path = linkedPaths[session.id], let record = records[path], !record.unreadable {
                 var status = record.changes; status.branch = record.branch; status.repository = path
                 statuses[session.cwd] = status
@@ -191,18 +192,23 @@ final class WorkspaceModel: ObservableObject {
         return needle.isEmpty || values.contains { $0.localizedCaseInsensitiveContains(needle) }
     }
     func matches(_ session: CodexSession) -> Bool {
-        matches([session.title, session.cwd, session.branch, session.projectName, session.lastRequest, session.id, session.source.rawValue])
+        matches([session.title, session.cwd, session.branch, session.projectName, session.lastRequest, session.id, session.sourceLabel])
     }
 
     func navigate(_ next: WorkspacePage) {
         guard next != page else { return }
         savePageState()
         backStack.append(page)
+        forwardStack.removeAll()
         show(next)
     }
     func back() {
         guard let previous = backStack.popLast() else { return }
-        savePageState(); show(previous)
+        savePageState(); forwardStack.append(page); show(previous)
+    }
+    func forward() {
+        guard let next = forwardStack.popLast() else { return }
+        savePageState(); backStack.append(page); show(next)
     }
     private func savePageState() { selections[page] = worktrees.selection; queries[page] = worktrees.search }
     private func show(_ next: WorkspacePage) {
@@ -234,7 +240,9 @@ final class WorkspaceModel: ObservableObject {
         switch page.kind {
         case .repository: exists = worktrees.records.contains { $0.repositoryRoot == page.key }
         case .worktree: exists = worktrees.records.contains { $0.path == page.key }
-        case .conversation: exists = sessions.sessions.contains { $0.id == page.key }
+        case .conversation:
+            exists = sessions.sessions.contains { $0.id == page.key }
+            if !exists && sessions.isSessionDiscoveryPending(page.key) { return }
         case .diff: exists = differences[page.key] != nil
         default: exists = true
         }

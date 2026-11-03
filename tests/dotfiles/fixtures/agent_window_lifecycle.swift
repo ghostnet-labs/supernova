@@ -20,8 +20,13 @@ import SwiftUI
                                  notificationsDefault: false, managesGit: false)
         defer { store.stop() }
         let title = "Agent Workspace Window Test"
-        let delegate = AppDelegate(store: store, title: title, rootView: { AnyView(Text("Window lifecycle fixture")) },
+        let delegate = AppDelegate(store: store, title: title, rootView: {
+            AnyView(Text("Window lifecycle fixture").frame(maxWidth: .infinity, maxHeight: .infinity))
+        },
                                    keepsDockIconWhenClosed: mode != "legacy")
+        let frameName = CommandLine.arguments[2]
+        if mode != "legacy" { delegate.browserFrameAutosaveName = frameName }
+        defer { if mode != "save-frame" { NSWindow.removeFrame(usingName: frameName) } }
         app.delegate = delegate
         func check(_ condition: @autoclosure () -> Bool, _ message: String) {
             if !condition() { print("FAIL: \(message)"); exit(1) }
@@ -40,6 +45,19 @@ import SwiftUI
         delegate.showBrowser(); settle()
         let window = app.windows.first { $0.title == title }!
         check(window.isVisible && delegate.dockPolicy == .regular, "opening joins the Dock and app switcher")
+        check(window.frameAutosaveName == (mode == "legacy" ? "" : frameName), "only opted-in browsers save their frame")
+        if mode == "save-frame" {
+            let screen = window.screen!.visibleFrame
+            let frame = NSRect(x: screen.minX + 20, y: screen.minY + 30,
+                               width: min(1100, screen.width - 40), height: min(700, screen.height - 60))
+            window.setFrame(frame, display: true); settle()
+            check(window.frame == frame, "resize and move to \(frame), got \(window.frame)")
+            try! NSStringFromRect(frame).write(toFile: CommandLine.arguments[3], atomically: true, encoding: .utf8)
+        } else if mode == "restore-frame" {
+            let expected = NSRectFromString(try! String(contentsOfFile: CommandLine.arguments[3], encoding: .utf8))
+            check(window.frame == expected, "fresh process restores the saved size and position")
+        }
+        let browserFrame = window.frame
         check(!window.hidesOnDeactivate, "switching apps must not hide the browser")
         delegate.showBrowser(); settle()
         check(app.windows.filter { $0.title == title }.count == 1, "reopening reuses the browser")
@@ -49,6 +67,7 @@ import SwiftUI
         check(app.sendAction(settingsItem.action!, to: settingsItem.target, from: settingsItem), "settings menu opens")
         settle()
         let settings = app.windows.first { $0.title == title + " Settings" }!
+        check(settings.frameAutosaveName.isEmpty, "settings do not overwrite the browser frame")
         settings.performClose(nil); settle()
         check(delegate.dockPolicy == .regular, "closing settings preserves a minimized browser in the Dock")
         _ = delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false); settle()
@@ -64,6 +83,11 @@ import SwiftUI
         _ = delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false); settle()
         check(window.isVisible && delegate.dockPolicy == .regular, "Dock reopen restores the same browser")
         check(app.windows.filter { $0.title == title }.count == 1, "Dock reopen does not create a duplicate")
+        check(window.frame == browserFrame, "close and reopen preserve the size and position")
+        if mode == "save-frame" {
+            check(UserDefaults.standard.string(forKey: "NSWindow Frame " + frameName) != nil, "AppKit autosaved the frame")
+            UserDefaults.standard.synchronize()
+        }
         window.orderOut(nil)
         print("PASS: \(mode) window lifecycle")
     }

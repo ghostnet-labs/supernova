@@ -283,8 +283,10 @@ def session_status(live: Optional[LiveSession]) -> tuple[str, str]:
     """Map Claude's session-file status onto codex-sessions liveness/status values."""
     if not live:
         return "CLOSED", "CLOSED"
-    # "idle" or a pending prompt needs the user; "busy", "shell", and anything newer is working.
-    return "OPEN", "WAITING" if live.status == "idle" or live.waiting_for else "BUSY"
+    # An explicit pending prompt needs input; an ordinary idle session is ready for new work.
+    if live.waiting_for:
+        return "OPEN", "WAITING"
+    return "OPEN", "IDLE" if live.status == "idle" else "BUSY"
 
 
 def session_row(path: Path, live: Optional[LiveSession], cache=None, archived: bool = False) -> dict[str, object]:
@@ -335,6 +337,8 @@ def session_row(path: Path, live: Optional[LiveSession], cache=None, archived: b
         "reasoning_effort": summary["effort"] or "-",
         "table_detail": summary["title"] or "-",
         "transcript_path": str(path),
+        "queued_messages": [{key: item[key] for key in ("id", "text", "created_at")}
+                            for item in summary["queued"] if item["text"]],
         "live_pid": live.pid if live else None,
         "zellij_session": live.zellij_session if live else "",
         "zellij_pane_id": live.zellij_pane_id if live else "",
@@ -550,8 +554,8 @@ def main(argv: list[str]) -> int:
     if options.stream_json:
         if options.json or options.live or options.jump:
             fail("--stream-json cannot be combined with other output modes")
-        # Rebuild summaries cached before dedicated sidechain transcripts were parsed.
-        cache = JsonlCache.persistent("claude", home, version=3)
+        # Reconcile old queues that missed deliveries whose enqueue text was omitted.
+        cache = JsonlCache.persistent("claude", home, version=5)
         def snapshot():
             if not home.is_dir():
                 return {"health": "unavailable", "sessions": [], "active_subagents": []}

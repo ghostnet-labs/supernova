@@ -1,12 +1,43 @@
 import AppKit
+import Observation
 import SwiftUI
+
+/// Shared typography preserves each view's hierarchy when a custom face is selected.
+@Observable final class AppFont {
+    static let shared = AppFont()
+    var selection = "System"
+    var family: String?
+    var design: Font.Design?
+    var unavailable = false
+
+    static func system(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        if design == .monospaced { return Font(NSFont.monospacedSystemFont(ofSize: size, weight: .regular)).weight(weight) }
+        guard let family = shared.family else { return .system(size: size, weight: weight, design: design) }
+        return .custom(family, fixedSize: size).weight(weight)
+    }
+
+    private static func styled(_ original: Font, size: CGFloat) -> Font {
+        guard let family = shared.family else { return original }
+        return .custom(family, fixedSize: size).weight(.regular)
+    }
+    static var largeTitle: Font { styled(.largeTitle, size: 26) }
+    static var title: Font { styled(.title, size: 22) }
+    static var title2: Font { styled(.title2, size: 17) }
+    static var title3: Font { styled(.title3, size: 15) }
+    static var headline: Font { styled(.headline, size: 13).weight(.semibold) }
+    static var subheadline: Font { styled(.subheadline, size: 12) }
+    static var body: Font { styled(.body, size: 13) }
+    static var callout: Font { styled(.callout, size: 12) }
+    static var caption: Font { styled(.caption, size: 10) }
+    static var caption2: Font { styled(.caption2, size: 10) }
+}
 
 /// Common title and metadata hierarchy for the menu bar and conversation header.
 struct SessionTitle: View {
     let title: String
     let status: String
     var elapsed = ""
-    var font: Font = .headline
+    var font: Font = AppFont.headline
 
     var body: some View {
         HStack {
@@ -58,7 +89,7 @@ struct SessionMetadata: View {
                 }
             }
         }
-        .font(.caption)
+        .font(AppFont.caption)
         .foregroundStyle(.secondary)
     }
 
@@ -224,7 +255,7 @@ struct StatusPill: View {
             Text(status.capitalized).fontWeight(.semibold)
             if !elapsed.isEmpty && elapsed != "-" { Text(elapsed).monospacedDigit().opacity(0.85) }
         }
-        .font(compact ? .caption2 : .caption)
+        .font(compact ? AppFont.caption2 : AppFont.caption)
         .foregroundStyle(color)
         .padding(.horizontal, compact ? 6 : 7).padding(.vertical, compact ? 1 : 2)
         .background(color.opacity(0.14), in: Capsule())
@@ -243,12 +274,12 @@ struct SubagentToggle: View {
         Button(action: toggle) {
             HStack(spacing: 5) {
                 Image(systemName: "chevron.right")
-                    .font(.caption2.weight(.bold))
+                    .font(AppFont.caption2.weight(.bold))
                     .rotationEffect(.degrees(expanded ? 90 : 0))
                 Text("\(count) subagent\(count == 1 ? "" : "s")")
                 if running > 0 { Text("· \(running) running") }
             }
-            .font(.caption)
+            .font(AppFont.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Color.secondary.opacity(0.12), in: Capsule())

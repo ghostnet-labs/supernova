@@ -13,6 +13,8 @@ private final class MarkdownDocument {
 }
 
 struct MarkdownMessage: View {
+    // A concrete font keeps inline code monospaced under inherited font designs.
+    private static let codeFont = Font(NSFont.monospacedSystemFont(ofSize: 13, weight: .regular))
     private let blocks: [MarkdownBlock]
     init(_ text: String) {
         let key = text as NSString
@@ -22,12 +24,12 @@ struct MarkdownMessage: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 16) {
             ForEach(blocks.indices, id: \.self) { index in
                 switch blocks[index] {
                 case .paragraph(let text): inline(text).fixedSize(horizontal: false, vertical: true)
                 case .heading(let level, let text):
-                    inline(text).font(.system(size: level == 1 ? 23 : level == 2 ? 20 : 17, weight: .semibold))
+                    inline(text).font(AppFont.system(size: level == 1 ? 23 : level == 2 ? 20 : 17, weight: .semibold))
                         .padding(.top, index == 0 ? 0 : 8)
                 case .listItem(let marker, let text, let indent):
                     HStack(alignment: .top, spacing: 8) {
@@ -45,8 +47,8 @@ struct MarkdownMessage: View {
                 }
             }
         }
-        .font(.system(size: 15))
-        .lineSpacing(4)
+        .font(AppFont.system(size: 16))
+        .lineSpacing(5)
         .foregroundStyle(.primary)
         .tint(AppTheme.accent)
         .textSelection(.enabled)
@@ -56,9 +58,13 @@ struct MarkdownMessage: View {
         guard var value = try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) else {
             return Text(verbatim: text)
         }
+        for run in value.runs where run.link != nil {
+            value[run.range].foregroundColor = AppTheme.accent
+        }
         for run in value.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            value[run.range].font = .system(size: 13, design: .monospaced)
-            value[run.range].backgroundColor = AppTheme.surface
+            value[run.range].font = Self.codeFont
+            value[run.range].foregroundColor = AppTheme.inlineCode
+            value[run.range].backgroundColor = AppTheme.inlineCodeBackground
         }
         ChangeHighlighting.counts(in: &value)
         return Text(value)
@@ -94,7 +100,7 @@ struct CopyTextButton: View {
             copied = true
         } label: {
             Label(copied ? "Copied" : label, systemImage: copied ? "checkmark" : "doc.on.doc")
-                .font(.caption)
+                .font(AppFont.caption)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
@@ -114,7 +120,7 @@ struct CodeBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(title).font(.caption).foregroundStyle(.secondary)
+                Text(title).font(AppFont.caption).foregroundStyle(.secondary)
                 Spacer()
                 CopyTextButton(text: text)
             }.padding(.horizontal, 12).padding(.vertical, 9)
@@ -122,7 +128,8 @@ struct CodeBlock: View {
             GeometryReader { geometry in
                 ScrollView(maxHeight == nil ? .horizontal : [.horizontal, .vertical]) {
                     Text(ChangeHighlighting.code(text.isEmpty ? "(empty)" : text, language: title))
-                        .font(.system(size: 12, design: .monospaced))
+                        .font(AppFont.system(size: 12, design: .monospaced))
+                        .fontDesign(.monospaced)
                         .lineSpacing(3)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: true, vertical: true)
@@ -134,37 +141,5 @@ struct CodeBlock: View {
         }
         .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(AppTheme.separator.opacity(0.5), lineWidth: 0.5))
-    }
-}
-
-enum ChangeHighlighting {
-    private static let countsPattern = try! NSRegularExpression(pattern: #"(?<![\w.])(\+\d+)\s*[/,]\s*([-−]\d+)(?![\w.])"#)
-
-    static func counts(in value: inout AttributedString) {
-        let text = String(value.characters)
-        for match in countsPattern.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
-            for (group, color) in [(1, AppTheme.success), (2, AppTheme.error)] {
-                guard let range = Range(match.range(at: group), in: text),
-                      let start = AttributedString.Index(range.lowerBound, within: value),
-                      let end = AttributedString.Index(range.upperBound, within: value) else { continue }
-                value[start..<end].foregroundColor = color
-            }
-        }
-    }
-
-    static func code(_ text: String, language: String) -> AttributedString {
-        let lines = text.components(separatedBy: "\n")
-        let isDiff = ["diff", "patch"].contains(language.lowercased()) || lines.contains {
-            $0.hasPrefix("diff --git ") || $0 == "*** Begin Patch" || $0.hasPrefix("@@ ")
-        } || (lines.contains { $0.hasPrefix("--- ") } && lines.contains { $0.hasPrefix("+++ ") })
-        guard isDiff else { return AttributedString(text) }
-        var result = AttributedString()
-        for (index, line) in lines.enumerated() {
-            var value = AttributedString((index == 0 ? "" : "\n") + line)
-            if line.hasPrefix("+") && !line.hasPrefix("+++") { value.foregroundColor = AppTheme.success }
-            else if line.hasPrefix("-") && !line.hasPrefix("---") { value.foregroundColor = AppTheme.error }
-            result.append(value)
-        }
-        return result
     }
 }

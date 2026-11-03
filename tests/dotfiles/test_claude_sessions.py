@@ -123,7 +123,7 @@ class ClaudeSessionsTests(unittest.TestCase):
                     "liveness", "root_session_id", "parent_thread_id", "thread_source", "table_detail", "tokens_total",
                     "tmux_pane", "zellij_pane_id"):
             self.assertIn(key, row)
-        self.assertEqual((row["agent"], row["liveness"], row["status"], row["client_type"]), ("claude", "OPEN", "WAITING", "APP"))
+        self.assertEqual((row["agent"], row["liveness"], row["status"], row["client_type"]), ("claude", "OPEN", "IDLE", "APP"))
         self.assertEqual(row["last_user_request"], "second request")
 
     def test_title_prefers_user_names_over_ai_titles_and_ignores_derived_names(self) -> None:
@@ -137,13 +137,15 @@ class ClaudeSessionsTests(unittest.TestCase):
                     titles.append(COLLECT_ROWS(claude.home, live_only=True, include_subagents=False, limit=10)[0]["title"])
         self.assertEqual(titles, ["Readable title", "Release notes"])
 
-    def test_busy_with_pending_prompt_is_waiting(self) -> None:
+    def test_pending_prompt_is_waiting_even_when_claude_reports_idle(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             claude = ClaudeHome(Path(temporary))
-            claude.pid_file(100, waitingFor="permission")
-            with mock.patch.dict(SCRIPT_GLOBALS, {"process_contexts": lambda pids, _=None: {100: (PROC_START, {})}}):
-                rows = COLLECT_ROWS(claude.home, live_only=True, include_subagents=False, limit=10)
-        self.assertEqual(rows[0]["status"], "WAITING")
+            for status in ("busy", "idle"):
+                for prompt in ("permission", "question"):
+                    claude.pid_file(100, status=status, waitingFor=prompt)
+                    with mock.patch.dict(SCRIPT_GLOBALS, {"process_contexts": lambda pids, _=None: {100: (PROC_START, {})}}):
+                        rows = COLLECT_ROWS(claude.home, live_only=True, include_subagents=False, limit=10)
+                    self.assertEqual(rows[0]["status"], "WAITING")
 
     def test_shell_status_is_busy_and_new_sessions_without_transcripts_are_listed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,7 +158,7 @@ class ClaudeSessionsTests(unittest.TestCase):
         self.assertEqual(rows[ROOT_ID]["status"], "BUSY")
         fresh = rows["99999999-0000-0000-0000-000000000000"]
         # A derived name ("setup-42") is neither a title nor a request.
-        self.assertEqual((fresh["status"], fresh["zellij_pane_id"], fresh["last_user_request"], fresh["title"]), ("WAITING", "5", "-", "-"))
+        self.assertEqual((fresh["status"], fresh["zellij_pane_id"], fresh["last_user_request"], fresh["title"]), ("IDLE", "5", "-", "-"))
 
     def test_active_subagents_nest_under_live_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

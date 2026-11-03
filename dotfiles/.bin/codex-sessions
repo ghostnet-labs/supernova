@@ -37,7 +37,7 @@ from uuid import UUID
 
 # Shared with the native app; resolve symlinked PATH launchers back to this checkout.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/agent-control-center"))
-from session_stream import JsonlCache, file_metadata, run_stream  # noqa: E402
+from session_stream import CodexQueue, JsonlCache, file_metadata, run_stream  # noqa: E402
 
 
 DEFAULT_LIMIT = 10
@@ -311,9 +311,8 @@ def open_codex_rollout_paths(
     return {path for paths in paths_by_pid.values() for path in paths}
 
 
-def linux_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]:
-    """Map rollout files to owning Codex processes without spawning ps/lsof."""
-    proc = Path("/proc")
+def linux_live_rollouts(sessions_dir: Path, proc: Path = Path("/proc")) -> Optional[dict[Path, LiveRollout]]:
+    """Map rollout files to owning Codex processes and terminals without spawning ps/lsof."""
     if sys.platform != "linux" or not proc.is_dir():
         return None
     try:
@@ -321,6 +320,7 @@ def linux_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]
     except OSError:
         return None
     live: dict[Path, LiveRollout] = {}
+    tui_candidates: dict[int, tuple[LiveRollout, str, str, int]] = {}
     try:
         processes = list(proc.iterdir())
     except OSError:
@@ -336,14 +336,29 @@ def linux_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]
                 for part in (process / "environ").read_bytes().split(b"\0")
                 if b"=" in part
             }
+            # Fields after "(comm)": tty_nr is the fifth and starttime the twentieth.
+            fields = (process / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+            command = (process / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace").strip()
             file_descriptors = list((process / "fd").iterdir())
         except (OSError, IndexError):
             continue
+        # The app-server daemon has no terminal; its inherited multiplexer variables
+        # name whichever pane launched it, not one showing any rollout.
+        tty = len(fields) > 19 and fields[4] != "0"
+        tmux_value = environment.get("TMUX", "") if tty else ""
         context = LiveRollout(
             pid=int(process.name),
-            zellij_session=environment.get("ZELLIJ_SESSION_NAME", ""),
-            zellij_pane_id=environment.get("ZELLIJ_PANE_ID", ""),
+            zellij_session=environment.get("ZELLIJ_SESSION_NAME", "") if tty else "",
+            zellij_pane_id=environment.get("ZELLIJ_PANE_ID", "") if tty else "",
+            tmux_socket=tmux_value.split(",", 1)[0],
+            tmux_pane=environment.get("TMUX_PANE", "") if tty else "",
         )
+        if tty and "app-server" not in command.split():
+            try:
+                cwd = os.readlink(process / "cwd")
+            except OSError:
+                cwd = ""
+            tui_candidates[context.pid] = (context, command, cwd, int(fields[19]))
         for descriptor in file_descriptors:
             try:
                 target = Path(os.readlink(descriptor)).resolve()
@@ -352,7 +367,18 @@ def linux_live_rollouts(sessions_dir: Path) -> Optional[dict[Path, LiveRollout]]
                 continue
             if target.name.startswith("rollout-") and target.suffix == ".jsonl":
                 live[target] = context
-    return live
+    if not tui_candidates:
+        return live
+    try:
+        boot = next(float(line.split()[1]) for line in (proc / "stat").read_text(encoding="utf-8").splitlines() if line.startswith("btime "))
+    except (OSError, StopIteration, ValueError, IndexError):
+        boot = 0.0
+    ticks = os.sysconf("SC_CLK_TCK")
+    tuis = {
+        pid: CodexTui(context, command, cwd, boot + start / ticks if boot else 0.0)
+        for pid, (context, command, cwd, start) in tui_candidates.items()
+    }
+    return attribute_daemon_rollouts(live, tuis)
 
 
 @dataclass(frozen=True)
@@ -821,7 +847,7 @@ def session_status(liveness: str, state: str) -> str:
         if state == "open":
             return "BUSY"
         if state in {"complete", "aborted"}:
-            return "WAITING"
+            return "IDLE"
     return "UNKNOWN"
 
 
@@ -1515,7 +1541,7 @@ def report(
     print(file=stream)
     render_table(table_rows, enabled_links, colors_enabled, stream)
     print(file=stream)
-    print("TYPE: CLI is a terminal session, APP is a desktop or IDE session, and AGENT is a subagent. STATUS: CLOSED has no matching local Codex process; BUSY has an active task; WAITING has no active task. Nested AGENT rows follow /agent's active-thread concept: only child threads with an active latest task are shown. Completed threads held open by a Codex process are omitted. U/A is user/assistant messages; C/S/A is complete/started/aborted tasks. Nested U/A, C/S/A, and TOKENS values are unavailable without a reliable per-agent attribution. Top-level token totals are session-tree totals and include cached input. Elapsed is time in the current derived lifecycle state.", file=stream)
+    print("TYPE: CLI is a terminal session, APP is a desktop or IDE session, and AGENT is a subagent. STATUS: CLOSED has no matching local Codex process; BUSY has an active task; IDLE is open with no active task. Nested AGENT rows follow /agent's active-thread concept: only child threads with an active latest task are shown. Completed threads held open by a Codex process are omitted. U/A is user/assistant messages; C/S/A is complete/started/aborted tasks. Nested U/A, C/S/A, and TOKENS values are unavailable without a reliable per-agent attribution. Top-level token totals are session-tree totals and include cached input. Elapsed is time in the current derived lifecycle state.", file=stream)
     if enabled_links:
         print("Clickable top-level IDs resume the session in its recorded CWD. Use --no-links or CODEX_SESSIONS_LINKS=0 for plain IDs.", file=stream)
     if options.verbose:
@@ -2674,6 +2700,7 @@ def jump_to_session(session_id: str) -> int:
 def stream_snapshots(options: ReportOptions) -> int:
     home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
     transcripts = JsonlCache.persistent("codex", home)
+    queue = CodexQueue(home)
     metadata_cache = {}
 
     def snapshot():
@@ -2697,6 +2724,7 @@ def stream_snapshots(options: ReportOptions) -> int:
         live = live_rollouts(home / "sessions", strict=True)
         counts = Counter(str(info["metadata"].get("session_id")) for info in files if info["metadata"].get("thread_source") == "subagent")
         roots, agents = {}, {}
+        queued = queue.read()
         for info in files:
             row = scan_rollout(info, index, counts, transcripts)
             path = info["path"]
@@ -2704,6 +2732,7 @@ def stream_snapshots(options: ReportOptions) -> int:
             if row["title"] == "-":
                 row["title"] = " ".join(str(row["first_user_request"]).split())[:180] if row["first_user_request"] != "-" else row["session_id"]
             row.update(file_metadata(path))
+            row["queued_messages"] = queued.get(row["session_id"], [])
             row.update(transcript_path=str(path), archived=info["archived"], context_window_is_estimated=False,
                        liveness="OPEN" if context else "CLOSED", live_pid=context.pid if context else None,
                        tmux_socket=context.tmux_socket if context else "", tmux_pane=context.tmux_pane if context else "",

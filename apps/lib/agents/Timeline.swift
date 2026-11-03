@@ -41,10 +41,15 @@ struct TimelineBuilder {
     mutating func consumeClaude(_ record: [String: Any], path: URL, offset: UInt64) -> [TranscriptMessage] {
         guard record["isSidechain"] as? Bool != true else { return [] }
         let type = record["type"] as? String ?? ""
-        guard type == "user" || type == "assistant" || type == "system" else { return [] }
+        let delivered = ClaudeData.deliveredQueuedText(record)
+        guard type == "user" || type == "assistant" || type == "system" || delivered != nil else { return [] }
         let uuid = record["uuid"] as? String ?? String(offset)
         guard claudeRecords.insert(uuid).inserted else { return [] }
         let timestamp = ClaudeData.date(record["timestamp"]) ?? .distantPast
+        if let delivered {
+            return [TranscriptMessage(id: "\(path.path)#\(offset)-queued", role: "user", text: delivered,
+                                      timestamp: timestamp, phase: "", byteOffset: offset)]
+        }
         func event(_ kind: TimelineKind, _ label: String, _ index: Int) -> TimelineEvent {
             TimelineEvent(id: "claude-\(offset)-\(index)", timestamp: timestamp, kind: kind, label: label,
                           detail: "", turnID: currentTurn, offset: offset, source: .claude, contentIndex: index)
@@ -227,22 +232,64 @@ enum ConversationItem: Identifiable {
 enum ConversationBlock: Identifiable {
     case message(TranscriptMessage)
     case activity([TimelineEvent])
+    case turn(TimelineTurn)
 
     var id: String {
         switch self {
         case .message(let message): return message.id
         case .activity(let events): return "activity-\(events[0].id)"
+        case .turn(let turn): return "turn-\(turn.id)"
         }
     }
     var timestamp: Date {
         switch self {
         case .message(let message): return message.timestamp
         case .activity(let events): return events[0].timestamp
+        case .turn(let turn): return turn.startedAt
         }
     }
     var message: TranscriptMessage? {
         if case .message(let message) = self { return message }
         return nil
+    }
+
+    // Keep the prompt before its response header even when the log records task_started
+    // first. Only lifecycle metadata moves; messages, tool calls, and search IDs stay in order.
+    static func conversation(_ items: [ConversationItem], turns: [TimelineTurn], verbose: Bool) -> [ConversationBlock] {
+        if verbose { return group(items, verbose: true) }
+        let byID = Dictionary(uniqueKeysWithValues: turns.filter {
+            $0.events.contains { $0.kind == .taskStarted }
+        }.map { ($0.id, $0) })
+        var shown: Set<String> = []
+        var current: String?
+        var pending: [ConversationItem] = []
+        var result: [ConversationBlock] = []
+        func flush() {
+            result.append(contentsOf: group(pending, verbose: false))
+            pending.removeAll(keepingCapacity: true)
+        }
+        func header(_ id: String?) {
+            guard let id, !shown.contains(id), let turn = byID[id] else { return }
+            flush()
+            result.append(.turn(turn))
+            shown.insert(id)
+        }
+        for item in items {
+            switch item {
+            case .message(let message):
+                if message.role != "user" { header(current) }
+                pending.append(item)
+            case .activity(let event):
+                current = event.turnID
+                if event.kind == .taskStarted { continue }
+                header(current)
+                if !shown.contains(event.turnID) || (event.kind != .taskCompleted && event.kind != .taskAborted) {
+                    pending.append(item)
+                }
+            }
+        }
+        flush()
+        return result
     }
 
     static func group(_ items: [ConversationItem], verbose: Bool) -> [ConversationBlock] {

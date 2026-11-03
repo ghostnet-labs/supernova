@@ -121,10 +121,10 @@ struct AgentRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("↳").font(.callout).foregroundStyle(.tertiary).accessibilityHidden(true)
+            Text("↳").font(AppFont.callout).foregroundStyle(.tertiary).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(session.title).font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail).help(session.title)
+                    Text(session.title).font(AppFont.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.tail).help(session.title)
                     // The status's age keeps counting between refreshes.
                     TimelineView(.periodic(from: .now, by: 30)) { context in
                         StatusPill(status: session.status, elapsed: StatusPill.elapsed(since: session.statusSince, until: context.date))
@@ -132,7 +132,7 @@ struct AgentRow: View {
                     if !session.subagents.isEmpty { subagents }
                 }
                 if !session.lastRequest.isEmpty && session.lastRequest != session.title {
-                    Text(session.lastRequest).font(.caption).lineLimit(1).truncationMode(.tail).help(session.lastRequest)
+                    Text(session.lastRequest).font(AppFont.caption).lineLimit(1).truncationMode(.tail).help(session.lastRequest)
                 }
                 SessionMetadata(repository: session.cwd, branch: "", model: session.model, source: session.kind.name, effort: session.effort,
                                 totalTokens: session.totalTokens, contextUsed: session.contextUsed, contextWindow: session.contextWindow,
@@ -144,7 +144,7 @@ struct AgentRow: View {
     private var subagents: some View {
         let running = session.subagents.filter { $0.status == "BUSY" }.count
         return Text("\(session.subagents.count) subagent\(session.subagents.count == 1 ? "" : "s")" + (running > 0 ? " · \(running) running" : ""))
-            .font(.caption).foregroundStyle(.secondary).fixedSize()
+            .font(AppFont.caption).foregroundStyle(.secondary).fixedSize()
             .padding(.horizontal, 7).padding(.vertical, 1)
             .background(Color.secondary.opacity(0.12), in: Capsule())
             .help(session.subagents.map { "\($0.label): \($0.status.capitalized)" }.joined(separator: "\n"))

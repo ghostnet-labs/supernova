@@ -87,7 +87,7 @@ struct RootView: View {
 
         return VStack(spacing: 0) {
             Text("Agent Control Center")
-                .font(.title3.weight(.semibold))
+                .font(AppFont.title3.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
                 .padding(.top, 8)
@@ -103,7 +103,7 @@ struct RootView: View {
             }
 
             if let status = store.providerSummary {
-                Text(status).font(.caption).foregroundStyle(.orange).padding(.horizontal, 10)
+                Text(status).font(AppFont.caption).foregroundStyle(.orange).padding(.horizontal, 10)
             }
 
             List(selection: Binding(
@@ -181,7 +181,7 @@ struct RootView: View {
                         .tint(AppTheme.accent)
                         .accessibilityLabel("Loading")
                     Text(store.isLoadingSessions ? "Loading sessions…" : "Loading messages…")
-                        .font(.caption)
+                        .font(AppFont.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
@@ -286,14 +286,14 @@ struct RootView: View {
         HStack(spacing: 6) {
             // Reserve the same arrow gutter even for rows without a disclosure control.
             Image(systemName: expanded == true ? "chevron.down" : "chevron.right")
-                .font(.caption2.bold())
+                .font(AppFont.caption2.bold())
                 .foregroundStyle(.secondary)
                 .frame(width: 12)
                 .opacity(expanded == nil ? 0 : 1)
                 .accessibilityHidden(true)
             if let octicon { Octicons.swiftUIImage(octicon).foregroundStyle(.secondary).frame(width: 16) }
             else if let icon { Image(systemName: icon).frame(width: 16) }
-            Text(title).font(icon == nil && octicon == nil ? .caption.bold() : .body)
+            Text(title).font(icon == nil && octicon == nil ? AppFont.caption.bold() : AppFont.body)
             Spacer()
             if let count { Text("\(count)").foregroundStyle(.secondary) }
         }
@@ -390,18 +390,18 @@ struct SessionRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Text(session.title)
-                        .font(.headline)
+                        .font(AppFont.headline)
                         .lineLimit(2)
                         .help(session.title)
                     if pinned {
                         Image(systemName: "pin.fill")
-                            .font(.caption2)
+                            .font(AppFont.caption2)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     if unread > 0 {
                         Text(unread > 99 ? "99+" : "\(unread)")
-                            .font(.caption2.bold())
+                            .font(AppFont.caption2.bold())
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(AppTheme.accent.opacity(0.12))
@@ -411,20 +411,20 @@ struct SessionRow: View {
                 }
 
                 Text((projectPath as NSString).abbreviatingWithTildeInPath)
-                    .font(.subheadline)
+                    .font(AppFont.subheadline)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(projectPath)
 
                 HStack {
-                    Text(session.source.rawValue)
+                    Text(session.sourceLabel)
                     Text(session.lifecycle.rawValue)
-                        .font(.caption2.bold())
+                        .font(AppFont.caption2.bold())
                         .foregroundStyle(.secondary)
                     Spacer()
                     Text(session.updatedAt, style: .relative)
-                        .font(.caption)
+                        .font(AppFont.caption)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -451,7 +451,7 @@ struct DashboardView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading) {
                         Text("Mission Control")
-                            .font(.largeTitle.bold())
+                            .font(AppFont.largeTitle.bold())
                         Text("\(store.liveSessions.count) live · \(store.attentionSessions.count) need attention")
                             .foregroundStyle(.secondary)
                     }
@@ -496,7 +496,7 @@ struct DashboardView: View {
                 if !store.attentionSessions.isEmpty {
                     Divider()
                     Text("Needs Attention")
-                        .font(.title2.bold())
+                        .font(AppFont.title2.bold())
                     ForEach(store.attentionSessions) { session in
                         Button {
                             store.openSession(session.id)
@@ -505,11 +505,11 @@ struct DashboardView: View {
                                 Image(systemName: "exclamationmark.circle.fill")
                                     .foregroundStyle(lifecycleColor(session.lifecycle))
                                 VStack(alignment: .leading) {
-                                    Text(session.title).font(.headline)
+                                    Text(session.title).font(AppFont.headline)
                                     Text(session.projectName).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(session.lifecycle.rawValue).font(.caption.bold())
+                                Text(session.lifecycle.rawValue).font(AppFont.caption.bold())
                             }
                             .padding(12)
                             .background(AppTheme.surface)
@@ -536,33 +536,33 @@ struct DashboardCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Circle().fill(lifecycleColor(session.lifecycle)).frame(width: 9, height: 9)
-                    Text(session.projectName).font(.headline)
-                    if pinned { Image(systemName: "pin.fill").font(.caption) }
+                    Text(session.projectName).font(AppFont.headline)
+                    if pinned { Image(systemName: "pin.fill").font(AppFont.caption) }
                     Spacer()
                     if unread > 0 {
-                        Text("\(unread) new").font(.caption.bold()).foregroundStyle(AppTheme.accent)
+                        Text("\(unread) new").font(AppFont.caption.bold()).foregroundStyle(AppTheme.accent)
                     }
                 }
 
                 Text(session.title)
-                    .font(.title3.weight(.medium))
+                    .font(AppFont.title3.weight(.medium))
                     .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if !session.lastRequest.isEmpty {
                     Text(session.requestLine)
-                        .font(.caption)
+                        .font(AppFont.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
 
                 HStack(spacing: 12) {
-                    Text(session.source.rawValue)
+                    Text(session.sourceLabel)
                     Label(session.lifecycle.rawValue, systemImage: lifecycleSymbol(session.lifecycle))
                     if !session.model.isEmpty { Label(session.model, systemImage: "cpu") }
                     if !session.agents.isEmpty { Label("\(session.agents.count)", systemImage: "person.3") }
                 }
-                .font(.caption)
+                .font(AppFont.caption)
 
                 ContextMeter(stats: session.stats)
             }
@@ -580,6 +580,8 @@ struct SessionDetailView: View {
     var showsRefresh = true
     var showsResumeTitle = true
     var showsConversationLabel = true
+    var showsHeader = true
+    var extendsUnderTitlebar = true
 
     var body: some View {
         GeometryReader { geometry in
@@ -588,8 +590,13 @@ struct SessionDetailView: View {
             let layout = sideBySide ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
                 VStack(spacing: 0) {
-                    SessionHeader(store: store, session: session, showsRefresh: showsRefresh, showsResumeTitle: showsResumeTitle)
-                    Divider()
+                    if showsHeader {
+                        SessionHeader(store: store, session: session, showsRefresh: showsRefresh, showsResumeTitle: showsResumeTitle)
+                    }
+                    if let error = store.transcriptError {
+                        Text(error).font(AppFont.caption).foregroundStyle(.orange).padding(8)
+                    }
+                    if showsHeader { Divider() }
                     TranscriptView(store: store, session: session, showsConversationLabel: showsConversationLabel)
                         .id(session.id)
                 }
@@ -599,7 +606,7 @@ struct SessionDetailView: View {
                     Divider()
                     VStack(spacing: 0) {
                         HStack {
-                            Text("Inspector").font(.headline)
+                            Text("Inspector").font(AppFont.headline)
                             Spacer()
                             Button {
                                 store.showInspector = false
@@ -609,7 +616,7 @@ struct SessionDetailView: View {
                         }
                         .padding(12)
                         Divider()
-                        InspectorView(session: session, git: session.isLive ? store.gitStatuses[session.cwd] : nil)
+                        InspectorView(session: session, git: !session.isRemote && session.isLive ? store.gitStatuses[session.cwd] : nil)
                     }
                     .background(AppTheme.surface)
                     .frame(width: sideBySide ? 340 : nil,
@@ -618,7 +625,8 @@ struct SessionDetailView: View {
             }
         }
         .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.container, edges: .top)
+        .background(AppTheme.background)
+        .ignoresSafeArea(.container, edges: extendsUnderTitlebar ? .top : [])
     }
 }
 
@@ -629,7 +637,7 @@ struct SessionHeader: View {
     var showsResumeTitle = true
     @State private var showAgents = false
 
-    private var git: GitStatus? { session.isLive ? store.gitStatuses[session.cwd] : nil }
+    private var git: GitStatus? { !session.isRemote && session.isLive ? store.gitStatuses[session.cwd] : nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -650,9 +658,14 @@ struct SessionHeader: View {
                 }
                 .help("Session inspector")
                 Menu {
-                    Button("Ghostty") { store.resume(.ghostty) }
-                    Button("tmux") { store.resume(.tmux) }
-                    Button("Zellij") { store.resume(.zellij) }
+                    if session.isRemote {
+                        Button("Resume over SSH") { store.resume() }.disabled(session.isLive || session.stale)
+                        Button("Open SSH Terminal") { store.openTerminal() }
+                    } else {
+                        Button("Ghostty") { store.resume(.ghostty) }
+                        Button("tmux") { store.resume(.tmux) }
+                        Button("Zellij") { store.resume(.zellij) }
+                    }
                     if session.isLive {
                         Divider()
                         Button("Jump to Live Workspace") { store.jumpToLiveWorkspace() }
@@ -674,8 +687,11 @@ struct SessionHeader: View {
             .buttonStyle(.bordered)
             SessionTitle(title: session.title, status: session.lifecycle.rawValue,
                          elapsed: session.isLive ? StatusPill.elapsed(since: session.lifecycleStartedAt) : "",
-                         font: .system(size: 17, weight: .semibold))
+                         font: AppFont.system(size: 17, weight: .semibold))
                 .textSelection(.enabled)
+            if session.isRemote {
+                Label(session.sshHost, systemImage: "network").font(AppFont.caption).foregroundStyle(.secondary)
+            }
             SessionMetadata(repository: git?.repository ?? (session.project == .other ? session.cwd : session.project.path),
                             branch: git?.branch ?? session.branch, git: git,
                             model: session.model, source: session.source.rawValue, effort: session.reasoning,
@@ -709,10 +725,10 @@ struct SessionAgents: View {
             ForEach(agents) { agent in
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(agent.nickname).font(.caption.weight(.semibold)).lineLimit(1)
+                        Text(agent.nickname).font(AppFont.caption.weight(.semibold)).lineLimit(1)
                         if !agent.pathLabel.isEmpty {
                             Text(URL(fileURLWithPath: agent.pathLabel).lastPathComponent)
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1).help(agent.pathLabel)
+                                .font(AppFont.caption).foregroundStyle(.secondary).lineLimit(1).help(agent.pathLabel)
                         }
                     }
                     Spacer(minLength: 4)
@@ -720,7 +736,7 @@ struct SessionAgents: View {
                         Label { Text(agent.model).lineLimit(1).truncationMode(.middle) } icon: {
                             ModelLogo(model: agent.model, source: source.rawValue)
                         }
-                        .font(.caption).foregroundStyle(.secondary).help(agent.model)
+                        .font(AppFont.caption).foregroundStyle(.secondary).help(agent.model)
                     }
                     StatusPill(status: agent.status ?? (agent.active ? "Active" : "Idle"),
                                elapsed: agent.active ? StatusPill.elapsed(since: agent.startedAt) : "", compact: true)
@@ -750,7 +766,7 @@ struct TranscriptView: View {
         VStack(spacing: 0) {
             HStack {
                 if showsConversationLabel {
-                    Text("Conversation").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    Text("Conversation").font(AppFont.caption.weight(.medium)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Picker("Transcript view", selection: $verbose) {
@@ -758,6 +774,7 @@ struct TranscriptView: View {
                     Text("Verbose").tag(true)
                 }
                 .pickerStyle(.menu).fixedSize().labelsHidden()
+                .controlSize(.small)
                 .help("Normal groups tool activity. Verbose shows each event.")
             }
             .padding(.horizontal, 20).padding(.vertical, 6)
@@ -768,7 +785,7 @@ struct TranscriptView: View {
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                     Spacer()
-                    Text(matchStatus).font(.caption).foregroundStyle(.secondary)
+                    Text(matchStatus).font(AppFont.caption).foregroundStyle(.secondary)
                     Button { moveMatch(-1) } label: { Image(systemName: "chevron.up") }
                         .buttonStyle(.plain)
                         .disabled(store.transcriptMatches.isEmpty)
@@ -784,9 +801,9 @@ struct TranscriptView: View {
                 Divider()
             }
 
-            if store.messages.isEmpty && store.activity.isEmpty && store.isLoadingTranscript && !isWorking {
+            if store.messages.isEmpty && store.activity.isEmpty && session.queuedMessages.isEmpty && store.isLoadingTranscript && !isWorking {
                 Color.clear
-            } else if store.messages.isEmpty && store.activity.isEmpty && !isWorking {
+            } else if store.messages.isEmpty && store.activity.isEmpty && session.queuedMessages.isEmpty && !isWorking {
                 ContentUnavailableView(
                     "No Messages Yet",
                     systemImage: "text.bubble",
@@ -797,8 +814,9 @@ struct TranscriptView: View {
                     ScrollView {
                         VStack(spacing: 0) {
                             MessageThread(messages: store.messages, searchQuery: store.transcriptQuery,
-                                          activity: store.activity, path: session.path, isLive: session.isLive, verbose: verbose)
+                                          activity: store.activity, path: session.path, isWorking: isWorking, verbose: verbose)
                             if isWorking { workingIndicator }
+                            if !session.queuedMessages.isEmpty { queuedMessages }
                             // Target the full thread, including lazy layout and bottom padding.
                             Color.clear.frame(height: 1).id(ScrollTarget.bottom)
                         }
@@ -838,6 +856,33 @@ struct TranscriptView: View {
 
     private var isWorking: Bool { session.isLive && session.lifecycle == .busy }
 
+    private var queuedMessages: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Queued messages · \(session.queuedMessages.count)", systemImage: "clock")
+                .font(AppFont.caption.weight(.medium)).foregroundStyle(.secondary)
+            VStack(spacing: 0) {
+                ForEach(Array(session.queuedMessages.enumerated()), id: \.element.id) { index, message in
+                    if index > 0 { Divider().padding(.horizontal, 16) }
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                            .foregroundStyle(.secondary).padding(.top, 3)
+                        Text(verbatim: message.text).font(AppFont.system(size: 15)).lineSpacing(4)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if message.isPaused { Text("Paused").font(AppFont.caption).foregroundStyle(.secondary).padding(.top, 3) }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                }
+            }
+            .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(AppTheme.separator.opacity(0.5), lineWidth: 0.5))
+        }
+        .frame(maxWidth: 840, alignment: .leading).padding(.horizontal, 32).padding(.bottom, 28)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation.queued-messages")
+    }
+
     private var workingIndicator: some View {
         HStack(spacing: 8) {
             if reduceMotion {
@@ -848,11 +893,11 @@ struct TranscriptView: View {
             }
             Text("Working")
         }
-        .font(.callout)
+        .font(AppFont.callout)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
-        .frame(maxWidth: 760, alignment: .leading)
-        .padding(.horizontal, 28)
+        .frame(maxWidth: 840, alignment: .leading)
+        .padding(.horizontal, 32)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
@@ -879,75 +924,63 @@ struct MessageThread: View {
     let searchQuery: String
     var activity: [TimelineEvent] = []
     var path: URL?
-    var isLive = false
+    var isWorking = false
     var verbose = false
 
     var body: some View {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let items = ConversationBlock.group(ConversationItem.merge(messages: messages, activity: activity), verbose: verbose)
-        let activeTurns = Set(TimelineTurn.group(activity).filter(\.isOpen).map(\.id))
+        let turns = TimelineTurn.group(activity)
+        let items = ConversationBlock.conversation(ConversationItem.merge(messages: messages, activity: activity), turns: turns, verbose: verbose)
+        let activeTurns = isWorking ? Set(turns.suffix(1).filter(\.isOpen).map(\.id)) : []
         LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let previous = index > 0 ? items[index - 1] : nil
                 switch item {
                 case .message(let message):
-                    let showsTimestamp = previous.map { separates($0.timestamp, message.timestamp) } ?? true
-                    let startsGroup = showsTimestamp || previous?.message?.role != message.role || previous?.message?.phase != message.phase
                     MessageCard(message: message,
-                                isSearchMatch: !query.isEmpty && message.text.localizedCaseInsensitiveContains(query),
-                                showsTimestamp: showsTimestamp, startsGroup: startsGroup)
-                        .padding(.top, showsTimestamp ? 0 : (startsGroup ? 24 : 12))
+                                isSearchMatch: !query.isEmpty && message.text.localizedCaseInsensitiveContains(query))
+                        .padding(.top, messageSpacing(message, after: previous))
                         .id(message.id)
                 case .activity(let events):
                     if let path {
-                        ActivityGroupView(events: events, path: path, activeTurns: isLive ? activeTurns : [], verbose: verbose)
-                            .padding(.vertical, 10)
+                        ActivityGroupView(events: events, path: path, activeTurns: activeTurns, verbose: verbose)
+                            .padding(.vertical, 8)
                     }
+                case .turn(let turn):
+                    ConversationTurnHeader(turn: turn, active: activeTurns.contains(turn.id))
                 }
             }
         }
-        .frame(maxWidth: 760)
-        .padding(.horizontal, 28)
-        .padding(.vertical, 24)
+        .frame(maxWidth: 840)
+        .padding(.horizontal, 32)
+        .padding(.vertical, 28)
         .frame(maxWidth: .infinity)
     }
 
-    private func separates(_ earlier: Date, _ later: Date) -> Bool {
-        later.timeIntervalSince(earlier) >= 300 || !Calendar.current.isDate(earlier, inSameDayAs: later)
+    private func messageSpacing(_ message: TranscriptMessage, after previous: ConversationBlock?) -> CGFloat {
+        guard let previous else { return 0 }
+        if case .turn = previous { return 0 }
+        if message.role != "user", case .activity = previous { return 12 }
+        return message.role == "user" ? 36 : previous.message?.role == "user" ? 28 : 20
     }
 }
 
 struct MessageCard: View {
     let message: TranscriptMessage
     let isSearchMatch: Bool
-    var showsTimestamp = true
-    var startsGroup = true
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if showsTimestamp {
-                Text(message.timestamp, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity).padding(.vertical, 8)
-            }
             if isUser {
                 Text(verbatim: message.text)
-                    .font(.system(size: 15)).lineSpacing(4)
+                    .font(AppFont.system(size: 16)).lineSpacing(5)
                     .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 16).padding(.vertical, 12)
-                    .background(AppTheme.messageFill(isUser: true, scheme: colorScheme), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 18).padding(.vertical, 14)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 20))
+                    .frame(maxWidth: 640, alignment: .trailing)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.leading, 52)
+                    .padding(.leading, 64)
             } else {
-                if startsGroup {
-                    HStack(spacing: 5) {
-                        Image(systemName: isFinal ? "checkmark.circle.fill" : "sparkle")
-                        Text(isFinal ? "Final response" : "Update")
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(isFinal ? AppTheme.success : Color.secondary)
-                }
                 MarkdownMessage(message.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if isFinal { CopyTextButton(text: message.text, label: "Copy response").padding(.top, 4) }
@@ -966,7 +999,7 @@ struct MessageCard: View {
 
 struct ContextMeter: View {
     let stats: SessionStats
-    var font: Font = .caption
+    var font: Font = AppFont.caption
 
     var body: some View {
         if let used = stats.contextUsed, let window = stats.contextWindow, window > 0 {
@@ -1035,8 +1068,9 @@ struct InspectorView: View {
                 DetailRow("Context", contextText(session.stats))
             }
             Section("Files") {
+                if session.isRemote { DetailRow("SSH host", session.sshHost) }
                 DetailRow("Directory", (session.cwd as NSString).abbreviatingWithTildeInPath).help(session.cwd)
-                DetailRow("Rollout", (session.path.path as NSString).abbreviatingWithTildeInPath).help(session.path.path)
+                DetailRow("Rollout", session.isRemote ? session.remoteTranscriptPath : (session.path.path as NSString).abbreviatingWithTildeInPath)
                 DetailRow("Size", ByteCountFormatter.string(fromByteCount: Int64(session.stats.fileBytes), countStyle: .file))
                 DetailRow("Records", "\(session.stats.records)")
             }
@@ -1072,9 +1106,9 @@ struct InspectorField<Content: View>: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(AppFont.caption).foregroundStyle(.secondary)
                 .frame(width: 76, alignment: .leading)
-            content.font(.callout).frame(maxWidth: .infinity, alignment: .leading)
+            content.font(AppFont.callout).frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 2)

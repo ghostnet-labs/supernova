@@ -11,13 +11,16 @@ struct AgentWorkspaceApp {
         }
         SessionSource.environmentPrefix = "AGENT_WORKSPACE"
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
-        let store = SessionStore(importPreferences: false, notificationsDefault: false, managesGit: false)
+        let store = SessionStore(importPreferences: false, notificationsDefault: false, managesGit: false, enableSSH: true)
         let workspace = WorkspaceModel(sessions: store)
         let app = NSApplication.shared
+        WorkspaceThemes.restore()
         let delegate = AppDelegate(store: store, title: "Agent Workspace",
             rootView: { AnyView(WorkspaceView(model: workspace)) }, visibility: workspace.setVisible,
             windowSize: NSSize(width: 1320, height: 820), keepsDockIconWhenClosed: true)
         delegate.onRefresh = { workspace.worktrees.refreshAll() }
+        delegate.configureBrowserWindow = WorkspaceWindowChrome.configure
+        delegate.browserFrameAutosaveName = "AgentWorkspace.mainWindow"
         app.delegate = delegate
         FocusReleaser.install()
         ClickToDeselect.install()

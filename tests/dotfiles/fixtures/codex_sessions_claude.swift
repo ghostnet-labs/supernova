@@ -78,6 +78,18 @@ import Foundation
         _ = stringInput.consumeClaude(["type": "assistant", "uuid": "s1", "message": ["content": [
             ["type": "tool_use", "id": "s1", "name": "Bash", "input": "printf hi"]]]], path: path, offset: 0)
         check(stringInput.events.map(\.detail) == ["printf hi"], "tool input that is a string, not an object")
+        let delivered: [String: Any] = ["type": "attachment", "uuid": "steered", "timestamp": "2026-10-03T12:00:01Z",
+            "attachment": ["type": "queued_command", "prompt": "Also check `config.swift`.", "origin": ["kind": "human"], "humanTurn": true]]
+        let before = builder.events
+        let steered = builder.consumeClaude(delivered, path: path, offset: 500)
+        check(steered.map(\.text) == ["Also check `config.swift`."] && steered[0].role == "user", "delivered queued message is visible as user text")
+        check(builder.events == before, "a message delivered mid-turn does not interrupt or restart the turn")
+        check(builder.consumeClaude(delivered, path: path, offset: 600).isEmpty, "delivered queue replay is deduplicated")
+        let internalMessage: [String: Any] = ["type": "attachment", "uuid": "internal",
+            "attachment": ["type": "queued_command", "prompt": "Internal notification", "origin": ["kind": "task-notification"]]]
+        check(builder.consumeClaude(internalMessage, path: path, offset: 700).isEmpty, "internal queue notifications remain hidden")
+        check(builder.consumeClaude(delivered.merging(["isSidechain": true, "uuid": "child"]) { _, new in new },
+                                    path: path, offset: 800).isEmpty, "queued child messages stay out of the parent transcript")
         print("Claude session checks: \(failures) failures")
         if failures > 0 { exit(1) }
     }

@@ -135,12 +135,39 @@ import Foundation
                 switch block {
                 case .message(let message): return [message.id]
                 case .activity(let events): return events.map { "activity-\($0.id)" }
+                case .turn(let turn): return ["turn-\(turn.id)"]
                 }
             }
         }
         check(flatten(normal) == mixed.map(\.id) && flatten(verbose) == mixed.map(\.id), "both display modes preserve event order")
         let tail = ConversationBlock.group([.activity(tool), .activity(turns[1].events.first!)], verbose: false)
         check(tail.count == 2, "activity groups do not cross turn boundaries")
+        let presentation = ConversationBlock.conversation(mixed, turns: turns, verbose: false)
+        check(presentation.compactMap(\.message).map(\.id) == initial.messages.map(\.id), "response headers preserve every message and search target")
+        check(flatten(ConversationBlock.conversation(mixed, turns: turns, verbose: true)) == mixed.map(\.id), "verbose mode retains all lifecycle events")
+        func event(_ kind: TimelineKind, _ offset: UInt64) -> TimelineEvent {
+            TimelineEvent(id: "style-\(offset)", timestamp: Date(timeIntervalSince1970: Double(offset)), kind: kind,
+                          label: "Fixture", detail: "", turnID: "style", offset: offset)
+        }
+        let styleStart = event(.taskStarted, 1), run = event(.tool, 4), end = event(.taskCompleted, 121)
+        let prompt = TranscriptMessage(id: "prompt", role: "user", text: "Please check", timestamp: styleStart.timestamp, phase: "", byteOffset: 2)
+        let reply = TranscriptMessage(id: "reply", role: "assistant", text: "Checking", timestamp: styleStart.timestamp, phase: "commentary", byteOffset: 3)
+        let steer = TranscriptMessage(id: "steer", role: "user", text: "One more thing", timestamp: styleStart.timestamp, phase: "", byteOffset: 5)
+        let inputs: [ConversationItem] = [.activity(styleStart), .message(prompt), .message(reply), .activity(run), .message(steer)]
+        let liveStyle = ConversationBlock.conversation(inputs, turns: TimelineTurn.group([styleStart, run]), verbose: false)
+        let doneStyle = ConversationBlock.conversation(inputs + [.activity(end)], turns: TimelineTurn.group([styleStart, run, end]), verbose: false)
+        check(flatten(liveStyle) == ["prompt", "turn-style", "reply", "activity-style-4", "steer"], "header follows the prompt, tools and mid-turn steering keep their order")
+        check(liveStyle.map(\.id) == doneStyle.map(\.id), "completion updates the existing header without replacing messages or activity")
+        if case .turn(let completed) = doneStyle[1] {
+            check(completed.duration == 120 && !completed.isOpen, "header uses the recorded whole-turn duration")
+        } else { check(false, "completed response header") }
+        let aborted = event(.taskAborted, 11)
+        let stopped = ConversationBlock.conversation([.activity(styleStart), .message(prompt), .activity(aborted)],
+                                                     turns: TimelineTurn.group([styleStart, aborted]), verbose: false)
+        if case .turn(let turn) = stopped.last! { check(turn.terminal?.kind == .taskAborted, "interrupted responses retain their status") }
+        else { check(false, "interrupted response without assistant text stays visible") }
+        check(ConversationBlock.conversation([.message(reply)], turns: [], verbose: false).map(\.id) == ["reply"],
+              "old transcripts without lifecycle events still display normally")
         check(ToolDisplay.summary(["arguments": "{\"cmd\":\"swift test\"}"]) == "swift test", "command summaries")
         check(ToolDisplay.failed(["exit_code": 2]), "explicit nonzero exit is failure")
         check(ToolDisplay.failed("Process exited with code 1"), "process result error")

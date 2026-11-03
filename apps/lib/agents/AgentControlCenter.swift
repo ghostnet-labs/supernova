@@ -6,11 +6,11 @@ struct CompactSessionRow: View {
     @ObservedObject var store: SessionStore
     let session: CodexSession
     var body: some View {
-        CompactSessionDetails(session: session, git: store.gitStatuses[session.cwd])
+        CompactSessionDetails(session: session, git: session.isRemote ? nil : store.gitStatuses[session.cwd])
             .contentShape(Rectangle()).contextMenu {
-                Button("Show Terminal") { store.jump(session) }
+                Button(session.isRemote ? "Open SSH Terminal" : "Show Terminal") { store.jump(session) }
                 Button("Open Conversation") { store.openSession(session.id) }
-                Button("Reveal Project") { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) }
+                Button("Reveal Project") { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) }.disabled(session.isRemote)
             }
     }
 }
@@ -24,18 +24,21 @@ struct CompactSessionDetails: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 4) {
-                if pinned { Image(systemName: "pin.fill").font(.caption2).foregroundStyle(.secondary).help("Pinned") }
+                if pinned { Image(systemName: "pin.fill").font(AppFont.caption2).foregroundStyle(.secondary).help("Pinned") }
                 SessionTitle(title: session.title, status: session.lifecycle.rawValue,
                              elapsed: session.isLive ? StatusPill.elapsed(since: session.lifecycleStartedAt) : "")
             }
+            if session.isRemote {
+                Label(session.sshHost, systemImage: "network").font(AppFont.caption).foregroundStyle(.secondary)
+            }
             if !session.lastRequest.isEmpty && session.lastRequest != session.title {
-                Text(session.requestLine).font(.subheadline).lineLimit(1).truncationMode(.tail).help(session.requestLine)
+                Text(session.requestLine).font(AppFont.subheadline).lineLimit(1).truncationMode(.tail).help(session.requestLine)
             }
             SessionMetadata(repository: git?.repository ?? session.cwd, branch: git?.branch ?? session.branch, git: git,
                             model: session.model, source: session.source.rawValue, effort: session.reasoning,
                             totalTokens: session.stats.totalTokens, contextUsed: session.stats.contextUsed,
                             contextWindow: session.stats.contextWindow, contextEstimated: session.stats.contextWindowIsEstimated)
-            if session.stale { Text("Stale").font(.caption).foregroundStyle(.orange) }
+            if session.stale { Text("Stale").font(AppFont.caption).foregroundStyle(.orange) }
         }
     }
 }
@@ -60,8 +63,8 @@ struct CompactAgentTree: View {
                             Button { store.jump(child) } label: {
                                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(child.agentLabel).font(.caption.weight(.semibold))
-                                        Text(child.requestLine).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                        Text(child.agentLabel).font(AppFont.caption.weight(.semibold))
+                                        Text(child.requestLine).font(AppFont.caption).foregroundStyle(.secondary).lineLimit(1)
                                     }
                                     Spacer(minLength: 8)
                                     StatusPill(status: child.lifecycle.rawValue, elapsed: StatusPill.elapsed(since: child.lifecycleStartedAt), compact: true)
@@ -85,8 +88,8 @@ struct ControlCenterView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.title3.bold())
-                    Text("\(store.liveSessions.count) live · \(store.sessions.count) known").font(.caption).foregroundStyle(.secondary)
+                    Text(title).font(AppFont.title3.bold())
+                    Text("\(store.liveSessions.count) live · \(store.sessions.count) known").font(AppFont.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 if store.isLoadingSessions { ProgressView().controlSize(.small) }
@@ -109,7 +112,7 @@ struct ControlCenterView: View {
                     }
                     let recent = Array(store.sessions.lazy.filter { !$0.isLive && !$0.archived }.prefix(8))
                     if !recent.isEmpty {
-                        Text("RECENT").font(.caption2.bold()).foregroundStyle(.secondary)
+                        Text("RECENT").font(AppFont.caption2.bold()).foregroundStyle(.secondary)
                             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 4)
                         ForEach(recent) { session in
                             Button { store.jump(session) } label: { CompactSessionRow(store: store, session: session) }
@@ -125,6 +128,8 @@ struct ControlCenterView: View {
                 Button("Quit") { NSApplication.shared.terminate(nil) }.buttonStyle(.borderless)
             }.padding(10)
         }.frame(width: 470).fixedSize(horizontal: false, vertical: true)
+            .font(AppFont.body)
+            .fontDesign(AppFont.shared.design)
     }
 }
 
@@ -138,6 +143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let keepsDockIconWhenClosed: Bool
     var onRefresh: (() -> Void)?
     var shutdownOwnedWork: (() async -> Void)?
+    var configureBrowserWindow: ((NSWindow) -> Void)?
+    var browserFrameAutosaveName: NSWindow.FrameAutosaveName?
 
     init(store: SessionStore, title: String = "Agent Control Center", rootView: (() -> AnyView)? = nil,
          visibility: ((Bool) -> Void)? = nil, windowSize: NSSize = NSSize(width: 1180, height: 780),
@@ -238,6 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         popover?.performClose(nil)
         if mainWindow == nil {
             mainWindow = makeWindow(NSHostingController(rootView: rootView()), title: title, size: windowSize)
+            configureBrowserWindow?(mainWindow!)
+            if let name = browserFrameAutosaveName {
+                mainWindow!.setFrameUsingName(name)
+                mainWindow!.setFrameAutosaveName(name)
+            }
         }
         activate(mainWindow!)
         setVisible(true)
@@ -249,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func showSettings() {
-        if settingsWindow == nil { settingsWindow = makeWindow(NSHostingController(rootView: SettingsView()), title: "\(title) Settings", size: NSSize(width: 520, height: 320)) }
+        if settingsWindow == nil { settingsWindow = makeWindow(NSHostingController(rootView: SettingsView(store: store)), title: "\(title) Settings", size: NSSize(width: 520, height: store.sshEnabled ? 720 : 320)) }
         activate(settingsWindow!)
     }
     private func makeWindow(_ controller: NSViewController, title: String, size: NSSize) -> NSWindow {
@@ -327,6 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 }
 
 struct SettingsView: View {
+    @ObservedObject var store: SessionStore
+    @State private var hosts = ""
+    @State private var hostError: String?
     @AppStorage("CodexSessions.notifications") private var notifications = true
     @AppStorage("CodexSessions.notificationSound") private var notificationSound = true
     var body: some View {
@@ -339,8 +354,46 @@ struct SettingsView: View {
             Section("Data") {
                 LabeledContent("Codex home", value: CodexData.home.path)
                 LabeledContent("Claude Code home", value: ClaudeData.home.path)
-                Text("Archive actions are available only for inactive Codex sessions.").font(.caption).foregroundStyle(.secondary)
+                Text("Archive actions are available only for inactive Codex sessions.").font(AppFont.caption).foregroundStyle(.secondary)
+            }
+            if store.sshEnabled {
+                Section("Remote SSH sessions") {
+                    Text("Enter SSH host aliases, one per line. Leave empty to monitor only this Mac.")
+                        .font(AppFont.caption).foregroundStyle(.secondary)
+                    TextEditor(text: $hosts).font(.body.monospaced()).frame(height: 65)
+                        .accessibilityLabel("SSH hosts")
+                    Button("Apply hosts") {
+                        do {
+                            _ = try RemoteSessions.hosts(hosts)
+                            store.configureSSH(hosts)
+                            hosts = store.sshHosts.joined(separator: "\n")
+                            hostError = nil
+                        } catch { hostError = error.localizedDescription }
+                    }
+                    if let hostError { Text(hostError).font(AppFont.caption).foregroundStyle(.orange) }
+                    Text("Uses your SSH configuration and keys. Connect in Terminal first to trust each host. Hosts need Python 3.10 or newer.")
+                        .font(AppFont.caption).foregroundStyle(.secondary)
+                    ForEach(store.remoteHealth.keys.sorted(by: { $0.label < $1.label }), id: \.self) { endpoint in
+                        LabeledContent(endpoint.label) {
+                            Text(connectionStatus(endpoint)).font(AppFont.caption)
+                                .foregroundStyle(store.remoteHealth[endpoint] == .error ? .orange : .secondary)
+                                .help(store.remoteErrors[endpoint] ?? "")
+                        }
+                    }
+                }
             }
         }.formStyle(.grouped).padding(18).frame(width: 520).background(AppTheme.background).tint(AppTheme.accent)
+            .font(AppFont.body)
+            .fontDesign(AppFont.shared.design)
+            .onAppear { hosts = store.sshHosts.joined(separator: "\n") }
+    }
+
+    private func connectionStatus(_ endpoint: SessionEndpoint) -> String {
+        switch store.remoteHealth[endpoint] {
+        case .ok: return "Connected"
+        case .loading: return "Connecting…"
+        case .unavailable: return "Connected · no history"
+        default: return "Disconnected · retrying"
+        }
     }
 }

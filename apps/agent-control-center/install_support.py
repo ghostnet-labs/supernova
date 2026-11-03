@@ -18,6 +18,7 @@ def source_hashes(source):
     if source.name == "agent-workspace":
         inputs += list((source.parent / "lib/worktrees").glob("*.swift"))
         inputs.append(source / "sign_app.py")
+        inputs += list((source / "fonts").glob("*"))
     inputs += [Path(__file__).resolve(), root / "dotfiles/.bin" / source.name]
     inputs += [
         source.parent / "lib" / name

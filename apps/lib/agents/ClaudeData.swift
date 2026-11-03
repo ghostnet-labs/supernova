@@ -57,6 +57,15 @@ enum ClaudeData {
         }.joined(separator: "\n\n")
     }
 
+    static func deliveredQueuedText(_ record: [String: Any]) -> String? {
+        guard record["type"] as? String == "attachment", record["isMeta"] as? Bool != true,
+              let attachment = record["attachment"] as? [String: Any],
+              attachment["type"] as? String == "queued_command",
+              (attachment["origin"] as? [String: Any])?["kind"] as? String == "human" || attachment["humanTurn"] as? Bool == true,
+              let text = attachment["prompt"] as? String, !text.isEmpty else { return nil }
+        return text
+    }
+
     static func readTranscript(_ path: URL, from offset: UInt64 = 0, activity: inout TimelineBuilder) -> TranscriptChunk {
         // URL resource values may be cached across appends; read a fresh size.
         let size = ((try? FileManager.default.attributesOfItem(atPath: path.path)[.size]) as? NSNumber)?.uint64Value ?? 0
