@@ -26,6 +26,7 @@ SETUP_REQUIRED_REPO_FILES=(
   .githooks/pre-commit
   .githooks/commit-msg
   .githooks/pre-push
+  .githooks/post-merge
   .githooks/check-denylist
   .github/scripts/check_pr.sh
   bootstrap.sh

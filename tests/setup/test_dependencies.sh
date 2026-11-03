@@ -25,7 +25,7 @@ assert_array_contains .local/bin "${SETUP_USER_BIN_DIRS[@]}"
 for awake_source in apps/awake/Info.plist apps/awake/Sources/Awake.swift apps/awake/build.sh dotfiles/.bin/awake; do
   assert_array_contains "$awake_source" "${SETUP_REQUIRED_REPO_FILES[@]}"
 done
-for hook_source in .githooks/pre-commit .githooks/commit-msg .githooks/pre-push .githooks/check-denylist .github/scripts/check_pr.sh; do
+for hook_source in .githooks/pre-commit .githooks/commit-msg .githooks/pre-push .githooks/post-merge .githooks/check-denylist .github/scripts/check_pr.sh; do
   assert_array_contains "$hook_source" "${SETUP_REQUIRED_REPO_FILES[@]}"
 done
 for workspace_source in apps/agent-workspace/Info.plist apps/agent-workspace/Main.swift dotfiles/.bin/agent-workspace; do

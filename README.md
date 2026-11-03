@@ -181,6 +181,7 @@ no option, each shows whether its app is installed; `--install` builds it from
 | Git worktree manager | `worktree-manager --install`, `worktree-manager --open` |
 | Hardware projects, exact part revisions and purchasing BOMs | `hardware-planner --install`, `hardware-planner --open` |
 | Rebuild and restart every macOS app, including a work overlay's | `reinstall-apps`, `reinstall-apps --list` |
+| Rebuild only the apps whose source changed since they were installed | `reinstall-apps --stale`, `reinstall-apps --stale --list` |
 | Find available helpers and commands; insert an editable example | `toolbox`, `toolbox --pick` |
 
 Shell functions (Git state, ports and processes, disk usage, archives, network

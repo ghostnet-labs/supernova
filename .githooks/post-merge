@@ -1,0 +1,11 @@
+#!/bin/sh
+# After git pull or git merge, name the macOS apps whose committed source changed
+# since they were last installed, so the running copies don't silently fall behind
+# the checkout. It only reports; reinstall-apps --stale rebuilds them.
+[ "$(uname -s)" = Darwin ] || exit 0
+reinstall="$(dirname "$0")/../dotfiles/.bin/reinstall-apps"
+[ -x "$reinstall" ] || exit 0
+stale="$("$reinstall" --stale --list 2>/dev/null | cut -f1 | paste -sd ' ' -)"
+[ -n "$stale" ] || exit 0
+printf 'Apps built from older source: %s\nRun reinstall-apps --stale to rebuild them.\n' "$stale" >&2
+exit 0

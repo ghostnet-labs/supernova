@@ -16,7 +16,7 @@ trap cleanup_test EXIT INT TERM
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../lib/assert.sh"
 
-for hook in pre-commit commit-msg pre-push; do
+for hook in pre-commit commit-msg pre-push post-merge; do
   [[ -x "$REPO_DIR/.githooks/$hook" ]] || fail_test "$hook is not executable, so Git would skip it"
 done
 
