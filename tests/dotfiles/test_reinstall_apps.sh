@@ -63,4 +63,55 @@ status=0
 "$run" --bogus >/dev/null 2>&1 || status=$?
 assert_equals "$status" 2
 
+# --stale rebuilds only apps whose committed source changed since their last
+# successful install; outside Git every app counts as stale.
+assert_equals "$("$run" --stale --list alpha | cut -f1)" alpha
+git -C "$tmp" init -q
+git -C "$tmp" add -A
+git -C "$tmp" -c user.name=test -c user.email=test@example.com commit -qm "test: fixture"
+: >"$CALLS"
+output="$("$run" --stale alpha beta)"
+assert_contains "$output" "✓ Reinstalled 2 apps in"
+assert_equals "$(sort "$CALLS")" $'alpha --install\nbeta-app --install'
+[[ -s "$tmp/.local/app-builds/alpha" && -s "$tmp/.local/app-builds/beta" ]] || fail_test "installs were not recorded"
+
+: >"$CALLS"
+assert_equals "$("$run" --stale alpha beta)" "All 2 apps match their source"
+assert_equals "$("$run" --stale --list alpha beta)" ""
+assert_equals "$(cat "$CALLS")" ""
+
+# Only committed source counts: an uncommitted file changes nothing until it lands.
+touch "$tmp/apps/alpha/main.swift"
+assert_equals "$("$run" --stale --list alpha beta)" ""
+git -C "$tmp" add -A
+git -C "$tmp" -c user.name=test -c user.email=test@example.com commit -qm "feat: change alpha"
+assert_equals "$("$run" --stale --list alpha beta | cut -f1)" "alpha"
+mkdir -p "$tmp/apps/lib"
+touch "$tmp/apps/lib/shared.swift"
+git -C "$tmp" add -A
+git -C "$tmp" -c user.name=test -c user.email=test@example.com commit -qm "feat: change shared code"
+assert_equals "$("$run" --stale --list alpha beta | cut -f1)" $'alpha\nbeta'
+
+# A failed build records nothing, so the app stays stale.
+status=0
+"$run" --stale gamma >/dev/null || status=$?
+assert_equals "$status" 1
+[[ ! -e "$tmp/.local/app-builds/gamma" ]] || fail_test "a failed install was recorded"
+assert_equals "$("$run" --stale --list gamma | cut -f1)" "gamma"
+
+# The post-merge hook names stale apps after a pull and never fails it.
+mkdir -p "$tmp/.githooks"
+cp "$root/.githooks/post-merge" "$tmp/.githooks/post-merge"
+output="$("$tmp/.githooks/post-merge" 2>&1)"
+assert_contains "$output" "Apps built from older source: alpha beta gamma"
+assert_contains "$output" "reinstall-apps --stale"
+"$run" alpha beta >/dev/null
+rm -f "$tmp/dotfiles/.bin/gamma"
+printf '#!/usr/bin/env bash\necho "gamma $*" >>"$CALLS"\n' >"$tmp/dotfiles/.bin/gamma"
+chmod +x "$tmp/dotfiles/.bin/gamma"
+git -C "$tmp" add -A
+git -C "$tmp" -c user.name=test -c user.email=test@example.com commit -qm "fix: repair gamma"
+"$run" >/dev/null
+assert_equals "$("$tmp/.githooks/post-merge" 2>&1)" ""
+
 printf 'PASS: Reinstall apps\n'
