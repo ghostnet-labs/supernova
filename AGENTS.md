@@ -67,6 +67,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - Check local setup health: `./setup.sh --check`
 - Preview repairs: `./setup.sh --fix --dry-run`
 - Repair interactively: `./setup.sh --fix`
+- Open a pull request: `.github/scripts/pr-create.sh --title 'fix: x' --body-file pr.md` checks the title, description, and commits first and pushes and opens nothing unless they pass; `--check` only checks
 - Check a PR title and description locally: `PR_TITLE='fix: x' PR_BODY="$(cat body.md)" .github/scripts/check_pr.sh`
 - Check a branch's commit messages: `.github/scripts/check_pr.sh --commits origin/main..HEAD`
 
@@ -80,6 +81,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - **Perl** — The PR description check (`.github/scripts/check_pr_description.pl`)
 
 ## Pull requests
+- Agents open pull requests only with `.github/scripts/pr-create.sh`, never with a tool's default title or an unfilled template. Write the description from `.github/pull_request_template.md` first; `tests/github/test_pr_create.sh` covers the script
 - Title: `type: summary` (optional `type(scope): summary`, both in lowercase), at most 72 characters, where type is one of `feat`, `fix`, `docs`, `test`, `ci`, `refactor`, `perf`, `style`, `chore`, `revert`. No period or space at the end, and no placeholder summary such as `fix: wip`. Example: `fix: keep SSH sockets short`
 - Description: use `.github/pull_request_template.md` and fill in `## What changed` and `## Why` with a sentence or two each, in plain language. Placeholders such as TODO or N/A, links, images, code blocks, checklists, the template's hints, and agent footers don't count; `## Checked` is optional. `.github/scripts/check_pr.sh` fails the PR otherwise
 - The type list lives in `TYPES` in `check_pr.sh`; the PR template comment and this section repeat it, and `tests/github/test_check_pr.sh` fails when they differ

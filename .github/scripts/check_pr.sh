@@ -202,8 +202,13 @@ if [[ -n "${PR_BASE:-}" && -n "${PR_HEAD:-}" ]]; then
 fi
 
 if ((problems)); then
-  ((pr_problems == 0)) ||
-    echo 'Edit the pull request title or description on GitHub; this check reruns on its own.'
+  if ((pr_problems)); then
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      echo 'Edit the pull request title or description on GitHub; this check reruns on its own.'
+    else
+      echo 'Fix the pull request title or description and run the check again.'
+    fi
+  fi
   ((problems == pr_problems)) || fix_commits_hint
   exit 1
 fi

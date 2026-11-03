@@ -117,6 +117,9 @@ After a repair, open a new shell or run `source_zsh`.
 - **Commit messages**: `.githooks/commit-msg` and `.githooks/pre-push` check
   each commit's first line with `.github/scripts/check_pr.sh`, the same check
   pull requests get.
+- **Pull requests**: `.github/scripts/pr-create.sh --title TITLE --body-file FILE`
+  runs that check on the title, description, and commits, and pushes and opens
+  the pull request only when it passes.
 - **Private terms**: to keep words such as an employer or internal host names
   out of a public fork, list them in the untracked `.local/denylist`, one
   case-insensitive regular expression per line. `pre-commit` and `pre-push`
