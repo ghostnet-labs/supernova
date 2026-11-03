@@ -39,6 +39,11 @@ swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" 
   "$root/apps/lib/GhosttyLaunch.swift" "$root/apps/lib/agents/"*.swift "$root/apps/lib/worktrees/"*.swift \
   "$root/apps/lib/"{BranchRef,GitStatus,SessionPresentation,TextLine}.swift "$root/apps/lib/octicons/Octicons.swift" \
   "$root/tests/dotfiles/fixtures/agent_workspace.swift" -o "$scratch/check-agent-workspace"
+# A bare executable's resources are its own directory, so the font loads from there.
+# The loader's #filePath fallback is no help here: the shared swiftc cache can hand
+# back a binary compiled in another checkout, whose source path may be gone.
+mkdir -p "$scratch/Fonts"
+cp "$root/apps/agent-workspace/fonts/MonaSansVF.ttf" "$scratch/Fonts/"
 args=()
 if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then args+=(--render); fi
 "$scratch/check-agent-workspace" "$scratch" ${args[@]+"${args[@]}"}
