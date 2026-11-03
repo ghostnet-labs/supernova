@@ -13,7 +13,7 @@ def source_hashes(source):
     inputs = (
         list(source.glob("*.swift"))
         + list((source.parent / "lib/agents").glob("*.swift"))
-        + [source / "Info.plist", source.parent / "agent-control-center/session_stream.py"]
+        + [source / "Info.plist", source / "session_stream.py"]
     )
     if source.name == "agent-workspace":
         inputs += list((source.parent / "lib/worktrees").glob("*.swift"))

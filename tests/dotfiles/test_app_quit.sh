@@ -46,8 +46,7 @@ exit 1' >"$tmp/bin/swiftc"
   done
   printf '#!/usr/bin/env bash\necho opened >>"$QUIT_LOG"\n' >"$tmp/bin/open"
   chmod +x "$tmp/bin/"*
-  for item in 'worktree-manager|Worktree Manager|WORKTREE_MANAGER_APP_DIR' \
-              'setup-doctor|Setup Doctor|SETUP_DOCTOR_APP_DIR'; do
+  for item in 'setup-doctor|Setup Doctor|SETUP_DOCTOR_APP_DIR'; do
     IFS='|' read -r installer app variable <<<"$item"
     mkdir -p "$tmp/apps/$app.app"
     printf 'old build\n' >"$tmp/apps/$app.app/sentinel"

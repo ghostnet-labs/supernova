@@ -7,7 +7,7 @@ work tools on top. Coding agents should read [AGENTS.md](AGENTS.md), which
 holds the design rules.
 
 For a plain-language walkthrough of Toolbox, Atuin, the shell functions,
-Agent Control Center's project workspace, and Hardware Planner, start with
+Agent Workspace, and Hardware Planner, start with
 [Your tooling guide](docs/tooling-guide.md).
 
 ## Repository layout
@@ -19,7 +19,7 @@ Agent Control Center's project workspace, and Hardware Planner, start with
 | `setup/` | Internal modules sourced by `setup.sh` |
 | `tests/` | Tests run by `./setup.sh --test`, grouped as `setup/`, `dotfiles/`, and `github/`; `fixtures/overlay/` is a fake work overlay |
 | `dotfiles/` | Configs symlinked into `$HOME` and `~/.config`, general commands in `.bin/`, and shell functions in `functions/` (one file per topic) |
-| `apps/` | Source for the macOS apps the dotfiles install (Codex Balance, Agent Control Center, Agent Workspace, Setup Doctor, Worktree Manager, GitHub Activity, Hardware Planner, and Awake), the Swift code they share in `apps/lib/`, and the Zellij plugins |
+| `apps/` | Source for the macOS apps the dotfiles install (Codex Balance, Agent Workspace, Setup Doctor, GitHub Activity, Hardware Planner, and Awake), the Swift code they share in `apps/lib/`, and the Zellij plugins |
 | `docs/` | The tooling guide |
 | `.githooks/` | Secret scan and commit message checks, enabled by `./setup.sh --fix` |
 | `.github/workflows/` | CI: secret scan, lint, the test suite, and pull request format checks |
@@ -173,7 +173,6 @@ no option, each shows whether its app is installed; `--install` builds it from
 | Task | Command |
 | --- | --- |
 | Codex messages and sessions | `codex-sessions --tui` |
-| Live Codex and Claude agents menu bar app, and its conversation browser | `agent-control-center --install`, `agent-control-center --open` |
 | Agents, conversations, and Git worktrees in one app | `agent-workspace --install`, `agent-workspace --open` |
 | Codex and Claude usage menu bar app | `codex-bal-bar --install` |
 | Claude Code sessions | `claude-sessions` |
@@ -181,7 +180,6 @@ no option, each shows whether its app is installed; `--install` builds it from
 | Setup health and drift app | `setup-doctor --install`, `setup-doctor --open` |
 | Keep the Mac and displays awake; optional mouse jiggle | `awake --install` |
 | Cloned GitHub repo activity menu bar app | `gh-activity-bar --install` |
-| Git worktree manager | `worktree-manager --install`, `worktree-manager --open` |
 | Hardware projects, exact part revisions and purchasing BOMs | `hardware-planner --install`, `hardware-planner --open` |
 | Rebuild and restart every macOS app, including a work overlay's | `reinstall-apps`, `reinstall-apps --list` |
 | Rebuild only the apps whose source changed since they were installed | `reinstall-apps --stale`, `reinstall-apps --stale --list` |

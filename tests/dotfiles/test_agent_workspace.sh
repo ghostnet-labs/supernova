@@ -111,7 +111,7 @@ assert_not_contains "$(cat "$scratch/keychains-after")" "$scratch/"
 cmp "$scratch/default-keychain-before" "$scratch/default-keychain-after" || fail_test 'signing changed default keychain'
 [[ "$(stat -f '%Lp' "$signing/identity/identity.p12")" == 600 ]] || fail_test 'signing identity permissions'
 printf 'PASS: persistent signing, changed builds, unrelated-key rejection, and keychain cleanup\n'
-python3 "$root/apps/agent-control-center/install_support.py" verify "$root/apps/agent-workspace" "$bundle"
+python3 "$root/apps/agent-workspace/install_support.py" verify "$root/apps/agent-workspace" "$bundle"
 assert_contains "$(run --status)" 'running: yes'
 plist="$scratch/home/Library/LaunchAgents/local.agent-workspace.plist"
 assert_contains "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:CODEX_HOME' "$plist")" 'codex & home'

@@ -1,9 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Builds the project workspace for apps that have one; Agent Control Center sets it, other apps leave it nil.
-@MainActor var makeProjectWorkspace: (@MainActor (SessionStore, @escaping () -> Void) -> AnyView)?
-
 struct RootView: View {
     @ObservedObject var store: SessionStore
     @State private var archiveConfirmation = false
@@ -11,7 +8,6 @@ struct RootView: View {
     @State private var recentlyClosedExpanded = false
     @State private var projectsExpanded = false
     @State private var allSessionsExpanded = false
-    @State private var showProjectWorkspace = false
     @State private var browserColumns: NavigationSplitViewVisibility = .all
     @State private var expandedProjects: Set<String> = []
     @State private var expandedSections: [String: Set<String>] = [:]
@@ -23,9 +19,7 @@ struct RootView: View {
                 .navigationSplitViewColumnWidth(min: 290, ideal: 350, max: 460)
                 .background(SidebarSizing().frame(width: 0, height: 0))
         } detail: {
-            if showProjectWorkspace, let makeProjectWorkspace {
-                makeProjectWorkspace(store) { showProjectWorkspace = false }
-            } else if store.showDashboard {
+            if store.showDashboard {
                 DashboardView(store: store)
             } else if let session = store.selected {
                 SessionDetailView(store: store, session: session)
@@ -43,8 +37,6 @@ struct RootView: View {
         .frame(minWidth: 980, minHeight: 640)
         .background(AppTheme.background)
         .tint(AppTheme.accent)
-        .onChange(of:showProjectWorkspace) { _,value in browserColumns = value ? .detailOnly:.all }
-        .onChange(of:store.selection) { _,_ in showProjectWorkspace = false }
         .onOpenURL(perform: store.handleDeepLink)
         .alert("Move session?", isPresented: $archiveConfirmation) {
             Button(store.selected?.archived == true ? "Unarchive" : "Archive") {
@@ -97,11 +89,6 @@ struct RootView: View {
                 .focused($sessionSearchFocused)
                 .padding(10)
 
-            if makeProjectWorkspace != nil {
-                Button(showProjectWorkspace ? "Back to conversations" : "Project workspace") { showProjectWorkspace.toggle() }
-                    .buttonStyle(.borderless).padding(.horizontal,12).padding(.bottom,8)
-            }
-
             if let status = store.providerSummary {
                 Text(status).font(AppFont.caption).foregroundStyle(.orange).padding(.horizontal, 10)
             }
@@ -114,7 +101,6 @@ struct RootView: View {
                     // List reconciles selection during refresh; don't reload the same transcript.
                     DispatchQueue.main.async {
                         guard store.showDashboard || store.selection != id else { return }
-                        showProjectWorkspace = false
                         store.choose(id)
                     }
                 }

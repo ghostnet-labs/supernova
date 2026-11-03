@@ -36,7 +36,7 @@ from uuid import UUID
 
 
 # Shared with the native app; resolve symlinked PATH launchers back to this checkout.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/agent-control-center"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "apps/agent-workspace"))
 from session_stream import CodexQueue, JsonlCache, file_metadata, run_stream  # noqa: E402
 
 
