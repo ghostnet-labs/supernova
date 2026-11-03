@@ -86,13 +86,13 @@ build_app() {
   cp "$source_dir/Info.plist" "$bundle/Contents/Info.plist"
   cp "$source_dir/../lib/octicons/LICENSE" "$bundle/Contents/Resources/Octicons-LICENSE"
   cp -R "$source_dir/fonts" "$bundle/Contents/Resources/Fonts"
-  python3 "$source_dir/../agent-control-center/install_support.py" manifest "$source_dir" "$bundle"
+  python3 "$source_dir/install_support.py" manifest "$source_dir" "$bundle"
   swiftc -O -parse-as-library -swift-version 5 \
     -target "$(uname -m)-apple-macos14.0" \
     -o "$bundle/Contents/MacOS/$executable" \
     "$source_dir"/*.swift "$source_dir/../lib/agents"/*.swift "$source_dir/../lib/worktrees"/*.swift "$source_dir/../lib/octicons/Octicons.swift" "$source_dir/../lib/BranchRef.swift" \
     "$source_dir/../lib/GhosttyLaunch.swift" "$source_dir/../lib/GitStatus.swift" "$source_dir/../lib/SessionPresentation.swift" "$source_dir/../lib/TextLine.swift"
-  python3 "$source_dir/../agent-control-center/install_support.py" verify "$source_dir" "$bundle"
+  python3 "$source_dir/install_support.py" verify "$source_dir" "$bundle"
   python3 "$source_dir/sign_app.py" "$bundle"
   codesign --verify --deep --strict "$bundle"
   "$bundle/Contents/MacOS/$executable" --check-build
@@ -100,7 +100,7 @@ build_app() {
 
 write_agent_plist() {
   mkdir -p "${agent_plist%/*}"
-  python3 "$source_dir/../agent-control-center/install_support.py" plist "$source_dir" "$app_path" "$agent_plist"
+  python3 "$source_dir/install_support.py" plist "$source_dir" "$app_path" "$agent_plist"
   plutil -lint "$agent_plist" >/dev/null
 }
 
@@ -146,7 +146,7 @@ install_app() {
   mv "$build_root/$app_name.app" "$app_path"
   write_agent_plist
   codesign --verify --deep --strict "$app_path"
-  python3 "$source_dir/../agent-control-center/install_support.py" verify "$source_dir" "$app_path"
+  python3 "$source_dir/install_support.py" verify "$source_dir" "$app_path"
   /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_path"
   start_agent
   local running=false _

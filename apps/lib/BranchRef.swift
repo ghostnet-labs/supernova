@@ -1,4 +1,4 @@
-// Shared by Worktree Manager and Agent Control Center.
+// Shared by Agent Workspace's session and worktree views.
 import SwiftUI
 
 /// GitHub's blue branch label; missing names and detached HEADs stay plain text.

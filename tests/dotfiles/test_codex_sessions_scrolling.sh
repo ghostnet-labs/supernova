@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# setup-test: Agent Control Center transcript scrolling
+# setup-test: Agent session transcript scrolling
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ "$(uname -s)" != Darwin ]] || ! command -v swiftc >/dev/null 2>&1; then
-  printf 'SKIP: Agent Control Center scrolling checks require macOS and Swift\n'
+  printf 'SKIP: Agent session scrolling checks require macOS and Swift\n'
   exit 0
 fi
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/codex-scrolling-tests.XXXXXX")"

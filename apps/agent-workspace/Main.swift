@@ -11,7 +11,7 @@ struct AgentWorkspaceApp {
         }
         SessionSource.environmentPrefix = "AGENT_WORKSPACE"
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 250])
-        let store = SessionStore(importPreferences: false, notificationsDefault: false, managesGit: false, enableSSH: true)
+        let store = SessionStore(importPreferences: false, notificationsDefault: true, managesGit: false, enableSSH: true)
         let workspace = WorkspaceModel(sessions: store)
         let app = NSApplication.shared
         WorkspaceThemes.restore()

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# setup-test: Agent Control Center timeline
+# setup-test: Agent session timeline
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 if [[ "$(uname -s)" != Darwin ]] || ! command -v swiftc >/dev/null 2>&1; then
-  printf 'SKIP: Agent Control Center timeline checks require macOS and Swift\n'
+  printf 'SKIP: Agent session timeline checks require macOS and Swift\n'
   exit 0
 fi
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/codex-timeline-tests.XXXXXX")"

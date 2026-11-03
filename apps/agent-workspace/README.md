@@ -1,8 +1,9 @@
 # Agent Workspace
 
 A native macOS app for repositories, Git worktrees, live Codex and Claude agents,
-conversations, pull requests, and diffs. Agent Control Center and Worktree Manager
-remain separate supported apps; installing this app does not replace either one.
+conversations, pull requests, and diffs. It replaces Agent Control Center and
+Worktree Manager, which were removed; their session browser and worktree views
+live on here.
 
 ```sh
 agent-workspace --install
@@ -91,8 +92,8 @@ in the same space and the button is disabled.
 
 The window remembers its size and position across restarts. The first window opens
 on All Repositories. Later openings restore the last page;
-missing targets fall back to All Repositories. Repository pages retain Worktree
-Manager's selection, batch actions, branch cleanup, and GitHub PR presentation.
+missing targets fall back to All Repositories. Repository pages provide worktree
+selection, batch actions, branch cleanup, and GitHub PR presentation.
 Pending Codex desktop follow-ups and Claude messages appear under **Queued messages**
 in the conversation pane and disappear when delivered or removed. Claude messages
 delivered during a running turn also appear in the conversation history.
@@ -114,7 +115,7 @@ The action bar applies each action to eligible selected items. Command-click
 toggles rows, Shift-click selects a range, and Escape clears selection. Fetch and
 Prune run once per repository. Double-click a worktree to open/jump to its terminal;
 double-click a PR to open GitHub. Select a PR to show its diff or create its worktree.
-Repository and session pins are independent of the older apps' pins.
+Repository and session pins are saved with this app's settings.
 
 New Worktree offers **None**, **Codex**, or **Claude** after creation, defaulting to
 None. Launch failures preserve the new checkout and offer Retry Launch. Creation
@@ -162,10 +163,9 @@ provider children. Installation enables quiet launch at login. Once you open the
 app, it stays in the Dock and Cmd+Tab until you quit, even after closing its window.
 Click its Dock icon or choose Open Agent Workspace in the menu bar to reopen it.
 
-Notifications start **off**, with independent settings, to avoid duplicate alerts
-when Agent Control Center also runs. Enable them in Settings. Session transcripts
-are shared underlying data: archiving a Codex session affects other history readers.
-No settings or pins are imported from either existing app.
+Notifications start **on** for new installs; turn them off in Settings. Session
+transcripts are shared underlying data: archiving a Codex session affects other
+history readers. No settings or pins are imported from the removed apps.
 
 Live Codex **and Claude** agents protect their worktrees from removal and rebase.
 Both provider streams must freshly confirm a requested refresh before a protected
@@ -177,14 +177,14 @@ tip/upstream/unmerged-commit checks, and conflicting rebases are aborted.
 ## Architecture and configuration
 
 Sources live here; shared agent components are in `../lib/agents/`, and shared Git,
-PR, and diff components are in `../lib/worktrees/`. All three apps compile shared
-sources directly. Agent Workspace owns one persistent stream per provider and
+PR, and diff components are in `../lib/worktrees/`. `session_stream.py` is the
+streaming core `codex-sessions` and `claude-sessions` import, and `install_support.py`
+writes the build manifest and login agent. Agent Workspace owns one persistent stream per provider and
 shares one Git snapshot across its menu bar, sessions, and worktree views.
 Unselected transcripts are not loaded. Provider updates do not rescan Git unless
 the discovered project inventory changes. Git refreshes every 10 seconds with a
 window open and every 60 seconds in the background; PR lookups are coalesced to
 once per minute unless explicitly refreshed. Git and PR work runs off the UI thread.
-Running multiple apps still means separate provider processes per app.
 
 Repositories are discovered one level below the configured development root,
 plus existing repositories referenced by agent history elsewhere. Linked worktrees
@@ -215,7 +215,7 @@ uninstall, and does not change system certificate trust or grant folder access.
 Keep this directory to preserve the identity; deleting it creates a new identity
 on the next install and macOS will request permissions again.
 
-Shortcuts retain Agent Control Center's bindings: ⌘1 dashboard, ⌘K global search,
+Shortcuts: ⌘1 dashboard, ⌘K global search,
 ⌘F transcript search, ⌘⌥↑/↓ sessions, ⌘Return resume, ⌘⇧J terminal jump, ⌘⇧P pin,
 ⌘⇧A archive, ⌘⇧R refresh, ⌘I inspector. ⌘[ goes Back.
 

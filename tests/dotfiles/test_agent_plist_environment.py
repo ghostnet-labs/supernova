@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # setup-test: Agent launch agent environment
-"""Checks that reinstalling an agent app keeps custom settings but drops another checkout's paths."""
+"""Checks that reinstalling Agent Workspace keeps custom settings but drops another checkout's paths."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).parents[2]
-SUPPORT = ROOT / "apps" / "agent-control-center" / "install_support.py"
+SUPPORT = ROOT / "apps" / "agent-workspace" / "install_support.py"
 
 
 def write_plist(source: str, previous: dict[str, str] | None, env: dict[str, str] | None = None) -> dict[str, str]:
@@ -48,16 +48,16 @@ class AgentPlistEnvironmentTest(unittest.TestCase):
         self.assertEqual(environment["AGENT_WORKSPACE_INTERVAL"], "9", "other custom settings are kept")
 
     def test_custom_paths_outside_a_checkout_are_kept(self):
-        environment = write_plist("agent-control-center", {"AGENT_CONTROL_SESSIONS_BIN": "/opt/tools/codex-sessions"})
-        self.assertEqual(environment["AGENT_CONTROL_SESSIONS_BIN"], "/opt/tools/codex-sessions")
+        environment = write_plist("agent-workspace", {"AGENT_WORKSPACE_SESSIONS_BIN": "/opt/tools/codex-sessions"})
+        self.assertEqual(environment["AGENT_WORKSPACE_SESSIONS_BIN"], "/opt/tools/codex-sessions")
 
     def test_the_environment_wins_over_everything(self):
         environment = write_plist(
-            "agent-control-center",
-            {"AGENT_CONTROL_SESSIONS_BIN": "/opt/tools/codex-sessions"},
-            {"AGENT_CONTROL_SESSIONS_BIN": "/elsewhere/dotfiles/.bin/codex-sessions"},
+            "agent-workspace",
+            {"AGENT_WORKSPACE_SESSIONS_BIN": "/opt/tools/codex-sessions"},
+            {"AGENT_WORKSPACE_SESSIONS_BIN": "/elsewhere/dotfiles/.bin/codex-sessions"},
         )
-        self.assertEqual(environment["AGENT_CONTROL_SESSIONS_BIN"], "/elsewhere/dotfiles/.bin/codex-sessions")
+        self.assertEqual(environment["AGENT_WORKSPACE_SESSIONS_BIN"], "/elsewhere/dotfiles/.bin/codex-sessions")
 
 
 if __name__ == "__main__":

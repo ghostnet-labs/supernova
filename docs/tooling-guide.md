@@ -1,12 +1,12 @@
 # Your tooling guide
 
-This guide explains the Toolbox, history, Agent Control Center, and Hardware Planner tools, how to use them,
+This guide explains the Toolbox, history, Agent Workspace, and Hardware Planner tools, how to use them,
 and what happens to your data. Start with the first two sections; use the rest
 when you need a particular workflow.
 
 Jump to [terminal history](#toolbox-and-atuin-what-is-automatic),
 [the shell functions](#the-shell-functions),
-[project memory and tasks](#agent-control-center-remember-and-coordinate-a-project),
+[agents and worktrees](#agent-workspace-agents-and-worktrees-in-one-app),
 [hardware planning](#hardware-planner-parts-boms-compatibility-and-changes),
 [storage and Git](#what-is-in-git-and-what-stays-on-the-machine), or
 [updates and other machines](#updates-and-other-machines).
@@ -18,7 +18,7 @@ Jump to [terminal history](#toolbox-and-atuin-what-is-automatic),
 | **Toolbox** | Find a helper and put one of its examples into your terminal for editing; `--catalog` adds saved recipes and `--history` old commands | `toolbox` |
 | **Atuin** | Find something you previously typed in a terminal | **Ctrl+R** |
 | **Shell functions** | Do a common job with a short command and normal arguments | For example, `glog` or `rfind TODO` |
-| **Agent Control Center** | Browse agent chats, remember project decisions, and coordinate delegated work | `agent-control-center --open` |
+| **Agent Workspace** | Watch live Codex and Claude agents, read their conversations, and manage Git worktrees and pull requests | `agent-workspace --open` |
 | **Hardware Planner** | Record exact parts, build a bill of materials, check documented compatibility, and compare changes | `hardware-planner --open` |
 
 Toolbox and Atuin overlap deliberately. Atuin supplies searchable local command
@@ -27,10 +27,7 @@ about the helpers currently loaded in your shell, available managed commands,
 and optional saved recipes (`--catalog`).
 A function is the actual reusable command; Toolbox helps you discover it.
 
-Agent Control Center and Hardware Planner are separate macOS apps. They exchange
-hardware report snapshots when you explicitly export and attach one. The memory,
-managed conversation, and delegation features described here are in the existing
-**Agent Control Center** app. **Agent Workspace** remains a separate app.
+Agent Workspace and Hardware Planner are separate macOS apps.
 
 ## Start here
 
@@ -60,7 +57,7 @@ In Zellij, first use **Ctrl+G** to enter Locked mode so Ctrl+R reaches the shell
 On macOS, open the apps with:
 
 ```zsh
-agent-control-center --open
+agent-workspace --open
 hardware-planner --open
 ```
 
@@ -208,109 +205,18 @@ stage, commit, push, or add that entry to Atuin automatically.
 
 See the [catalog reference](../dotfiles/toolbox/README.md) for optional workflows.
 
-## Agent Control Center: remember and coordinate a project
+## Agent Workspace: agents and worktrees in one app
 
-### Open the project workspace
-
-1. Run `agent-control-center --open`.
-2. Click **Project workspace** in the left sidebar below **Search sessions**.
-3. Choose **Personal**, or choose **Work**, enter **Work job**, and click
-   **Open Work projects**.
-4. Click **Add project…**, select its working directory, then select the project.
-
-The workspace has **Conversation**, **Tasks**, **Memory**, and **Hardware** tabs.
-Use **Back to conversations** to return to the existing session browser.
-Git worktrees of the same repository share a project within a scope. Use
-**Relink…** if a folder moves. Project scope separates memory; it does not switch
-your shell environment or itself authorize agent execution.
-
-### Build useful memory
-
-In **Memory**, click **Index recent history** for the 50 most recent matching
-Codex/Claude sessions, or **Backfill all project history** for all matching
-sessions. Search with **Search visible project messages**, then use
-**Open original message** to inspect a result and its source.
-
-Indexing starts when you request it. Closing the workspace or changing projects
-pauses it; clicking an indexing action again continues from saved checkpoints.
-Coverage shows what was processed, what was unavailable, and what was excluded.
-This searches visible user/assistant messages, excluding hidden reasoning and
-tool payloads. It does not automatically read every chat across every service.
-
-For other material, use **Import → Selected ChatGPT conversations…** with a JSON
-export and select the conversations you want, or **Import → Text or Markdown
-document…**. These are local snapshots, not live synchronization with ChatGPT.
-Split import files that exceed the 32 MiB limit.
-
-Use **Capture decision** on a message or **New decision** to record a choice.
-Each decision has two independent states:
-
-| Question | Saved choices |
-| --- | --- |
-| Have we agreed to this? | Proposed, Accepted, Rejected, Superseded |
-| How far has it been delivered? | Planned, Implemented, Verified |
-
-For example, “Use controller revision B” can be **Accepted / Planned** while
-implementation is still pending. **Verified** requires linked test or inspected
-artifact evidence. Agent proposals do not automatically become accepted or
-verified. **Structured project summary** reports these saved states and coverage.
-
-To supply verification evidence, open a message or imported document containing
-the test result or artifact inspection and use **Attach to decision**. In the
-decision editor, mark that evidence as **Test** or **Artifact** and describe what
-it establishes, then select **Verified** and **Save**.
-
-### Talk to the coordinator and delegate
-
-In **Conversation**, enter a message and click **Send**. This creates or uses a
-project coordinator chat; it does not turn an old browsed chat into the
-coordinator. It uses the installed Codex CLI's existing sign-in and effective
-model, effort, and permission settings. **Settings** displays them.
-
-To delegate, enable **Delegate research**, **Delegate code changes**, or both
-before sending the instruction authorizing that work. For example:
-
-> Research the two approaches, then implement the selected change in separate
-> tasks. Include a focused test result and a short report for each task.
-
-Research children use a read-only sandbox. Code children use separate Git
-worktrees based on the selected checkout's **committed HEAD**. Uncommitted edits
-are not copied. Their worktrees and results are retained; completed changes are
-not automatically merged into your main checkout.
-
-In **Tasks**, inspect objectives, updates, working directories, and
-**Deliverable and completion evidence**. **Open checkout** takes you to the code.
-The default concurrency is two children; **Concurrent tasks** supports 1–8.
-Completed child results are delivered to the coordinator once it is idle.
-
-A model finishing a turn does not by itself complete a task. Completion needs
-the structured report and predefined evidence checks. Missing evidence can leave
-the task at **Needs input**. **Verify…** records your independent verification.
-Managed execution currently uses Codex; Claude history is searchable, but
-managed Claude/OpenCode execution is not implemented.
-
-### Stop, steer, and recover
-
-| Situation | Control and effect |
-| --- | --- |
-| Add direction during an active coordinator turn | **Steer** |
-| Stop that turn | **Interrupt** |
-| Pause scheduling and request interruption of current work | **Pause all** in Tasks, or **Pause coordinator** |
-| Allow queued task dispatch again | **Resume dispatch**; this does not individually continue every interrupted task |
-| Coordinator reports **Outcome unknown** | **Reconnect / reconcile** before sending more |
-| A task has uncertain execution state | **Reconcile** on that task |
-| Continue an interrupted task after resolving its state | **Continue…**, provide an additional instruction, then **Continue** |
-
-Continuation resumes conversation context, not a half-finished shell process.
-After an app restart, unfinished work stays paused for reconciliation or explicit
-continuation. The app does not automatically repeat an uncertain dispatch.
-Closing the window leaves active work running. Use **Quit** to checkpoint and
-interrupt owned work before exiting. `agent-control-center --stop` stops the
-app; reconcile unfinished work after restarting.
-
-The coordinator receives bounded project context, not every historical message.
-A newly selected hardware report is supplied with a new turn; steering an
-already active turn retains that turn's earlier context.
+Agent Workspace shows every live Codex and Claude session, local and on SSH
+hosts you configure, beside the repositories and Git worktrees they run in.
+Switch the sidebar between **Sessions** and **Repositories**. Open a session to
+read its conversation, jump to its terminal, or resume it. Open a repository to
+see its worktrees, branches, and pull requests, select rows, and act on them
+from the action bar: fetch, pull, rebase, show a diff, create a worktree, or
+safely remove one. A worktree with a live agent is never removed or rebased.
+Notifications for sessions that need you are on by default; change them in
+**Settings**. The [Agent Workspace reference](../apps/agent-workspace/README.md)
+covers every view and setting.
 
 ## Hardware Planner: parts, BOMs, compatibility, and changes
 
@@ -393,7 +299,7 @@ assessments. **Record override…** adds an author and reason beside a finding;
 it does not change the machine result or coverage. **Changes** is revision
 history, not the location of the change-preview action.
 
-### Export, share, and connect to the coordinator
+### Export and share
 
 | Export choice | Use it for |
 | --- | --- |
@@ -401,23 +307,10 @@ history, not the location of the change-preview action.
 | **Purchasing BOM CSV** | Purchasing rows; it does not preserve the complete connection graph |
 | **Review report Markdown** | BOM, costs, requirements, sources, and saved findings; save a current check first |
 | **Compatibility → Export report…** | The currently displayed check, including an older saved check if selected |
-| **Coordinator report JSON** | A fresh check and bounded evidence for the selected assembly |
 | **Back up database** | A consistent backup of the full local database |
 
-To discuss an assembly with an agent:
-
-1. Select it in Hardware Planner and choose **Export → Coordinator report JSON**.
-2. In Agent Control Center, select the intended project, open **Hardware**, and
-   click **Attach report…**.
-3. Select that report under **Coordinator context**; the default is **None**.
-4. Send a new coordinator message about the assembly.
-
-Attaching alone does not send a report to the coordinator. Use **View report**,
-**Open assembly in Planner**, and cited source links to inspect it. The report is
-an immutable snapshot. After an assembly changes, export and attach a fresh one.
-Coordinator prose cannot edit the Planner project; accept changes through the
-Planner's explicit preview. On another Mac, import the lossless project JSON
-before expecting assembly/source links to resolve.
+On another Mac, import the lossless project JSON before expecting assembly and
+source links to resolve.
 
 ## What is in Git, and what stays on the machine?
 
@@ -432,7 +325,6 @@ before expecting assembly/source links to resolve.
 | Scoped Atuin configuration | `~/.config/atuin/scopes/SCOPE/config.toml` | Locally refreshed from the tracked template |
 | Work recipes and optional review state | `~/.local/share/toolbox/SCOPE/` | No |
 | Optional catalog-location configuration | `~/.config/toolbox/config.json` | No |
-| Agent projects, decisions, tasks, and imports | `~/Library/Application Support/local.agent-control-center/` | No |
 | Hardware projects and attachments | `~/Library/Application Support/Hardware Planner/` | No |
 
 `SCOPE` is `personal` or `work-JOB`. `XDG_DATA_HOME` and `XDG_CONFIG_HOME` can
@@ -447,12 +339,8 @@ make an arbitrary Work command appropriate for a Personal repository. Listing
 or exporting history can include its original sensitive text, so raw history
 does not belong in the shared catalog or documentation.
 
-Use **Back up project data** in Agent Control Center for its `projects.sqlite`
-database. Preserve the separate `imports/` directory when transferring imported
-sources; that database backup alone does not copy those files. Task checkouts
-live separately under `task-worktrees/` and should be preserved if needed.
 Hardware Planner's **Back up database** and lossless project JSON include its
-stored attachment data. Neither app automatically synchronizes projects across
+stored attachment data. It does not automatically synchronize projects across
 machines.
 
 ## Updates and other machines
@@ -477,11 +365,11 @@ On each machine where you want these features:
    `./setup.sh --fix --dry-run` previews repairs; `./setup.sh --fix` applies them
    after its interactive confirmation. Use `--personal` for a Personal machine.
 3. Open a new shell or run `source_zsh` after updating functions.
-4. On macOS, use `agent-control-center --install` and/or
+4. On macOS, use `agent-workspace --install` and/or
    `hardware-planner --install` when their installed builds need updating.
 
 Functions and tracked Personal recipes travel with Git. Old raw history,
-one-time helper-name imports, local Work recipes, project memory, and hardware
+one-time helper-name imports, local Work recipes, and hardware
 projects do not. A fresh machine can discover functions in Toolbox immediately
 after loading them; Atuin learns their invocations as you use them. Old history
 requires an explicit import into the intended scope. Never automatically treat
@@ -497,9 +385,6 @@ a mixed legacy history file as Personal history.
 | Old history is absent on a second machine | History is local; Git did not transfer it |
 | Toolbox lists commands but the picker fails | Check that `fzf` is installed; rendering also needs Python 3 |
 | Atuin is disabled | Check `SETUP_ATUIN_ENABLED`, `atuin --version`, and the active destination; an existing unmarked scoped config is preserved rather than overwritten |
-| Project memory search is empty | Select the correct project/scope and explicitly start an indexing action or import |
-| An old citation cannot open | Its source may have moved, changed, or disappeared; inspect coverage and rebuild its index |
-| A coordinator/task outcome is unknown | Reconcile before creating replacement work |
 | Compatibility is Unknown | Supply the missing exact specifications and suitable evidence shown by the findings |
 | A hardware report differs from the current assembly | It is a snapshot; export a fresh report from the selected revision |
 | An app still has the old interface | Check its `--status`, then rebuild with `--install` from the intended checkout |
@@ -510,5 +395,5 @@ read the existing scoped databases. Set it back to `true` and reload to resume r
 
 For deeper details, see the [repository setup guide](../README.md),
 [Toolbox catalog reference](../dotfiles/toolbox/README.md),
-[Agent Control Center reference](../apps/agent-control-center/README.md), and
+[Agent Workspace reference](../apps/agent-workspace/README.md), and
 [Hardware Planner reference](../apps/hardware-planner/README.md).

@@ -20,15 +20,13 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
   - New shell tests source `tests/lib/assert.sh` for `fail_test`, `assert_contains`, `assert_not_contains`, and `assert_equals` instead of defining their own. Python tests that need Textual must skip, not fail, when it is missing
 - `apps/` — Source for the apps the dotfiles use; nothing here is linked into `$HOME`. Each Swift app is built and installed by its command in `dotfiles/.bin/` (`NAME --install`):
   - `codex-bal-bar/` — Codex Balance, a menu bar app for Codex and Claude usage
-  - `agent-control-center/` — the agent menu bar app and conversation browser
-  - `worktree-manager/` — Worktree Manager
-  - `agent-workspace/` — Agent Workspace, which combines the agent and worktree views in one app
+  - `agent-workspace/` — Agent Workspace, the one app for live Codex and Claude agents, their conversations, and Git worktrees (it replaced Agent Control Center and Worktree Manager). It also holds `session_stream.py`, the streaming core that `codex-sessions` and `claude-sessions` import, and `install_support.py`, which writes its build manifest and login agent
   - `awake/` — Awake, a menu bar app that keeps the Mac and displays awake, with an optional mouse jiggle; `apps/awake/build.sh` builds it for Apple Silicon on macOS 15 or newer
   - `setup-doctor/` — Setup Doctor, which shows `./setup.sh --check` results and drift
   - `gh-activity-bar/` — the GitHub Activity menu bar app; its event descriptions mirror the `ghactivity` function in `dotfiles/functions/github.zsh`, so change both together
   - `hardware-planner/` — Hardware Planner, for hardware projects, part revisions, and purchasing BOMs
-- `apps/lib/` — Code the apps share. `agents/` is used by Agent Control Center and Agent Workspace, `worktrees/` by Worktree Manager and Agent Workspace, and the top-level `*.swift` files by whichever installers name them. Every installer except Codex Balance's and GitHub Activity's sources `quit-app.sh` to stop the running copy after a successful build
-- `apps/lib/octicons/` — Vendored GitHub Octicons for GitHub Activity, Agent Control Center, Agent Workspace, Worktree Manager, and Hardware Planner: their installers compile its generated `Octicons.swift` and bundle its `LICENSE`. To add an icon, vendor its SVG there and rerun `generate-octicons.py` (see its README); `tests/dotfiles/test_octicons.sh` fails when an app names an icon that isn't vendored
+- `apps/lib/` — Code the apps share. `agents/` and `worktrees/` are Agent Workspace's session and Git views, kept separate so tests can compile them on their own, and the top-level `*.swift` files by whichever installers name them. Every installer except Codex Balance's and GitHub Activity's sources `quit-app.sh` to stop the running copy after a successful build
+- `apps/lib/octicons/` — Vendored GitHub Octicons for GitHub Activity, Agent Workspace, and Hardware Planner: their installers compile its generated `Octicons.swift` and bundle its `LICENSE`. To add an icon, vendor its SVG there and rerun `generate-octicons.py` (see its README); `tests/dotfiles/test_octicons.sh` fails when an app names an icon that isn't vendored
 - `dotfiles/.bin/reinstall-apps` rebuilds and restarts every app with an `Info.plist` under `apps/` (and under `$WORK_ROOT/apps` with a work overlay) by running each app's `--install` (or `NAME-app --install`) in parallel. A new Swift app is picked up automatically, and its `--install` must stop or quit the running copy before replacing it; `--list` prints what it would run. Each successful install records the committed Git objects of the app's directory, `apps/lib`, and its installer in the untracked `.local/app-builds/NAME`, and `--stale` rebuilds only apps whose record is missing or differs
 - `apps/zellij-tab-picker/` — Rust source of `dotfiles/zellij/plugins/tab-picker.wasm`. Rebuild with `cargo build --release --locked --target wasm32-wasip1` there and copy `target/wasm32-wasip1/release/zellij-tab-picker.wasm` over the tracked `.wasm`
 - `apps/zj-radar/keyboard-navigation.patch` — Applied to upstream zj-radar to build `dotfiles/zellij/plugins/zj_radar.wasm`; the base commit and build command are in the patch header
@@ -76,7 +74,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - **Zsh** — shell config, aliases, and shell functions
 - **Python** — the `dotfiles/.bin` commands `codex-sessions`, `claude-sessions`, `tmux-fzf`, `zellij-fzf`, and `tmux-codex-status`, the `toolbox` modules in `dotfiles/lib/` (which also back the pre-commit secret scan), and app helper scripts under `apps/` (installer support, session streams, signing, the Claude status line, and the Octicons generator)
 - **Lua** — Neovim config (LazyVim)
-- **Swift** — Codex Balance, Agent Control Center, Agent Workspace, Setup Doctor, Worktree Manager, GitHub Activity, Hardware Planner, and Awake apps (`apps/codex-bal-bar/`, `apps/agent-control-center/`, `apps/agent-workspace/`, `apps/setup-doctor/`, `apps/worktree-manager/`, `apps/gh-activity-bar/`, `apps/hardware-planner/`, `apps/awake/`), plus shared sources in `apps/lib/`
+- **Swift** — Codex Balance, Agent Workspace, Setup Doctor, GitHub Activity, Hardware Planner, and Awake apps (`apps/codex-bal-bar/`, `apps/agent-workspace/`, `apps/setup-doctor/`, `apps/gh-activity-bar/`, `apps/hardware-planner/`, `apps/awake/`), plus shared sources in `apps/lib/`
 - **Rust** — Zellij tab picker plugin (`apps/zellij-tab-picker/`)
 - **Perl** — The PR description check (`.github/scripts/check_pr_description.pl`)
 
@@ -96,7 +94,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - Add a short body explaining why when it isn't obvious; tool-added trailers such as `Co-Authored-By:` are fine
 - The `commit-msg` hook checks each message as you commit. `fixup!`, `squash!`, and `amend!` commits pass it so `git rebase -i --autosquash origin/main` can fold them in. The `pre-push` hook then checks every commit the push adds, including clean cherry-picks and reverts and rebased commits, which usually skip `commit-msg`; the PR check repeats this on GitHub. Reword a `git revert` subject to `revert: <original subject>`
 - Never skip the hooks with `--no-verify` or `-n`; fix the message instead. Sessions that didn't run `./setup.sh --fix`, such as cloud agents, run `git config core.hooksPath .githooks` first
-- Keep git's `[branch sha] subject` line in agent command output: don't run `git commit` or `git cherry-pick` with `-q`, and don't pipe or redirect their output away. Agent Control Center and Claude Code find a session's commits from that line
+- Keep git's `[branch sha] subject` line in agent command output: don't run `git commit` or `git cherry-pick` with `-q`, and don't pipe or redirect their output away. Agent Workspace and Claude Code find a session's commits from that line
 - After a merge, rebase, or any commit whose output was cut short, print `git log --oneline -1` so the new commit's hash still appears
 
 ## CLI help conventions

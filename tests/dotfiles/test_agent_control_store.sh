@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup-test: Agent Control Center store and provider lifecycle
+# setup-test: Agent session store and provider lifecycle
 set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$repo_root/tests/lib/assert.sh"

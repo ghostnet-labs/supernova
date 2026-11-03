@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # toolbox: macos setup apps | Rebuild, reinstall, and restart all managed macOS apps or selected apps.
 # toolbox-args: [APP...]
-# toolbox-example: reinstall-apps worktree-manager
-# toolbox-example: reinstall-apps agent-control-center setup-doctor
+# toolbox-example: reinstall-apps agent-workspace
+# toolbox-example: reinstall-apps agent-workspace setup-doctor
 # toolbox-example: reinstall-apps
 # toolbox-example: reinstall-apps --stale
 # Rebuild, reinstall, and restart every macOS app under apps/.
@@ -40,8 +40,8 @@ Examples:
   reinstall-apps --list
   reinstall-apps --stale
   reinstall-apps --stale --list
-  reinstall-apps worktree-manager
-  reinstall-apps agent-control-center setup-doctor
+  reinstall-apps agent-workspace
+  reinstall-apps agent-workspace setup-doctor
 
 Environment:
   WORK_ROOT, JOB  Work overlay checkout and job whose apps are also rebuilt.'

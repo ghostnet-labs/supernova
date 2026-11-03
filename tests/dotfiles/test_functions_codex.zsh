@@ -13,7 +13,6 @@ for functions_file in "$repo_dir"/dotfiles/functions/*.zsh; do source "$function
 saved_setup_dir="${SETUP_DIR-}"
 setup_dir_was_set=${+SETUP_DIR}
 unset SETUP_DIR
-assert_contains "$(codex_sessions_app --help)" "Usage:"
 if (( setup_dir_was_set )); then export SETUP_DIR="$saved_setup_dir"; fi
 
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/functions-test.XXXXXX")" || exit 1

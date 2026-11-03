@@ -34,7 +34,7 @@ enum RemoteSessions {
     static func bootstrap(source: SessionSource, interval: Int) throws -> (command: String, payload: Data) {
         let script = try source.commandURL().resolvingSymlinksInPath()
         let module = script.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("apps/agent-control-center/session_stream.py")
+            .appendingPathComponent("apps/agent-workspace/session_stream.py")
         let payload = try JSONSerialization.data(withJSONObject: [
             "script": String(contentsOf: script, encoding: .utf8), "module": String(contentsOf: module, encoding: .utf8)
         ])

@@ -23,7 +23,7 @@ enum LocalRepositories {
             ?? env["TW_PROJECT_ROOT"] ?? "\(NSHomeDirectory())/dev"
     }
 
-    // Match Worktree Manager's immediate children of the project directory.
+    // Match Agent Workspace's immediate children of the project directory.
     // Reading origin works for normal clones, bare clones, and linked worktrees.
     static func scan(root: String) async throws -> [LocalRepository] {
         try await Task.detached(priority: .utility) {
