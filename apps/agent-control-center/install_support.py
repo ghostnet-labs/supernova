@@ -40,6 +40,21 @@ def source_hashes(source):
     }
 
 
+def kept(previous, default):
+    """Returns a previous launch agent value worth keeping over the default.
+
+    A value pointing at another checkout's dotfiles/.bin, left by an install from
+    an older clone, would otherwise follow the agent forever; the default from the
+    checkout being installed replaces it.
+    """
+    if not previous:
+        return None
+    path = Path(previous)
+    if path != Path(default) and path.parent.name == ".bin" and path.parent.parent.name == "dotfiles":
+        return None
+    return previous
+
+
 def main():
     command, source, bundle, *remaining = sys.argv[1:]
     source, bundle = Path(source).resolve(), Path(bundle)
@@ -69,7 +84,7 @@ def main():
             ),
         }
         environment = {
-            key: os.environ.get(key) or previous.get(key) or default
+            key: os.environ.get(key) or kept(previous.get(key), default) or default
             for key, default in defaults.items()
         }
         for key in ("CODEX_HOME", "CLAUDE_CONFIG_DIR", "SETUP_DIR", "AGENT_WORKSPACE_ROOT", "TW_PROJECT_ROOT"):
