@@ -131,8 +131,8 @@ import Foundation
             refreshed = refreshed || snapshot.refreshIDs.contains("manual")
         }
         client.onFailure = { _ in lock.lock(); failures += 1; lock.unlock() }
-        func wait(_ condition: () -> Bool) -> Bool {
-            let deadline = Date().addingTimeInterval(8)
+        func wait(seconds: TimeInterval = 8, _ condition: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
             while Date() < deadline {
                 lock.lock(); let done = condition(); lock.unlock()
                 if done { return true }
@@ -220,7 +220,9 @@ import Foundation
         try checkThrowing(try Data(contentsOf: row.path) == bytes, "replacement removes old cached tail")
         let remotePID = Int32(try String(contentsOf: sshPID, encoding: .utf8))!
         kill(remotePID, SIGTERM)
-        check(wait { remoteFailures > 0 && remoteBaselines >= 2 }, "SSH disconnection reconnects with a silent baseline")
+        // Reconnecting waits out the provider's 1 s retry, then relaunches SSH and reruns the
+        // Python bootstrap; on a CI host running several suites at once that can pass 8 s.
+        check(wait(seconds: 30) { remoteFailures > 0 && remoteBaselines >= 2 }, "SSH disconnection reconnects with a silent baseline")
         remote.stop()
         check(!FileManager.default.fileExists(atPath: row.path.path), "remote cache removed on stop")
         print("PASS: SSH bootstrap, lazy chunks, Unicode, replacement, reconnect, and cache cleanup")
