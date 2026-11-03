@@ -34,14 +34,20 @@ final class SessionStore: ObservableObject {
     @Published private(set) var subagents: [CodexSession] = []
     @Published private(set) var providerHealth: [SessionSource: ProviderHealth] = [:]
     @Published private(set) var providerErrors: [SessionSource: String] = [:]
+    @Published private(set) var remoteHealth: [SessionEndpoint: ProviderHealth] = [:]
+    @Published private(set) var remoteErrors: [SessionEndpoint: String] = [:]
+    @Published private(set) var sshHosts: [String] = []
+    @Published private(set) var transcriptError: String?
+    let sshEnabled: Bool
+    private let startsProviders: Bool
     @Published var expandedRoots: Set<String> = []
     var onOpenWindow: (() -> Void)?
     var onChooseSession: ((String) -> Void)?
     var acceptedSchemes = ["codex-sessions", "agent-control-center"]
     var onNotify: ((CodexSession, String) -> Void)?
-    private var providers: [SessionSource: ProviderClient] = [:]
-    private var providerSessions: [SessionSource: [CodexSession]] = [:]
-    private var providerAgents: [SessionSource: [CodexSession]] = [:]
+    private var providers: [SessionEndpoint: ProviderClient] = [:]
+    private var providerSessions: [SessionEndpoint: [CodexSession]] = [:]
+    private var providerAgents: [SessionEndpoint: [CodexSession]] = [:]
     private var pendingSelection: String?
     private var archiveRequest: (id: String, archived: Bool, path: URL, requestID: String)?
     private var browserVisible = false
@@ -60,8 +66,10 @@ final class SessionStore: ObservableObject {
     private let defaults: UserDefaults
 
     init(startProviders: Bool = true, defaults: UserDefaults = .standard,
-         importPreferences: Bool = true, notificationsDefault: Bool = true, managesGit: Bool = true) {
+         importPreferences: Bool = true, notificationsDefault: Bool = true, managesGit: Bool = true, enableSSH: Bool = false) {
         self.defaults = defaults
+        self.sshEnabled = enableSSH
+        self.startsProviders = startProviders
         self.managesGit = managesGit
         if importPreferences { Self.migratePreferences(defaults) }
         pinned = Set(defaults.stringArray(forKey: "CodexSessions.pinned") ?? [])
@@ -72,18 +80,55 @@ final class SessionStore: ObservableObject {
         NotificationManager.shared.onSession = { [weak self] id in
             Task { @MainActor in self?.openSession(id) }
         }
+        for source in [SessionSource.codex, .claude] { startProvider(SessionEndpoint(source: source)) }
+        if enableSSH { configureSSH(defaults.string(forKey: "Workspace.sshHosts") ?? "") }
+    }
+
+    private func startProvider(_ endpoint: SessionEndpoint) {
         let interval = max(2, Int(ProcessInfo.processInfo.environment[SessionSource.environmentPrefix + "_INTERVAL"] ?? "") ?? 5)
-        for source in [SessionSource.codex, .claude] {
-            let provider = ProviderClient(source: source, interval: interval)
-            provider.onSnapshot = { [weak self] snapshot, baseline in
-                DispatchQueue.main.async { self?.applyProvider(snapshot, baseline: baseline) }
+        let provider = ProviderClient(source: endpoint.source, interval: interval, host: endpoint.host)
+        provider.onSnapshot = { [weak self, weak provider] snapshot, baseline in
+            DispatchQueue.main.async {
+                guard let self, let provider, self.providers[endpoint] === provider else { return }
+                self.applyProvider(snapshot, baseline: baseline)
             }
-            provider.onFailure = { [weak self] message in
-                DispatchQueue.main.async { self?.providerFailed(source, message: message) }
-            }
-            providers[source] = provider
-            provider.start()
         }
+        provider.onFailure = { [weak self, weak provider] message in
+            DispatchQueue.main.async {
+                guard let self, let provider, self.providers[endpoint] === provider else { return }
+                self.providerFailed(endpoint.source, message: message, host: endpoint.host)
+            }
+        }
+        providers[endpoint] = provider
+        provider.start()
+    }
+
+    func configureSSH(_ text: String) {
+        guard sshEnabled, !stopped else { return }
+        do {
+            let hosts = try RemoteSessions.hosts(text)
+            let removed = Set(sshHosts).subtracting(hosts)
+            sshHosts = hosts
+            defaults.set(hosts.joined(separator: "\n"), forKey: "Workspace.sshHosts")
+            for endpoint in Array(providers.keys) where removed.contains(endpoint.host) {
+                providers.removeValue(forKey: endpoint)?.stop()
+            }
+            for endpoint in Array(remoteHealth.keys) where removed.contains(endpoint.host) {
+                remoteHealth.removeValue(forKey: endpoint); remoteErrors.removeValue(forKey: endpoint)
+                providerSessions.removeValue(forKey: endpoint); providerAgents.removeValue(forKey: endpoint)
+            }
+            subagents = providerAgents.values.flatMap { $0 }
+            let previous = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
+            applyRefresh(providerSessions.values.flatMap { $0 }.sorted(by: CodexSession.orderedBefore), previous: previous, full: false)
+            for host in hosts {
+                for source in [SessionSource.codex, .claude] {
+                    let endpoint = SessionEndpoint(source: source, host: host)
+                    guard providers[endpoint] == nil else { continue }
+                    remoteHealth[endpoint] = .loading
+                    if startsProviders { startProvider(endpoint) }
+                }
+            }
+        } catch { errorMessage = error.localizedDescription }
     }
 
     static func migratePreferences(_ defaults: UserDefaults, legacy supplied: [String: Any]? = nil) {
@@ -104,12 +149,19 @@ final class SessionStore: ObservableObject {
     }
 
     var providerSummary: String? {
-        let messages = [SessionSource.codex, .claude].compactMap { source -> String? in
+        var messages = [SessionSource.codex, .claude].compactMap { source -> String? in
             switch providerHealth[source] {
             case .error: return "\(source.rawValue) is stale: \(providerErrors[source] ?? "refresh failed")"
             case .unavailable: return "\(source.rawValue) is unavailable"
             case .loading: return "Loading \(source.rawValue) history…"
             default: return nil
+            }
+        }
+        for endpoint in remoteHealth.keys.sorted(by: { $0.label < $1.label }) {
+            if remoteHealth[endpoint] == .error {
+                messages.append("\(endpoint.label) disconnected: \(remoteErrors[endpoint] ?? "connection failed")")
+            } else if remoteHealth[endpoint] == .unavailable, providerSessions[endpoint]?.isEmpty == false {
+                messages.append("\(endpoint.label) history is unavailable; showing stale sessions")
             }
         }
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
@@ -139,7 +191,7 @@ final class SessionStore: ObservableObject {
                 session.model,
                 session.id,
                 session.lastRequest,
-                session.source.rawValue,
+                session.sourceLabel,
             ].joined(separator: "\n").lowercased().contains(needle)
         }
     }
@@ -173,7 +225,7 @@ final class SessionStore: ObservableObject {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             freshRequests[id] = (Set([.codex, .claude]), { continuation.resume(with: $0) })
             if let requestRefresh { requestRefresh(id) }
-            else { providers.values.forEach { $0.refresh(requestID: id) } }
+            else { providers.filter { $0.key.host.isEmpty }.values.forEach { $0.refresh(requestID: id) } }
             DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
                 self?.freshRequests.removeValue(forKey: id)?.complete(.failure(ProviderError("Timed out verifying live agents. No protected action was performed.")))
             }
@@ -184,16 +236,31 @@ final class SessionStore: ObservableObject {
         if gitStatuses != statuses { gitStatuses = statuses }
     }
 
-    func providerFailed(_ source: SessionSource, message: String) {
-        applyProvider(ProviderSnapshot(source: source, health: .error, error: message, sessions: [], subagents: []), baseline: true)
+    func providerFailed(_ source: SessionSource, message: String, host: String = "") {
+        applyProvider(ProviderSnapshot(source: source, health: .error, error: message, sessions: [], subagents: [], host: host), baseline: true)
+    }
+
+    // Until its host answers, a saved remote conversation may still exist.
+    // A connection failure is retried and cannot establish that history is gone.
+    func isSessionDiscoveryPending(_ id: String) -> Bool {
+        remoteHealth.contains { endpoint, health in
+            id.hasPrefix("ssh:\(endpoint.host):\(endpoint.source.executable):")
+                && (health == .loading || health == .error)
+        }
     }
 
     func applyProvider(_ snapshot: ProviderSnapshot, baseline: Bool) {
         guard !stopped else { return }
         let previous = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        let wasHealthy = providerHealth[snapshot.source] == .ok
-        providerHealth[snapshot.source] = snapshot.health
-        providerErrors[snapshot.source] = snapshot.error
+        let endpoint = snapshot.endpoint
+        let wasHealthy = (snapshot.host.isEmpty ? providerHealth[snapshot.source] : remoteHealth[endpoint]) == .ok
+        if snapshot.host.isEmpty {
+            providerHealth[snapshot.source] = snapshot.health
+            providerErrors[snapshot.source] = snapshot.error
+        } else {
+            remoteHealth[endpoint] = snapshot.health
+            remoteErrors[endpoint] = snapshot.error
+        }
         if snapshot.health == .ok {
             if !baseline && wasHealthy {
                 for session in snapshot.sessions {
@@ -202,12 +269,12 @@ final class SessionStore: ObservableObject {
                     }
                 }
             }
-            providerSessions[snapshot.source] = snapshot.sessions
-            providerAgents[snapshot.source] = snapshot.subagents
+            providerSessions[endpoint] = snapshot.sessions
+            providerAgents[endpoint] = snapshot.subagents
         } else {
             // A failed or unavailable provider cannot turn its last good busy rows into completions.
-            providerSessions[snapshot.source] = providerSessions[snapshot.source]?.map { var row = $0; row.stale = true; return row }
-            providerAgents[snapshot.source] = providerAgents[snapshot.source]?.map { var row = $0; row.stale = true; return row }
+            providerSessions[endpoint] = providerSessions[endpoint]?.map { var row = $0; row.stale = true; return row }
+            providerAgents[endpoint] = providerAgents[endpoint]?.map { var row = $0; row.stale = true; return row }
         }
         subagents = providerAgents.values.flatMap { $0 }
         let discovered = providerSessions.values.flatMap { $0 }.sorted(by: CodexSession.orderedBefore)
@@ -215,7 +282,7 @@ final class SessionStore: ObservableObject {
         isLoadingSessions = providerHealth.count < 2 || providerHealth.values.contains(.loading)
         refreshGit()
         for id in Array(freshRequests.keys) {
-            guard var request = freshRequests[id], request.remaining.contains(snapshot.source) else { continue }
+            guard snapshot.host.isEmpty, var request = freshRequests[id], request.remaining.contains(snapshot.source) else { continue }
             if snapshot.health == .error || snapshot.health == .unavailable {
                 freshRequests.removeValue(forKey: id)
                 request.complete(.failure(ProviderError("Cannot verify live agents: \(snapshot.source.rawValue) is \(snapshot.health.rawValue). Refresh and try again.")))
@@ -227,7 +294,7 @@ final class SessionStore: ObservableObject {
                 } else { freshRequests[id] = request }
             }
         }
-        if let request = archiveRequest, snapshot.source == .codex,
+        if let request = archiveRequest, snapshot.host.isEmpty, snapshot.source == .codex,
            snapshot.health == .error || snapshot.refreshIDs.contains(request.requestID) {
             archiveRequest = nil
             guard snapshot.health == .ok, !baseline, let fresh = snapshot.sessions.first(where: { $0.id == request.id }),
@@ -260,7 +327,7 @@ final class SessionStore: ObservableObject {
         let delay = max(0.2, 4 - Date().timeIntervalSince(lastGitRefresh))
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, !self.stopped else { return }
-            let directories = self.liveSessions.map(\.cwd)
+            let directories = self.liveSessions.filter { !$0.isRemote }.map(\.cwd)
             DispatchQueue.global(qos: .utility).async {
                 let git = GitStatus.snapshots(directories: directories)
                 DispatchQueue.main.async {
@@ -308,7 +375,8 @@ final class SessionStore: ObservableObject {
                 || (previous[selected.id]?.fileModifiedNS != selected.fileModifiedNS && previous[selected.id]?.stats.fileBytes == selected.stats.fileBytes)
             if full || pathChanged || replaced || selection != oldSelection {
                 loadTranscript(reset: true)
-            } else if previous[selected.id]?.updatedAt != selected.updatedAt || previous[selected.id]?.stats.fileBytes != selected.stats.fileBytes {
+            } else if previous[selected.id]?.updatedAt != selected.updatedAt || previous[selected.id]?.stats.fileBytes != selected.stats.fileBytes
+                || (previous[selected.id]?.stale == true && !selected.stale) {
                 loadTranscript(reset: false)
             }
         } else {
@@ -318,6 +386,7 @@ final class SessionStore: ObservableObject {
     }
 
     func choose(_ id: String?) {
+        transcriptError = nil
         pendingSelection = nil
         selection = id
         if let id {
@@ -372,6 +441,10 @@ final class SessionStore: ObservableObject {
     }
 
     func jump(_ session: CodexSession) {
+        if session.isRemote {
+            do { try openSSH(session) } catch { errorMessage = error.localizedDescription }
+            return
+        }
         let root = sessions.first { $0.id == session.rootID }
         if session.clientType == "APP" || (session.isSubagent && root?.clientType == "APP") {
             openSession(session.isSubagent ? session.rootID : session.id)
@@ -398,7 +471,7 @@ final class SessionStore: ObservableObject {
         guard let session = selected, session.canArchive, providerHealth[.codex] == .ok else { return }
         let requestID = UUID().uuidString
         archiveRequest = (session.id, session.archived, session.path, requestID)
-        providers[.codex]?.refresh(requestID: requestID)
+        providers[SessionEndpoint(source: .codex)]?.refresh(requestID: requestID)
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             guard let self, self.archiveRequest?.requestID == requestID else { return }
             self.archiveRequest = nil
@@ -430,12 +503,16 @@ final class SessionStore: ObservableObject {
     }
 
     func openFolder() {
-        guard let selected else { return }
+        guard let selected, !selected.isRemote else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: selected.cwd))
     }
 
     func openTerminal() {
         guard let selected else { return }
+        if selected.isRemote {
+            do { try openSSH(selected) } catch { errorMessage = error.localizedDescription }
+            return
+        }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         try? Shell.launch("/usr/bin/open", GhosttyLaunch.arguments(directory: selected.cwd, command: "exec \(quote(shell)) -i", shell: shell))
     }
@@ -477,29 +554,34 @@ final class SessionStore: ObservableObject {
         let path = session.path
         let offset = offsets[sessionID] ?? 0
         let previousActivity = transcriptActivity
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        let read: (Result<RemoteTranscriptUpdate, Error>) -> Void = { [weak self] result in
+            DispatchQueue.global(qos: .userInitiated).async {
+            let update = try? result.get()
             var builder = previousActivity
-            let chunk = session.source == .claude
-                ? ClaudeData.readTranscript(path, from: offset, activity: &builder)
-                : CodexData.readTranscript(path, from: offset, activity: &builder)
+            let start = update?.reset == true ? 0 : offset
+            let chunk = update == nil ? TranscriptChunk(messages: [], nextOffset: offset) : (session.source == .claude
+                ? ClaudeData.readTranscript(path, from: start, activity: &builder)
+                : CodexData.readTranscript(path, from: start, activity: &builder))
             let updatedActivity = builder
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.isLoadingTranscript = false
-                if self.selection == sessionID && self.transcriptGeneration == generation {
-                    if chunk.didReset || updatedActivity.revision != self.transcriptActivity.revision {
+                if self.selected?.id == sessionID && self.transcriptGeneration == generation {
+                    if case .failure(let error) = result { self.transcriptError = error.localizedDescription }
+                    else { self.transcriptError = nil }
+                    if chunk.didReset || update?.reset == true || updatedActivity.revision != self.transcriptActivity.revision {
                         self.activity = updatedActivity.events
                         self.activityRevision += 1
                     }
                     self.transcriptActivity = updatedActivity
-                    if chunk.didReset {
+                    if chunk.didReset || update?.reset == true {
                         self.messages = chunk.messages
                     } else if !chunk.messages.isEmpty {
                         self.messages.append(contentsOf: chunk.messages)
                     }
                     self.offsets[sessionID] = chunk.nextOffset
                     self.unread[sessionID] = 0
-                    if chunk.hasMore { self.transcriptReloadPending = true }
+                    if chunk.hasMore || update?.hasMore == true { self.transcriptReloadPending = true }
                 }
                 guard self.transcriptReloadPending else { return }
                 let resetPending = self.pendingTranscriptReset
@@ -507,7 +589,12 @@ final class SessionStore: ObservableObject {
                 self.pendingTranscriptReset = false
                 self.loadTranscript(reset: resetPending)
             }
+            }
         }
+        if session.isRemote, let provider = providers[session.endpoint] {
+            provider.syncTranscript(session, complete: read)
+        } else if session.isRemote { read(.failure(ProviderError("\(session.sshHost) is disconnected"))) }
+        else { read(.success(RemoteTranscriptUpdate())) }
     }
 
     private func clearActivity() {
@@ -529,7 +616,14 @@ final class SessionStore: ObservableObject {
         else { NotificationManager.shared.send(title: title, body: session.title, sessionID: session.id) }
     }
 
+    private func openSSH(_ session: CodexSession, resume: Bool = false) throws {
+        let command = try RemoteSessions.terminalCommand(session, resume: resume)
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        try Shell.launch("/usr/bin/open", GhosttyLaunch.arguments(directory: NSHomeDirectory(), command: command, shell: shell))
+    }
+
     private func launchResume(_ session: CodexSession, target: ResumeTarget) throws {
+        if session.isRemote { try openSSH(session, resume: true); return }
         guard UUID(uuidString: session.nativeID) != nil else {
             throw NSError(domain: "CodexSessions", code: 2, userInfo: [NSLocalizedDescriptionKey: "Session ID is not a valid UUID."])
         }

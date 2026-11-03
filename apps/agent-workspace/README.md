@@ -12,32 +12,70 @@ agent-workspace --status
 
 ## Navigation
 
-The far-left rail always shows stacked **Sessions** and **Repositories** buttons.
-Click either button to switch the sidebar's contents or reopen it when collapsed.
-The sidebar button beside **Back** in the main header slides the sidebar closed or
-reopens it while the rail stays in place. The open page, scroll positions,
-and expanded folders stay in place. Drag the sidebar divider to resize it; its width
-and collapsed state are remembered. ⌘K also reopens the sidebar and focuses search.
-The slide animation respects the macOS Reduce Motion setting.
+The sidebar has a **Sessions / Repositories** switch beneath compact navigation
+controls next to the native window buttons. The sidebar toggle hides the whole
+sidebar; the controls move into the main header so it can always be reopened.
+**Back** (⌘[) and **Forward** (⌘]) restore the page, selection, and filters. Opening
+a new page after going back starts a new navigation path. Search (⌘K) opens and
+focuses the sidebar search field. Drag the divider to resize the sidebar; its width
+and collapsed state are remembered. Switching modes and collapsing preserve the
+open page, scroll positions, and expanded folders. The slide animation respects
+the macOS Reduce Motion setting.
 
-The rail buttons stay visible while the sidebar's list scrolls. Active sessions
-appear directly at the top of Sessions whenever
-available, followed by the 20 latest inactive **Recent** sessions,
-**All Sessions**, and **Mission Control**. Repositories shows **All Repositories**
+The **Appearance** button at the bottom of the sidebar opens a theme and font
+picker; it moves to the main header when collapsed. Choose **Tokyo Night**, **VS Code**,
+**GitHub Dark**, **Dracula**, **Nord**, **Catppuccin Mocha**, **Gruvbox Dark**,
+**Obsidian**, **One Dark**, or **Rosé Pine**. Colors apply immediately without
+leaving the current page, and the choice is remembered across launches. **System**
+(the default) follows macOS appearance and accent preferences, with softer gray text in dark mode.
+Named themes use muted, hue-matched text with 4.5–9:1 contrast on conversation and code surfaces.
+Each named theme keeps the sidebar's hue in the conversation at 10% higher brightness, with no
+neutral gray overlay. Header controls live in the native title bar so mouse clicks
+reach the buttons, and the transcript stays below them. Inline code
+uses warm text on a contrasting background, keeping commands and paths distinct
+from prose without changing selection, copying, or wrapping.
+Fenced code uses theme-specific syntax colors for Swift, Python, JavaScript/TypeScript,
+C/C++/C#, Java, Go, Rust, shell scripts, JSON, YAML, TOML, SQL, CSS, HTML/XML, and Markdown.
+Keywords, strings, numbers, types, functions, and comments stay readable on each theme's
+code background. Diffs retain green additions and red removals. Highlighting is lexical,
+with cached tokens and rendered colors; unknown languages, blocks over 100 KB, and blocks
+requiring over 5,000 colored runs remain plain text. Copy always keeps the original source.
+The **Font** section offers **System**, **Rounded**, **Serif**, **Monospaced**,
+**ChatGPT** (OpenAI Sans), **Claude** (Anthropic Serif), **Claude UI** (Anthropic Sans),
+and **GitHub** (Mona Sans), with a live preview. The selection applies across the workspace, menu bar popover,
+and settings, while code and diffs stay monospaced. Font and theme choices are saved
+independently. Saved GitHub Light and Solarized Light choices migrate to GitHub Dark
+and Obsidian respectively.
+Mona Sans is bundled with its open-font license. OpenAI and Anthropic fonts load
+from their installed desktop apps (or fonts already available to macOS); the picker
+reports a System fallback if those fonts are unavailable. OpenAI font assets are
+cached under `~/Library/Caches/Agent Workspace/Fonts`. Fonts are registered only
+inside Agent Workspace, with no system-wide installation.
+
+Navigation controls and the mode switch stay visible while the sidebar's list scrolls.
+Sessions shows **All Sessions**, **Mission Control**, live sessions, and the 20 latest
+inactive **Recent** sessions. Repositories shows **All Repositories**
 and expandable repositories and worktrees. Clicking a repository row opens its page
 and toggles its worktrees open or closed, just like the arrow. The current selection is
-highlighted with the same accent tint when focus moves elsewhere. Recent and subagent
+highlighted with a soft neutral fill when focus moves elsewhere. Recent and subagent
 groups also toggle when clicking their label or empty row space, as well as their
 arrow. Switching keeps each list's scroll and
 expansion state and leaves the open page in place; the selected button is remembered
 across launches. Search matches sessions, repository names, branches, and paths
-across the app. Full history has archive and pin filters. Live agents retain
-expandable subagents and terminal jumps.
+across the app. Full history has archive and pin filters, expandable subagents,
+and terminal jumps.
 
-Sidebar sessions use the menu bar's detailed rows: status and elapsed time, last
-request, repository and branch, Git changes, model and reasoning effort, tokens,
-and context usage. Pinned sessions show a pin; clicking opens the
-conversation, and the context menu retains session actions.
+Sidebar sessions show only the title and a compact status badge with time in the current
+state (such as Busy 3m or Idle 12m). Durations use seconds, minutes, hours, or days.
+Idle means the session is open with no active work;
+Waiting is reserved for an explicit input or permission request reported by the provider.
+Recent sessions show just the title; stale sessions
+show Stale without an elapsed time so disconnected agents do not appear busy. Hover reveals the full title.
+The sidebar starts at 330 points wide and remembers resizing; its context menu
+retains session actions. Click the conversation title in the main header and choose
+**Session details** to reveal full metadata, subagents, and resume options.
+Resume, Inspector, worktree, Changes, and Refresh are also available
+as compact header buttons. Detailed session rows remain on overview and history pages.
 Claude desktop and Claude Code sessions both show expandable subagents, including
 finished children marked Closed. Unfinished children stay visible as Idle after
 five minutes without transcript activity. Only live children count toward running
@@ -51,13 +89,20 @@ refreshes repositories, worktrees, and pull requests. Session, repository, and w
 details all use this shared button (⌘R). While loading, a spinner replaces its arrows
 in the same space and the button is disabled.
 
-The first window opens on All Repositories. Later openings restore the last page;
+The window remembers its size and position across restarts. The first window opens
+on All Repositories. Later openings restore the last page;
 missing targets fall back to All Repositories. Repository pages retain Worktree
 Manager's selection, batch actions, branch cleanup, and GitHub PR presentation.
+Pending Codex desktop follow-ups and Claude messages appear under **Queued messages**
+in the conversation pane and disappear when delivered or removed. Claude messages
+delivered during a running turn also appear in the conversation history.
+Delivery timestamps and IDs clear those messages from the queue even when Claude
+omits the enqueue text. Truly pending messages without recorded text show a
+preview-unavailable placeholder until they are delivered or removed.
 A selected repository opens directly to its worktrees, branches, and pull requests.
 Use a worktree's **Overview** button or the sidebar to open its status, action bar,
 live sessions, recent conversations, and PRs. Conversations and **Changes** open
-in the main area. **Back** restores the preceding page, selection, filter, and
+in the main area. **Back** and **Forward** restore the page, selection, filter, and
 list/overview scroll position. A conversation links back to its worktree.
 Double-click a worktree in the sidebar to open a new Ghostty window in that directory.
 Sidebar worktrees show their name on the first line, then the branch and Git counts
@@ -76,6 +121,40 @@ None. Launch failures preserve the new checkout and offer Retry Launch. Creation
 failures never launch an agent.
 
 ## Monitoring and safety
+
+### Remote SSH sessions
+
+Open **Settings → Remote SSH sessions**, enter host aliases from your SSH config
+(or `user@hostname`), one per line, and choose **Apply hosts**. The list starts
+empty. Connections use your existing SSH keys and known hosts; first connect in
+Terminal with `ssh HOST` if a host needs authentication or its host key accepted.
+Monitoring never prompts for passwords or accepts unknown host keys.
+
+Each host needs Python 3.10 or newer on its non-interactive SSH PATH. The app sends
+its matching Codex and Claude session readers over SSH and runs them in memory;
+no setup checkout or helper installation is needed on the host. Readers use the
+remote user's `CODEX_HOME` / `CLAUDE_CONFIG_DIR` when set in the SSH environment,
+otherwise `~/.codex` / `~/.claude`. Only configured hosts are contacted.
+
+Remote conversations appear in Sessions with their host name and are searchable
+by host. Each provider keeps one SSH connection, retries failures with backoff,
+and retains disconnected rows marked **Stale**. Settings shows connection status
+for each provider; a host with no history for a provider is reported separately.
+On launch, a saved remote conversation waits for its host, including reconnects,
+before deciding whether that conversation is still available. Other hosts do not
+delay local navigation.
+Opening a conversation downloads its transcript in bounded incremental chunks
+to a private temporary cache, removed when monitoring stops. Unopened transcripts
+are not downloaded.
+
+**Open SSH Terminal** opens Ghostty on that host and attaches to the recorded
+tmux pane or Zellij session when available; otherwise it opens a shell in the
+remote working directory. On Linux hosts, as on macOS, Codex sessions held by its
+background app-server are credited to the terminal showing them when that match is
+unambiguous; otherwise they open a shell, never the pane that launched the daemon. **Resume over SSH** is available for inactive,
+connected sessions. Remote sessions cannot be archived from this app, opened as
+local folders, or associated with local worktrees. Their Git metadata comes from
+the session reader; remote repository/worktree management is not included.
 
 The menu bar popover jumps to live terminals and opens conversations. Closing the
 window leaves monitoring running; Quit or `--stop` ends the app and its owned
@@ -145,7 +224,12 @@ Shortcuts retain Agent Control Center's bindings: ⌘1 dashboard, ⌘K global se
 `tests/dotfiles/test_agent_workspace.sh` checks association, history, navigation,
 provider freshness, destructive-action revalidation, creation and launch failure,
 and an isolated real build/install/rollback with stubbed system lifecycle commands.
-Set `AGENT_WORKSPACE_TEST_ARTIFACTS` to a temporary directory to render light and
-dark fixture windows there. Run the Personal suite with `./setup.sh --test --personal`.
+Set `AGENT_WORKSPACE_TEST_ARTIFACTS` to a temporary directory to exercise the mounted
+controls and save offscreen light, dark, theme, and font snapshots there, including
+on failure. Test windows stay invisible and never take focus. Run the Personal
+suite with `./setup.sh --test --personal`.
+Offscreen snapshots cover layout and colors; macOS may omit virtualized transcript
+rows and native titlebar content. Transcript text and controls are checked through
+accessibility.
 `tests/dotfiles/test_agent_window_lifecycle.sh` covers quiet login, early opens,
 Dock visibility, hiding, minimizing, and reopening native windows.

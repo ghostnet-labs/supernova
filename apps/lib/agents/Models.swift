@@ -133,11 +133,17 @@ struct CodexSession: Identifiable, Hashable {
     var fileIdentity = ""
     var fileModifiedNS = ""
     var stale = false
+    var sshHost = ""
+    var remoteSessionID = ""
+    var remoteTranscriptPath = ""
+    var queuedMessages: [QueuedMessage] = []
 
     /// The last request as rows show it; search and Copy Last Request keep the whole text.
     var requestLine: String { lastRequest.oneLine(limit: 500) }
-    var nativeID: String { source == .claude ? String(id.dropFirst("claude:".count)) : id }
-    var canArchive: Bool { source == .codex && !isLive && !stale }
+    var isRemote: Bool { !sshHost.isEmpty }
+    var sourceLabel: String { isRemote ? "\(source.rawValue) · \(sshHost)" : source.rawValue }
+    var nativeID: String { isRemote ? remoteSessionID : (source == .claude ? String(id.dropFirst("claude:".count)) : id) }
+    var canArchive: Bool { !isRemote && source == .codex && !isLive && !stale }
     var resumeArguments: [String] { [source.resumeFlag, nativeID] }
     var isLive: Bool { live != nil }
     var projectName: String { project.name }
@@ -161,6 +167,13 @@ struct CodexSession: Identifiable, Hashable {
         if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
         return lhs.id < rhs.id
     }
+}
+
+struct QueuedMessage: Identifiable, Hashable {
+    let id: String
+    let text: String
+    var timestamp: Date?
+    var isPaused = false
 }
 
 struct TranscriptMessage: Identifiable, Hashable {

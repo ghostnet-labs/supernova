@@ -61,7 +61,7 @@ struct WorkspaceCreateSheet: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New Worktree").font(.title2.bold())
+            Text("New Worktree").font(AppFont.title2.bold())
             Text((request.repositoryRoot as NSString).abbreviatingWithTildeInPath).foregroundStyle(.secondary)
             Group {
                 TextField(createBranch ? "New branch name" : "Existing branch", text: $branch)

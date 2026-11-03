@@ -13,7 +13,16 @@ if [[ "$(uname -s)" != Darwin ]] || ! command -v swiftc >/dev/null 2>&1; then
   exit 0
 fi
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/agent-workspace-tests.XXXXXX")"
-trap 'rm -rf -- "$scratch"' EXIT
+cleanup() {
+  if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then
+    mkdir -p "$AGENT_WORKSPACE_TEST_ARTIFACTS"
+    for artifact in "$scratch/"*.png; do
+      [[ ! -f "$artifact" ]] || cp "$artifact" "$AGENT_WORKSPACE_TEST_ARTIFACTS/"
+    done
+  fi
+  rm -rf -- "$scratch"
+}
+trap cleanup EXIT
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$scratch/module-cache}"
 mkdir -p "$scratch/dev/repo/nested" "$scratch/external" "$scratch/bin" "$scratch/home" "$scratch/build"
 for repo in "$scratch/dev/repo" "$scratch/external"; do
@@ -25,17 +34,14 @@ done
 git -C "$scratch/dev/repo" worktree add -b feature "$scratch/dev/linked"
 ln -s "$scratch/dev/repo" "$scratch/alias"
 swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
-  "$root/apps/agent-workspace/Workspace.swift" "$root/apps/agent-workspace/WorkspaceViews.swift" "$root/apps/agent-workspace/CreateWorktree.swift" \
+  "$root/apps/agent-workspace/Workspace.swift" "$root/apps/agent-workspace/WorkspaceViews.swift" "$root/apps/agent-workspace/CreateWorktree.swift" "$root/apps/agent-workspace/WorkspaceThemes.swift" \
+  "$root/apps/agent-workspace/WorkspaceFonts.swift" \
   "$root/apps/lib/GhosttyLaunch.swift" "$root/apps/lib/agents/"*.swift "$root/apps/lib/worktrees/"*.swift \
   "$root/apps/lib/"{BranchRef,GitStatus,SessionPresentation,TextLine}.swift "$root/apps/lib/octicons/Octicons.swift" \
   "$root/tests/dotfiles/fixtures/agent_workspace.swift" -o "$scratch/check-agent-workspace"
 args=()
 if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then args+=(--render); fi
 "$scratch/check-agent-workspace" "$scratch" ${args[@]+"${args[@]}"}
-if [[ -n "${AGENT_WORKSPACE_TEST_ARTIFACTS:-}" ]]; then
-  mkdir -p "$AGENT_WORKSPACE_TEST_ARTIFACTS"
-  cp "$scratch/"*.png "$AGENT_WORKSPACE_TEST_ARTIFACTS/"
-fi
 
 # Exercise the actual installer in isolation. Only launchctl, application opening, and
 # process discovery are stubbed; Swift compilation, manifests and signatures are real.
@@ -69,6 +75,8 @@ security list-keychains -d user > "$scratch/keychains-before"
 security default-keychain -d user > "$scratch/default-keychain-before"
 run --install > "$scratch/install.log" 2>&1 || { cat "$scratch/install.log"; fail_test 'isolated workspace install'; }
 bundle="$scratch/Applications/Agent Workspace.app"
+cmp "$root/apps/agent-workspace/fonts/MonaSansVF.ttf" "$bundle/Contents/Resources/Fonts/MonaSansVF.ttf" || fail_test 'bundled GitHub font'
+[[ -f "$bundle/Contents/Resources/Fonts/OFL.txt" ]] || fail_test 'bundled font license'
 codesign --verify --deep --strict "$bundle"
 requirement="$(codesign -d -r- "$bundle" 2>/dev/null)"
 assert_contains "$requirement" 'certificate leaf'

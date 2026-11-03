@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import hashlib
 import os
 import select
@@ -12,6 +13,49 @@ import tempfile
 import time
 from pathlib import Path
 from queue import SimpleQueue
+
+
+class CodexQueue:
+    """Read desktop follow-ups once per state-file change, independently of rollouts."""
+
+    def __init__(self, home):
+        self.path = home / ".codex-global-state.json"
+        self.stamp = None
+        self.messages = {}
+
+    def read(self):
+        try:
+            stat = self.path.stat()
+            stamp = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            if stamp == self.stamp:
+                return self.messages
+            with self.path.open() as stream:
+                state = json.loads(stream.read(16 * 1024 * 1024))
+            queues = state.get("queued-follow-ups", {})
+            if not isinstance(queues, dict):
+                return self.messages
+            messages = {}
+            for session, rows in queues.items():
+                if not isinstance(rows, list):
+                    continue
+                seen = set()
+                for row in rows:
+                    if not isinstance(row, dict) or not isinstance(row.get("id"), str) or row["id"] in seen:
+                        continue
+                    text = row.get("text")
+                    if not isinstance(text, str):
+                        continue
+                    seen.add(row["id"])
+                    messages.setdefault(session, []).append({
+                        "id": row["id"], "text": text if text.strip() else "[Queued attachments]",
+                        "created_at": row.get("createdAt"), "is_paused": row.get("pausedReason") is not None,
+                    })
+            self.stamp, self.messages = stamp, messages
+        except FileNotFoundError:
+            self.stamp, self.messages = None, {}
+        except (OSError, ValueError, AttributeError):
+            pass  # Keep the last complete snapshot during a partial write.
+        return self.messages
 
 
 class JsonlCache:
@@ -147,6 +191,38 @@ class JsonlCache:
         }
 
 
+def read_transcript(command, sessions):
+    """Read a bounded chunk from a discovered session, never an arbitrary path."""
+    reply = {"type": "transcript", "request_id": command.get("request_id")}
+    try:
+        row = sessions.get(command.get("session_id"))
+        if row is None:
+            raise ValueError("Session is no longer available; refresh its host.")
+        offset = command.get("offset", 0)
+        if type(offset) is not int or offset < 0:
+            raise ValueError("Invalid transcript offset")
+        with open(row["transcript_path"], "rb") as stream:
+            info = os.fstat(stream.fileno())
+            identity = f"{info.st_dev}:{info.st_ino}"
+            reset = command.get("file_identity") != identity or offset > info.st_size
+            if command.get("file_size") == info.st_size and command.get("file_modified_ns") != str(info.st_mtime_ns):
+                reset = True
+            if offset and not reset:
+                stream.seek(max(0, offset - 64))
+                anchor = base64.b64encode(stream.read(min(64, offset))).decode()
+                reset = anchor != command.get("anchor")
+            if reset:
+                offset = 0
+            stream.seek(offset)
+            data = stream.read(4 * 1024 * 1024)
+        reply.update(offset=offset, data=base64.b64encode(data).decode(),
+                     file_identity=identity, file_size=info.st_size, file_modified_ns=str(info.st_mtime_ns),
+                     has_more=offset + len(data) < info.st_size)
+    except (OSError, ValueError, TypeError) as error:
+        reply["error"] = str(error)
+    return reply
+
+
 def run_stream(provider, interval, snapshot):
     """NDJSON on stdout; coalesce refresh requests, exit when the owner closes stdin."""
     # The application can terminate this group, including a ps/lsof child in flight.
@@ -163,6 +239,7 @@ def run_stream(provider, interval, snapshot):
     heartbeat = time.monotonic() + 1
     requested = set()
     submitted = set()
+    sessions = {}
 
     def collect():
         try:
@@ -200,6 +277,14 @@ def run_stream(provider, interval, snapshot):
                 threading.Thread(target=collect, daemon=True).start()
             if not results.empty():
                 state = results.get()
+                if state.get("health") == "ok":
+                    sessions = {
+                        row["session_id"]: row
+                        for key in ("sessions", "active_subagents", "subagents")
+                        for row in state.get(key, [])
+                    }
+                elif state.get("health") in ("error", "unavailable"):
+                    sessions = {}
                 emit(state, submitted)
                 initialized = True
                 active = False
@@ -219,6 +304,8 @@ def run_stream(provider, interval, snapshot):
                 line, pending = pending.split(b"\n", 1)
                 try:
                     command = json.loads(line)
+                    if isinstance(command, dict) and command.get("command") == "read_transcript":
+                        emit(read_transcript(command, sessions))
                     if (
                         isinstance(command, dict)
                         and command.get("command") == "refresh"
@@ -268,6 +355,8 @@ def claude_summary():
         "usage": {},
         "seen": set(),
         "turn_open": False,
+        "queued": [],
+        "queue_consumed": {},
         "records": 0,
         "user_turns": 0,
         "assistant_messages": 0,
@@ -281,6 +370,53 @@ def claude_summary():
     }
 
 
+def consume_claude_queue(summary, record, offset):
+    attachment = record.get("attachment")
+    delivered = (record.get("type") == "attachment" and isinstance(attachment, dict)
+                 and attachment.get("type") == "queued_command")
+    if record.get("type") != "queue-operation" and not delivered:
+        return False
+    queued = summary["queued"]
+    operation = "delivered" if delivered else record.get("operation")
+    content = attachment.get("prompt") if delivered else record.get("content")
+    if operation == "enqueue":
+        text = content if isinstance(content, str) else "[Queued message preview unavailable]"
+        if text.lstrip().startswith(("<task-notification>", "<teammate-message>")):
+            text = ""
+        queued.append({"id": str(offset), "content": content, "text": text,
+                       "created_at": record.get("timestamp")})
+    elif operation == "dequeue" and queued:
+        queued.pop(0)
+    elif operation in {"remove", "delivered"}:
+        identifiers = (attachment.get("delivery_id"), attachment.get("source_uuid")) if delivered else (
+            record.get("deliveryId"), record.get("commandUuid"))
+        keys = [prefix + value for prefix, value in zip(("delivery:", "command:"), identifiers)
+                if isinstance(value, str) and value]
+        consumed = summary["queue_consumed"]
+        acknowledged = any(key in consumed for key in keys)
+        consumed.update(dict.fromkeys(keys, True))
+        # An attachment and its remove record acknowledge one delivery in either order.
+        # Keep these IDs across cache restores, just like message UUID deduplication.
+        if acknowledged:
+            return True
+        if delivered and isinstance(record.get("uuid"), str):
+            uuid = record["uuid"]
+            if uuid in summary["seen"]:
+                return True
+            summary["seen"].add(uuid)
+        timestamp = attachment.get("timestamp") if delivered else None
+        index = next((i for i, item in enumerate(queued) if timestamp and item["created_at"] == timestamp), None)
+        if index is None and isinstance(content, str):
+            index = next((i for i, item in enumerate(queued) if item["content"] == content), None)
+        # Claude can omit enqueue content but include it when cancelling or delivering.
+        # If no recorded identity matches, consume one unknown entry, never a different known prompt.
+        if index is None:
+            index = next((i for i, item in enumerate(queued) if item["content"] is None), None)
+        if index is not None:
+            queued.pop(index)
+    return True
+
+
 def consume_claude(summary, record, offset, prompt):
     kind = record.get("type")
     if kind == "ai-title":
@@ -288,6 +424,8 @@ def consume_claude(summary, record, offset, prompt):
     if kind == "custom-title":
         summary["custom_title"] = record.get("customTitle") or summary["custom_title"]
     if record.get("isSidechain"):
+        return
+    if consume_claude_queue(summary, record, offset):
         return
     if kind == "system" and record.get("subtype") == "compact_boundary":
         summary["context"] = None

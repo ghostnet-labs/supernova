@@ -992,18 +992,18 @@ struct WorktreeRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 // Name, badge, branch, and sync counts share one line; the branch shortens first when space runs out.
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(record.name).font(.headline).lineLimit(1).truncationMode(.middle).layoutPriority(2)
+                    Text(record.name).font(AppFont.headline).lineLimit(1).truncationMode(.middle).layoutPriority(2)
                     if let badge = record.badge { Badge(text: badge.text, color: badge.color).help(record.badgeHelp) }
                     HStack(spacing: 8) {
                         BranchRef(name: record.branch)
                         if !record.changes.isEmpty { GitCounts(git: record.changes).fixedSize().layoutPriority(1) }
                     }
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(AppFont.caption).foregroundStyle(.secondary)
                 }
                 Text((record.path as NSString).abbreviatingWithTildeInPath).font(.caption2.monospaced()).foregroundStyle(.tertiary).lineLimit(1).help(record.path)
                 ForEach(record.sessions) { AgentRow(session: $0) }
                 ForEach(record.unlistedProcesses, id: \.pid) { process in
-                    Text("↳ \(process.kind.name) process \(process.pid), not in its session list").font(.caption).foregroundStyle(.secondary)
+                    Text("↳ \(process.kind.name) process \(process.pid), not in its session list").font(AppFont.caption).foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -1226,14 +1226,14 @@ struct DiffSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     switch source {
                     case .worktree(let record):
-                        Text("Diff · \(record.name)").font(.title2.bold())
+                        Text("Diff · \(record.name)").font(AppFont.title2.bold())
                         HStack(spacing: 6) {
                             if !document.branch.isEmpty { BranchRef(name: document.branch) }
                             Text((document.branch.isEmpty ? "" : "·  ") + summary).font(.caption.monospaced()).foregroundStyle(.secondary)
                         }
                     case .pull(let pull):
                         // The title and number, then the same line its row shows.
-                        Text("\(Text(pull.title)) \(Text("#\(pull.number)").foregroundStyle(.secondary))").font(.title2.bold())
+                        Text("\(Text(pull.title)) \(Text("#\(pull.number)").foregroundStyle(.secondary))").font(AppFont.title2.bold())
                             .lineLimit(1).truncationMode(.tail)
                         HStack(spacing: 6) {
                             PullSentence(pull: pull)
@@ -1289,14 +1289,14 @@ struct DiffSheet: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(file.name).lineLimit(1).truncationMode(.middle)
                     if !file.folder.isEmpty {
-                        Text(file.folder).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        Text(file.folder).font(AppFont.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
                     }
                 }
                 Spacer(minLength: 4)
                 if file.added > 0 { Text("+\(file.added)").foregroundStyle(.green) }
                 if file.removed > 0 { Text("−\(file.removed)").foregroundStyle(.red) }
             }
-            .font(.callout)
+            .font(AppFont.callout)
             .help(file.path)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(file.kind) \(file.path)")
@@ -1312,7 +1312,7 @@ struct Badge: View {
     let color: Color
 
     var body: some View {
-        Text(text).font(.caption2.bold()).padding(.horizontal, 5).padding(.vertical, 2)
+        Text(text).font(AppFont.caption2.bold()).padding(.horizontal, 5).padding(.vertical, 2)
             .background(color.opacity(0.15), in: Capsule()).fixedSize()
     }
 }
@@ -1341,7 +1341,7 @@ struct BranchRow: View {
                               : "Deleted on origin, but neither a merged pull request with this exact tip nor identical changes on "
                                 + "\(branch.baseName ?? "the default branch") show its work landed, so Remove leaves it alone."))
                     }
-                    if !branch.changes.isEmpty { GitCounts(git: branch.changes).font(.caption).fixedSize() }
+                    if !branch.changes.isEmpty { GitCounts(git: branch.changes).font(AppFont.caption).fixedSize() }
                 }
                 HStack(spacing: 4) {
                     if branch.upstream.isEmpty { Text("no upstream") } else { BranchRef(name: branch.upstream) }
@@ -1429,7 +1429,7 @@ struct PullStateLabel: View {
             Octicons.swiftUIImage(state.symbol).resizable().frame(width: 12, height: 12)
             Text(state.rawValue)
         }
-        .font(.caption.weight(.semibold))
+        .font(AppFont.caption.weight(.semibold))
         .foregroundStyle(.white)
         .padding(.horizontal, 6)
         .padding(.vertical, 1)
@@ -1488,7 +1488,7 @@ struct PullSentence: View {
             BranchRef(name: pull.headRef)
             Text(pull.when).foregroundStyle(.secondary).fixedSize()
         }
-        .font(.caption)
+        .font(AppFont.caption)
     }
 }
 
@@ -1507,7 +1507,7 @@ struct PullRequestRow: View {
                     Text(pull.title).lineLimit(1).truncationMode(.tail)
                     Text(pull.reference).foregroundStyle(.secondary).fixedSize()
                 }
-                .font(.callout)
+                .font(AppFont.callout)
                 HStack(spacing: 10) {
                     if let review = pull.review { Text(review.title).foregroundStyle(review.color) }
                     if let checks = pull.checks {
@@ -1517,7 +1517,7 @@ struct PullRequestRow: View {
                     Text("\(Text("+\(pull.additions)").foregroundStyle(.green)) \(Text("−\(pull.deletions)").foregroundStyle(.red))")
                         .monospacedDigit()
                 }
-                .font(.caption)
+                .font(AppFont.caption)
                 .fixedSize()
             }
             PullSentence(pull: pull)
@@ -1559,8 +1559,8 @@ struct RepositoryHeader: View {
         HStack(spacing: 8) {
             Image(systemName: expanded ? "chevron.down" : "chevron.right").foregroundStyle(.secondary).frame(width: 16)
             Octicons.swiftUIImage("repo").foregroundStyle(.secondary)
-            Text(group.name).font(.title3.bold()).foregroundStyle(.primary)
-            if pinned { Image(systemName: "pin.fill").font(.caption).foregroundStyle(.secondary).help("Pinned") }
+            Text(group.name).font(AppFont.title3.bold()).foregroundStyle(.primary)
+            if pinned { Image(systemName: "pin.fill").font(AppFont.caption).foregroundStyle(.secondary).help("Pinned") }
             Text(group.records.count == 1 ? "1 worktree" : "\(group.records.count) worktrees").foregroundStyle(.secondary)
             if group.liveAgentCount > 0 {
                 Badge(text: "\(group.liveAgentCount) AGENT\(group.liveAgentCount == 1 ? "" : "S") LIVE", color: .blue)
@@ -1589,7 +1589,7 @@ struct NewWorktreeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New Worktree").font(.title2.bold())
+            Text("New Worktree").font(AppFont.title2.bold())
             Text((request.repositoryRoot as NSString).abbreviatingWithTildeInPath).font(.caption.monospaced()).foregroundStyle(.secondary).help(request.repositoryRoot)
             TextField(createBranch ? "New branch name" : "Existing branch", text: $branch)
             TextField("Worktree path", text: $path)
@@ -1644,7 +1644,7 @@ struct ActionBar: View {
             .layoutPriority(1)
             Spacer(minLength: 0)
             Text(selected.isEmpty ? "Click to select · ⌘-click to add" : "\(selected.count) selected")
-                .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                .font(AppFont.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
         }
     }
 
@@ -1754,7 +1754,7 @@ struct RefreshControl: View {
                 ProgressView().controlSize(.small)
             } else {
                 Button(action: refresh) {
-                    Image(systemName: "arrow.clockwise").font(.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
+                    Image(systemName: "arrow.clockwise").font(AppFont.system(size: 15, weight: .medium)).foregroundStyle(.secondary)
                         .frame(width: 24, height: 24).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1822,7 +1822,7 @@ struct WorktreeManagerView: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading) {
-                    Text(overview?.name ?? title).font(.largeTitle.bold())
+                    Text(overview?.name ?? title).font(AppFont.largeTitle.bold())
                     if let overview {
                         WorktreeRow(record: overview, busy: model.busy.contains(overview.path), compact: false)
                     } else {
@@ -1831,7 +1831,7 @@ struct WorktreeManagerView: View {
                         .foregroundStyle(.secondary)
                     }
                     if let error = model.pullsError {
-                        Text("Pull requests: \(error)").font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        Text("Pull requests: \(error)").font(AppFont.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
                     }
                 }
                 Spacer()
@@ -2093,7 +2093,7 @@ struct WorktreeManagerView: View {
                 .padding(.vertical, 3)
                 .overlay(alignment: .topLeading) {
                     // Marks a sub-row of the worktree or branch above, beside the title.
-                    Text("↳").font(.callout).foregroundStyle(.tertiary).padding(.leading, pullIndent - 18).accessibilityHidden(true)
+                    Text("↳").font(AppFont.callout).foregroundStyle(.tertiary).padding(.leading, pullIndent - 18).accessibilityHidden(true)
                 }
                 .tag(row.id)
                 .listRowSeparator(.hidden)
@@ -2119,7 +2119,7 @@ struct WorktreeManagerView: View {
                     if let showDiff { showDiff(.worktree(record)) } else { diffFor = .worktree(record) }
                 }
                 if let sessionContent { sessionContent(record) }
-                Text("Pull requests").font(.title2.bold())
+                Text("Pull requests").font(AppFont.title2.bold())
                 let key = PullRequestLookup.key(repositoryRoot: record.repositoryRoot, branch: record.branch)
                 let pulls = model.pulls[key] ?? []
                 if pulls.isEmpty { Text(model.loadingPulls ? "Loading pull requests…" : "No pull requests").foregroundStyle(.secondary) }

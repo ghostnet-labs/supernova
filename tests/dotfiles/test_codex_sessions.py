@@ -64,6 +64,15 @@ class ClientTypeTests(unittest.TestCase):
         self.assertEqual(SCRIPT_GLOBALS["client_type"]("codex-tui"), "CLI")
 
 
+class SessionStatusTests(unittest.TestCase):
+    def test_open_sessions_without_active_work_are_idle(self) -> None:
+        for state in ("complete", "aborted"):
+            self.assertEqual(SCRIPT_GLOBALS["session_status"]("OPEN", state), "IDLE")
+            self.assertEqual(SCRIPT_GLOBALS["session_status"]("CLOSED", state), "CLOSED")
+        self.assertEqual(SCRIPT_GLOBALS["session_status"]("OPEN", "open"), "BUSY")
+        self.assertEqual(SCRIPT_GLOBALS["session_status"]("OPEN", "unknown"), "UNKNOWN")
+
+
 class HeaderDetailsTests(unittest.TestCase):
     header_details = staticmethod(SCRIPT_GLOBALS["header_details"])
 
