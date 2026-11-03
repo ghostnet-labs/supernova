@@ -8,6 +8,9 @@ updates:
     # Titles read "ci: bump ..." to match the PR title format.
     commit-message:
       prefix: ci
+    # Minor and patch bumps share one PR that dependabot-auto-merge.yml merges once
+    # CI passes; each major bump gets its own PR for review.
     groups:
       actions:
         patterns: ["*"]
+        update-types: [minor, patch]
