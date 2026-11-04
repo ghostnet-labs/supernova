@@ -230,11 +230,12 @@ final class ProviderClient: @unchecked Sendable {
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 var pending = Data()
                 var scanned = pending.startIndex
-                while true {
+                // availableData is autoreleased and this loop never returns to GCD, so drain each read.
+                while autoreleasepool(invoking: { () -> Bool in
                     let data = output.fileHandleForReading.availableData
-                    if data.isEmpty { break }
+                    if data.isEmpty { return false }
                     pending.append(data)
-                    if pending.count > 128 * 1024 * 1024 { child.terminate(); break }
+                    if pending.count > 128 * 1024 * 1024 { child.terminate(); return false }
                     while let newline = pending[scanned...].firstIndex(of: 10) {
                         let line = Data(pending[..<newline])
                         pending.removeSubrange(...newline)
@@ -242,7 +243,8 @@ final class ProviderClient: @unchecked Sendable {
                         self?.queue.async { [weak self] in self?.receive(line, token: token) }
                     }
                     scanned = pending.endIndex
-                }
+                    return true
+                }) {}
                 child.waitUntilExit()
                 self?.queue.async { [weak self] in
                     guard let self, token == self.generation, !self.stopped else { return }
