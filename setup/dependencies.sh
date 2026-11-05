@@ -13,7 +13,7 @@
 # row there names its requirements file by absolute path, usually under
 # $WORK_DIR.
 
-SETUP_HOME_LINKS=(.vim .vimrc .zshrc .zprofile .aliases .tmux.conf .p10k.zsh)
+SETUP_HOME_LINKS=(.vim .vimrc .zshrc .zprofile .aliases .tmux.conf .p10k.zsh .claude/CLAUDE.md)
 SETUP_CONFIG_LINKS=(nvim ghostty btop zellij git)
 SETUP_USER_BIN_DIRS=(.local/bin)
 SETUP_CODEX_CONFIG_SOURCE="dotfiles/codex/config.toml"

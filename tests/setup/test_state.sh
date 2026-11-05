@@ -193,6 +193,7 @@ if HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LO
   fail_test "--strict unexpectedly accepted warnings"
 fi
 
+mkdir -p "$TMP_ROOT/.claude"
 for name in "${SETUP_HOME_LINKS[@]}"; do
   ln -s "$REPO_DIR/dotfiles/$name" "$TMP_ROOT/$name"
 done
