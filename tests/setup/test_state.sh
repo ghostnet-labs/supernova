@@ -85,6 +85,12 @@ printf '%s\n' "${SETUP_MACOS_APPS[@]}" >"$brew_cask_file"
 export TEST_BREW_FORMULAE="$brew_formula_file"
 export TEST_BREW_CASKS="$brew_cask_file"
 export TEST_BREW_PREFIX="$brew_prefix"
+rectangle_settings_file="$TMP_ROOT/rectangle-settings"
+for rectangle_setting in "${SETUP_RECTANGLE_SETTINGS[@]}"; do
+  IFS='|' read -r rectangle_key _ rectangle_value <<<"$rectangle_setting"
+  printf '%s=%s\n' "$rectangle_key" "${rectangle_value/true/1}"
+done >"$rectangle_settings_file"
+export TEST_RECTANGLE_SETTINGS="$rectangle_settings_file"
 for spec in "${SETUP_DEPENDENCIES[@]}"; do
   IFS='|' read -r scope platform provider package check_type check_value <<<"$spec"
   setup_platform_matches "$platform" "$current_platform" || continue
@@ -121,6 +127,8 @@ for command_name in brew; do
 done
 printf '#!/bin/sh\nif [ "$1" = "--prefix" ]; then printf "%%s\\n" "$TEST_BREW_PREFIX"; elif [ "$1" = list ] && [ "$2" = --formula ]; then cat "$TEST_BREW_FORMULAE"; elif [ "$1" = list ] && [ "$2" = --cask ]; then cat "$TEST_BREW_CASKS"; fi\nexit 0\n' >"$command_dir/brew"
 chmod +x "$command_dir/brew"
+printf '#!/bin/sh\nsed -n "s/^$3=//p" "$TEST_RECTANGLE_SETTINGS"\n' >"$command_dir/defaults"
+chmod +x "$command_dir/defaults"
 printf '#!/bin/sh\nprintf "install ok installed\\n"\n' >"$command_dir/dpkg-query"
 printf '#!/bin/sh\nexit 0\n' >"$command_dir/rpm"
 chmod +x "$command_dir/dpkg-query" "$command_dir/rpm"
@@ -309,6 +317,17 @@ else
   [[ "$cask_status" -ne 0 ]] || fail_test "missing managed cask unexpectedly passed"
   assert_contains "$cask_output" "✗  Homebrew cask ${SETUP_MACOS_APPS[0]} is not installed"
   printf '%s\n' "${SETUP_MACOS_APPS[@]}" >"$brew_cask_file"
+
+  cp "$rectangle_settings_file" "$rectangle_settings_file.healthy"
+  sed -e 's/^windowSnapping=.*/windowSnapping=0/' -e '/^launchOnLogin=/d' \
+    "$rectangle_settings_file.healthy" >"$rectangle_settings_file"
+  rectangle_status=0
+  rectangle_output="$(HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LOCAL_ENV_FILE="$doctor_env_file" run_state 2>&1)" || rectangle_status=$?
+  [[ "$rectangle_status" -ne 0 ]] || fail_test "changed Rectangle settings unexpectedly passed"
+  assert_contains "$rectangle_output" "✓  Rectangle setting alternateDefaultShortcuts is true"
+  assert_contains "$rectangle_output" "✗  Rectangle setting windowSnapping is 0; expected 2"
+  assert_contains "$rectangle_output" "✗  Rectangle setting launchOnLogin is unset; expected true"
+  mv "$rectangle_settings_file.healthy" "$rectangle_settings_file"
 fi
 
 grep -vx 'eza' "$brew_formula_file" >"$brew_formula_file.without-eza"

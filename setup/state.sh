@@ -676,6 +676,22 @@ check_zj_radar() {
   fi
 }
 
+check_rectangle_settings() {
+  local setting key value_type value current
+
+  for setting in "${SETUP_RECTANGLE_SETTINGS[@]}"; do
+    IFS='|' read -r key value_type value <<<"$setting"
+    setup_state_check "Rectangle setting $key"
+    current="$(defaults read "$SETUP_RECTANGLE_DOMAIN" "$key" 2>/dev/null)" || current=""
+    # defaults read prints a true bool as 1.
+    if [[ "$current" == "${value/true/1}" ]]; then
+      setup_state_complete "Rectangle setting $key is $value"
+    else
+      setup_state_fail "Rectangle setting $key is ${current:-unset}; expected $value"
+    fi
+  done
+}
+
 check_macos_apps() {
   local current_platform="$1"
   local brew_command
@@ -702,6 +718,9 @@ check_macos_apps() {
       setup_state_fail "Homebrew cask $app is not installed"
     fi
   done
+  if grep -Fxq rectangle <<<"$installed"; then
+    check_rectangle_settings
+  fi
 }
 
 check_linux_fonts() {

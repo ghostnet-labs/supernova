@@ -55,6 +55,7 @@ dispatch_output="$(HOME="$TMP_ROOT" SETUP_LOCAL_ENV_FILE="$TMP_ROOT/env.zsh" /bi
   configure_zsh_shell() { printf "shell\n"; }
   install_fzf_tab() { printf "fzf\n"; }
   install_apps() { printf "apps\n"; }
+  configure_rectangle() { printf "rectangle\n"; }
   install_fonts_linux() { printf "fonts\n"; }
   setup_repair_apply true acme radar codex metadata links hooks work paths shell fzf platform
 ' _ "$REPAIR")"
@@ -70,7 +71,8 @@ assert_in_order "$dispatch_output" config-links hooks
 assert_in_order "$dispatch_output" hooks shell
 assert_in_order "$dispatch_output" shell fzf
 assert_in_order "$dispatch_output" fzf apps
-assert_in_order "$dispatch_output" apps fonts
+assert_in_order "$dispatch_output" apps rectangle
+assert_in_order "$dispatch_output" rectangle fonts
 
 # An installed formula whose command lacks what the shell needs is upgraded,
 # not left in place: fzf without --zsh, Atuin without --disable-ai.
@@ -295,6 +297,46 @@ rectangle_refusal_output="$(run_rectangle_install com.example.Impostor)" || rect
 assert_contains "$rectangle_refusal_output" "not the expected Rectangle app (bundle com.example.Impostor)"
 assert_contains "$rectangle_refusal_output" "refusing to overwrite it"
 assert_not_contains "$rectangle_refusal_output" "install --cask --force rectangle"
+
+run_rectangle_configure() {
+  TEST_PLATFORM="$1" TEST_RECTANGLE_RUNNING="$2" TEST_DEFAULTS_STATUS="$3" TEST_OPEN_STATUS="$4" HOME="$TMP_ROOT" /bin/bash -c '
+  source "$1"
+  PLATFORM="$TEST_PLATFORM"
+  defaults() { printf "defaults:"; printf " %s" "$@"; printf "\n"; return "$TEST_DEFAULTS_STATUS"; }
+  pgrep() { [[ "$TEST_RECTANGLE_RUNNING" == true ]]; }
+  open() { printf "open:"; printf " %s" "$@"; printf "\n"; return "$TEST_OPEN_STATUS"; }
+  run_spinner() { shift; "$@"; }
+  info() { printf "info: %s\n" "$1"; }
+  pass() { printf "pass: %s\n" "$1"; }
+  warn() { printf "warning: %s\n" "$1"; }
+  fail() { printf "failure: %s\n" "$1"; FAILED_TASKS+=("$1"); }
+  configure_rectangle
+' _ "$REPAIR"
+}
+
+rectangle_configure_output="$(run_rectangle_configure macos false 0 0)"
+assert_contains "$rectangle_configure_output" "defaults: write com.knollsoft.Rectangle alternateDefaultShortcuts -bool true"
+assert_contains "$rectangle_configure_output" "defaults: write com.knollsoft.Rectangle launchOnLogin -bool true"
+assert_contains "$rectangle_configure_output" "defaults: write com.knollsoft.Rectangle subsequentExecutionMode -int 1"
+assert_contains "$rectangle_configure_output" "defaults: write com.knollsoft.Rectangle windowSnapping -int 2"
+assert_contains "$rectangle_configure_output" "open: -a Rectangle"
+assert_contains "$rectangle_configure_output" "allow it under Accessibility"
+
+rectangle_running_output="$(run_rectangle_configure macos true 0 0)"
+assert_contains "$rectangle_running_output" "Restart Rectangle to use its new settings"
+assert_not_contains "$rectangle_running_output" "open:"
+
+rectangle_open_failure_output="$(run_rectangle_configure macos false 0 1)"
+assert_contains "$rectangle_open_failure_output" "warning: Rectangle could not be started"
+
+rectangle_write_status=0
+rectangle_write_output="$(run_rectangle_configure macos false 1 0)" || rectangle_write_status=$?
+[[ "$rectangle_write_status" -eq 1 ]] || fail_test "failed Rectangle settings returned $rectangle_write_status"
+assert_contains "$rectangle_write_output" "failure: Rectangle settings could not be applied"
+assert_not_contains "$rectangle_write_output" "open:"
+
+rectangle_linux_output="$(run_rectangle_configure linux false 0 0)"
+assert_not_contains "$rectangle_linux_output" "defaults:"
 
 warning_output="$(HOME="$TMP_ROOT" /bin/bash -c '
   source "$1"

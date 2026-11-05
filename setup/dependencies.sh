@@ -77,6 +77,14 @@ SETUP_MACOS_APPS=(
   chatgpt font-meslo-for-powerlevel10k font-symbols-only-nerd-font
   ghostty obsidian rectangle
 )
+# Rectangle settings as key|defaults type|value.
+SETUP_RECTANGLE_DOMAIN="com.knollsoft.Rectangle"
+SETUP_RECTANGLE_SETTINGS=(
+  "alternateDefaultShortcuts|bool|true"
+  "launchOnLogin|bool|true"
+  "subsequentExecutionMode|int|1"
+  "windowSnapping|int|2"
+)
 SETUP_FZF_TAB_REPO="https://github.com/Aloxaf/fzf-tab"
 SETUP_FZF_TAB_REF="fac145167f7ec1861233c54de0c8900b09c650fe"
 SETUP_ZJ_RADAR_REPO="marktoda/zj-radar"

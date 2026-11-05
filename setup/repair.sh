@@ -829,6 +829,35 @@ install_apps() {
   fi
 }
 
+apply_rectangle_settings() {
+  local setting key value_type value
+
+  for setting in "${SETUP_RECTANGLE_SETTINGS[@]}"; do
+    IFS='|' read -r key value_type value <<<"$setting"
+    defaults write "$SETUP_RECTANGLE_DOMAIN" "$key" "-$value_type" "$value" || return 1
+  done
+}
+
+# Writes the managed settings, then starts Rectangle so it registers its login
+# item and asks for Accessibility. A running copy reads them at its next launch.
+configure_rectangle() {
+  [[ "$PLATFORM" == macos ]] || return 0
+
+  if ! run_spinner "Applying Rectangle settings" apply_rectangle_settings; then
+    fail "Rectangle settings could not be applied"
+    return 1
+  fi
+  pass "Rectangle settings applied"
+
+  if pgrep -x Rectangle >/dev/null; then
+    info "Restart Rectangle to use its new settings"
+  elif run_spinner "Starting Rectangle" open -a Rectangle; then
+    pass "Rectangle started; allow it under Accessibility if macOS asks"
+  else
+    warn "Rectangle could not be started; open it once to finish setup"
+  fi
+}
+
 secure_fzf_tab_permissions() {
   local install_dir="$1"
   local insecure_path
@@ -1376,6 +1405,7 @@ setup_repair_apply() (
   setup_repair_has_action fzf "$@" && install_fzf_tab
   if setup_repair_has_action platform "$@"; then
     install_apps
+    configure_rectangle
     install_fonts_linux
   fi
 

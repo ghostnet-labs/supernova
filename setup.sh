@@ -812,7 +812,7 @@ repair_action_label() {
     hooks) printf 'Enable the repository Git hooks' ;;
     shell) printf 'Configure the managed Zsh login shell' ;;
     fzf) printf 'Install and secure the pinned fzf-tab checkout' ;;
-    platform) printf 'Install platform-specific applications and fonts' ;;
+    platform) printf 'Install platform-specific applications, settings and fonts' ;;
     work) printf 'Create the selected work scaffolding' ;;
     *) printf '%s' "$1" ;;
   esac
