@@ -479,4 +479,13 @@ HOME="$TMP_ROOT" SETUP_INSTALL_LOCK_DIR="$cleanup_dir" /bin/bash -c '
   [[ ! -e "$INSTALL_LOCK_DIR" ]]
 ' _ "$REPAIR" "$cleanup_child_file" || fail_test "repair cleanup left a child or lock behind"
 
+# ~/.claude doesn't exist on a new machine until Claude Code first runs.
+fresh_home="$TMP_ROOT/fresh-home"
+mkdir "$fresh_home"
+HOME="$fresh_home" /bin/bash -c '
+  source "$1"
+  symlink_setup >/dev/null
+  [[ "$(readlink "$HOME/.claude/CLAUDE.md")" == "$DOTFILE_DIR/.claude/CLAUDE.md" ]]
+' _ "$REPAIR" || fail_test "symlink_setup did not link into a missing ~/.claude"
+
 printf '[PASS] repair module checks\n'

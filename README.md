@@ -96,8 +96,8 @@ After a repair, open a new shell or run `source_zsh`.
   go into `.local/JOB-venv`, and external commands that setup only reports as
   manual follow-up).
 - **Links**: the home configs in `dotfiles/` (`.zshrc`, `.zprofile`,
-  `.aliases`, `.tmux.conf`, `.p10k.zsh`, `.vimrc`, and `.vim/`) are symlinked
-  into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
+  `.aliases`, `.tmux.conf`, `.p10k.zsh`, `.vimrc`, `.vim/`, and
+  `.claude/CLAUDE.md`) are symlinked into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
   `~/.config`. Anything they replace is backed up first.
 - **Rectangle**: fix mode applies `SETUP_RECTANGLE_SETTINGS` from
   `setup/dependencies.sh` and starts the app. Allow it under Accessibility when
@@ -345,8 +345,8 @@ other change is a new file, link, directory, or install that you can remove by
 hand:
 
 - **Home links**: `~/.zshrc`, `~/.zprofile`, `~/.aliases`, `~/.tmux.conf`,
-  `~/.p10k.zsh`, `~/.vimrc`, and `~/.vim` become symlinks into
-  `dotfiles/`. A file or directory that was there before is moved to
+  `~/.p10k.zsh`, `~/.vimrc`, `~/.vim`, and `~/.claude/CLAUDE.md` become
+  symlinks into `dotfiles/`. A file or directory that was there before is moved to
   `~/.dotfiles-backup/NAME.TIMESTAMP`. To restore one, remove the link and move
   the backup back, for example
   `rm ~/.zshrc && mv ~/.dotfiles-backup/.zshrc.20261010120000 ~/.zshrc`.

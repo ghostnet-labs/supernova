@@ -423,6 +423,8 @@ symlink_setup() {
     local dest="$HOME/$file"
     local backup="$backup_dir/$file.$backup_stamp"
 
+    # ~/.claude doesn't exist on a new machine until Claude Code first runs.
+    [[ "$DRY_RUN" == true ]] || mkdir -p "$(dirname "$dest")"
     link_managed_path "$file" "$src" "$dest" "$backup"
   done
 }
