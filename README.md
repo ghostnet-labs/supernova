@@ -99,6 +99,10 @@ After a repair, open a new shell or run `source_zsh`.
   `.aliases`, `.tmux.conf`, `.p10k.zsh`, `.vimrc`, and `.vim/`) are symlinked
   into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
   `~/.config`. Anything they replace is backed up first.
+- **Rectangle**: fix mode applies `SETUP_RECTANGLE_SETTINGS` from
+  `setup/dependencies.sh` and starts the app. Allow it under Accessibility when
+  macOS asks; a script can't grant that. Change a setting in that list, not in
+  the app, or `--check` reports it and `--fix` puts it back.
 - **Git**: shared settings live in `dotfiles/git/config`. Put identity,
   credentials, and machine-specific settings in `~/.gitconfig`, which overrides
   the shared file. Setup keeps `~/.gitconfig` present so `git config --global`
