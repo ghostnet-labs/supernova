@@ -103,8 +103,8 @@ After a repair, open a new shell or run `source_zsh`.
   `~/.claude/settings.json` (not symlinked, as Claude Code and Codex Balance write
   to it too), so keys setup doesn't own are kept. A managed key changed in the app
   goes back on the next fix. It sets global compaction hooks: `compact-hook.py`
-  saves the last task list and any `.swarm/` ledger state, and brings them back
-  with the project's `PROGRESS.md`. It does nothing where there's nothing to save.
+  saves the last task list and any `.swarm/` ledger state, brings them back, and
+  points the session to the project's `PROGRESS.md`. It does nothing where there's nothing to save.
 - **Rectangle**: fix mode applies `SETUP_RECTANGLE_SETTINGS` from
   `setup/dependencies.sh` and starts the app. Allow it under Accessibility when
   macOS asks; a script can't grant that. Change a setting in that list, not in

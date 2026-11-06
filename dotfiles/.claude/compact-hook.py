@@ -2,8 +2,8 @@
 """Keep a session's working state across Claude Code compaction.
 
 Compaction summarises the conversation and drops detail. PreCompact saves the
-last task list and any swarm ledger state; SessionStart prints that back with
-the project's PROGRESS.md. Where there's nothing to save it does nothing, and
+last task list and any swarm ledger state; SessionStart prints that back and
+points to the project's PROGRESS.md. Where there's nothing to save it does nothing, and
 it never fails the hook.
 """
 
@@ -91,11 +91,12 @@ def restore(event):
     root = project_root(event["cwd"])
     saved = snapshot_path(event)
     parts = []
-    if root and (root / "PROGRESS.md").is_file():
-        parts.append((root / "PROGRESS.md").read_text())
     if saved.is_file():
         parts.append(saved.read_text())
         saved.unlink()
+    # By path, as a long file would push the snapshot past the hook's output cap.
+    if root and (root / "PROGRESS.md").is_file():
+        parts.append(f"Read {root / 'PROGRESS.md'} before going on.")
     if parts:
         print("Context was just compacted. This was saved on disk; trust it over the summary.\n")
         print("\n".join(parts))

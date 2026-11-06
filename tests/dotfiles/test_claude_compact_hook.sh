@@ -35,18 +35,25 @@ printf '%s\n' '{"message":{"content":[{"type":"tool_use","name":"TodoWrite","inp
   '{"message":{"content":"plain text"}}' >"$TMP_ROOT/transcript.jsonl"
 hook snapshot "$TMP_ROOT/project" "$TMP_ROOT/transcript.jsonl"
 restored="$(hook restore "$TMP_ROOT/project")"
-assert_contains "$restored" "Where things stand" "progress restored"
+assert_contains "$restored" "/project/PROGRESS.md" "progress named by path"
 assert_contains "$restored" "- [in_progress] new task" "last task list restored"
 assert_not_contains "$restored" "old task" "older task list left out"
 assert_contains "$restored" "3 issues: fixed 2, approved 1" "ledger counts restored"
 assert_contains "$restored" "Lock held" "lock restored"
 assert_not_contains "$(hook restore "$TMP_ROOT/project")" "new task" "snapshot used once"
 
+# Long notes can't push the snapshot past the hook's 10,000-character output cap.
+head -c 30000 /dev/zero | tr '\0' 'x' >"$TMP_ROOT/project/PROGRESS.md"
+hook snapshot "$TMP_ROOT/project" "$TMP_ROOT/transcript.jsonl"
+restored="$(hook restore "$TMP_ROOT/project")"
+assert_contains "$restored" "- [in_progress] new task" "task list survives long notes"
+(( ${#restored} < 10000 )) || fail_test "restore printed ${#restored} characters"
+
 # Ignored notes stay in the main checkout, so a worktree session finds them there.
 git -C "$TMP_ROOT/project" init -q
 git -C "$TMP_ROOT/project" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m first
 git -C "$TMP_ROOT/project" worktree add -q "$TMP_ROOT/worktree"
-assert_contains "$(hook restore "$TMP_ROOT/worktree")" "Where things stand" "progress found from a worktree"
+assert_contains "$(hook restore "$TMP_ROOT/worktree")" "/project/PROGRESS.md" "progress found from a worktree"
 
 # Bad input never fails the hook.
 printf 'not json' | HOME="$TMP_ROOT/home" "$HOOK" snapshot 2>/dev/null || fail_test "bad input failed the hook"
