@@ -28,7 +28,8 @@ home="$TMP_ROOT/new"
 mkdir -p "$home"
 run_sync "$home" false >/dev/null
 assert_equals "$(value "$home/.claude/settings.json" .outputStyle)" "Proactive" "managed setting on a new machine"
-assert_equals "$(stat -f %Lp "$home/.claude/settings.json" 2>/dev/null || stat -c %a "$home/.claude/settings.json")" "600" "settings mode"
+source "$REPO_DIR/setup/codex_config_helpers.sh"
+assert_equals "$(setup_codex_file_mode "$home/.claude/settings.json")" "600" "settings mode"
 [[ ! -e "$home/.dotfiles-backup/claude" ]] || fail_test "backed up a file that was not there"
 
 # Keys setup does not own survive, a changed key is reset, and the old file is kept.
