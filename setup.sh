@@ -770,7 +770,7 @@ build_repair_plan() {
   local candidate
   local found
   local -a discovered=()
-  local -a action_order=(dependencies radar codex work paths metadata links hooks shell fzf platform)
+  local -a action_order=(dependencies radar codex claude work paths metadata links hooks shell fzf platform)
 
   SETUP_PLAN_ACTION_IDS=()
   (( ${#SETUP_FINDING_IDS[@]} > 0 )) || return 0
@@ -806,6 +806,7 @@ repair_action_label() {
     dependencies) printf 'Provision and verify managed dependencies' ;;
     radar) printf 'Install the pinned zj-radar agent-sidebar helper' ;;
     codex) printf 'Upgrade yq and synchronize managed Codex settings' ;;
+    claude) printf 'Synchronize managed Claude settings' ;;
     paths) printf 'Create setup-managed directories' ;;
     metadata) printf 'Record the selected scope and platform metadata' ;;
     links) printf 'Link managed dotfiles and application configs' ;;

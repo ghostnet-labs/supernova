@@ -34,6 +34,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - `.local/` — Machine-local and gitignored except `env.zsh.example`: fix mode writes `.local/.env.zsh` and work setups get `.local/<job>-venv`
 - `ruff.toml` — Ruff settings: a pinned rule set and `extend-include` for Python commands without a `.py` suffix; add new extensionless Python commands there
 - `CLAUDE.md` — Points Claude Code at this file; keep the rules here
+- `dotfiles/.claude/settings.managed.json` — The Claude Code settings fix mode merges into `~/.claude/settings.json`, which isn't a link because Claude Code and Codex Balance write to it too; `setup/claude_config_helpers.sh` owns the merge, and `dotfiles/.claude/compact-hook.py` is the compaction hook those settings run
 - `.claude/settings.json` — Shared Claude Code settings: turns on the official `pyright-lsp`, `swift-lsp`, and `claude-md-management` plugins and nothing else (`tests/github/test_claude_settings.py` checks this). Cloud sessions don't load plugins, so they help local sessions only; `pyright-langserver` comes from the managed `pyright` package, and `sourcekit-lsp` from Xcode on macOS
 - `LICENSE` — MIT. Vendored files keep their own licenses (Octicons, `dotfiles/nvim/LICENSE`, the Vim colour schemes)
 - `.githooks/` — Tracked Git hooks, enabled by fix mode through `core.hooksPath`:

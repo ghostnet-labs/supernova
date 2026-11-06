@@ -97,8 +97,14 @@ After a repair, open a new shell or run `source_zsh`.
   manual follow-up).
 - **Links**: the home configs in `dotfiles/` (`.zshrc`, `.zprofile`,
   `.aliases`, `.tmux.conf`, `.p10k.zsh`, `.vimrc`, `.vim/`, and
-  `.claude/CLAUDE.md`) are symlinked into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
+  `.claude/CLAUDE.md`, `.claude/compact-hook.py`) are symlinked into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
   `~/.config`. Anything they replace is backed up first.
+- **Claude Code**: `dotfiles/.claude/settings.managed.json` is merged into
+  `~/.claude/settings.json` (not symlinked, as Claude Code and Codex Balance write
+  to it too), so keys setup doesn't own are kept. A managed key changed in the app
+  goes back on the next fix. It sets global compaction hooks: `compact-hook.py`
+  saves the last task list and any `.swarm/` ledger state, and brings them back
+  with the project's `PROGRESS.md`. It does nothing where there's nothing to save.
 - **Rectangle**: fix mode applies `SETUP_RECTANGLE_SETTINGS` from
   `setup/dependencies.sh` and starts the app. Allow it under Accessibility when
   macOS asks; a script can't grant that. Change a setting in that list, not in
@@ -345,7 +351,8 @@ other change is a new file, link, directory, or install that you can remove by
 hand:
 
 - **Home links**: `~/.zshrc`, `~/.zprofile`, `~/.aliases`, `~/.tmux.conf`,
-  `~/.p10k.zsh`, `~/.vimrc`, `~/.vim`, and `~/.claude/CLAUDE.md` become
+  `~/.p10k.zsh`, `~/.vimrc`, `~/.vim`, `~/.claude/CLAUDE.md`, and
+  `~/.claude/compact-hook.py` become
   symlinks into `dotfiles/`. A file or directory that was there before is moved to
   `~/.dotfiles-backup/NAME.TIMESTAMP`. To restore one, remove the link and move
   the backup back, for example
@@ -354,6 +361,8 @@ hand:
   become symlinks. A previous config is moved to
   `~/.config/NAME.bak.TIMESTAMP`; remove the link and rename the backup to
   restore it.
+- **Claude Code**: the old `~/.claude/settings.json` is copied to
+  `~/.dotfiles-backup/claude/settings.json.TIMESTAMP.PID` before the merge.
 - **Codex**: the old `~/.codex/config.toml` is copied to
   `~/.dotfiles-backup/codex/config.toml.TIMESTAMP` before the merge. Copy it
   back to undo the merge.

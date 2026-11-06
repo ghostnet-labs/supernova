@@ -1,0 +1,39 @@
+{
+  "agentPushNotifEnabled": true,
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": true
+  },
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME\"/.claude/compact-hook.py snapshot",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME\"/.claude/compact-hook.py restore",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "modelSettings": {
+    "claude-sonnet-5": {
+      "effortLevel": "medium"
+    }
+  },
+  "outputStyle": "Proactive",
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark-ansi"
+}

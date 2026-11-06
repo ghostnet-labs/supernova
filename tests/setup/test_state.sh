@@ -167,6 +167,8 @@ TEST_CODEX_NOTIFIER="$REPO_DIR/dotfiles/.bin/codex-turn-bell" \
   '.notify = [strenv(TEST_CODEX_NOTIFIER)] | .projects[strenv(TEST_CODEX_PROJECT)].trust_level = "trusted"' \
   "$TMP_ROOT/.codex/config.toml"
 chmod 600 "$TMP_ROOT/.codex/config.toml"
+mkdir -p "$TMP_ROOT/.claude"
+cp "$REPO_DIR/$SETUP_CLAUDE_SETTINGS_SOURCE" "$TMP_ROOT/.claude/settings.json"
 
 output="$(HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LOCAL_ENV_FILE="$doctor_env_file" run_state)"
 assert_contains "$output" "!  ~/.zshrc is missing: $TMP_ROOT/.zshrc"
@@ -193,7 +195,6 @@ if HOME="$TMP_ROOT" PATH="$doctor_path" TEST_BREW_PREFIX="$brew_prefix" SETUP_LO
   fail_test "--strict unexpectedly accepted warnings"
 fi
 
-mkdir -p "$TMP_ROOT/.claude"
 for name in "${SETUP_HOME_LINKS[@]}"; do
   ln -s "$REPO_DIR/dotfiles/$name" "$TMP_ROOT/$name"
 done

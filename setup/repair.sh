@@ -12,6 +12,7 @@ LOCAL_ENV_FILE="${SETUP_LOCAL_ENV_FILE:-$LOCAL_ENV_DIR/.env.zsh}"
 source "$SETUP_DIR/setup/dependencies.sh"
 source "$SETUP_DIR/setup/symlink_helpers.sh"
 source "$SETUP_DIR/setup/codex_config_helpers.sh"
+source "$SETUP_DIR/setup/claude_config_helpers.sh"
 source "$SETUP_DIR/setup/status_output.sh"
 
 detect_platform() {
@@ -32,6 +33,7 @@ detect_platform() {
 ACTIVE_TASK_PID=""
 ACTIVE_OUTPUT_FILE=""
 ACTIVE_CODEX_CONFIG_TEMP=""
+ACTIVE_CLAUDE_SETTINGS_TEMP=""
 ACTIVE_ZJ_RADAR_TEMP_DIR=""
 ACTIVE_ZJ_RADAR_INSTALL_TEMP=""
 INSTALL_LOCK_DIR="${SETUP_INSTALL_LOCK_DIR:-${TMPDIR:-/tmp}/setup-install-${UID}.lock}"
@@ -57,6 +59,10 @@ cleanup() {
   if [[ -n "$ACTIVE_OUTPUT_FILE" ]]; then
     rm -f -- "$ACTIVE_OUTPUT_FILE"
     ACTIVE_OUTPUT_FILE=""
+  fi
+  if [[ -n "$ACTIVE_CLAUDE_SETTINGS_TEMP" ]]; then
+    rm -f -- "$ACTIVE_CLAUDE_SETTINGS_TEMP"
+    ACTIVE_CLAUDE_SETTINGS_TEMP=""
   fi
   if [[ -n "$ACTIVE_CODEX_CONFIG_TEMP" ]]; then
     rm -f -- "$ACTIVE_CODEX_CONFIG_TEMP"
@@ -1282,6 +1288,61 @@ sync_codex_config() {
   pass "Merged managed Codex settings into $destination"
 }
 
+backup_claude_settings() {
+  local destination="$1"
+  local backup_dir="$2"
+  local backup_path
+
+  [[ -e "$destination" ]] || return 0
+  backup_path="$backup_dir/settings.json.$(date +%Y%m%d%H%M%S).$$"
+  if mkdir -p "$backup_dir" && chmod 700 "$backup_dir" && cp -p -- "$destination" "$backup_path"; then
+    pass "Backed up the existing Claude settings to $backup_path"
+  else
+    fail "Could not back up the existing Claude settings: $destination"
+    return 1
+  fi
+}
+
+sync_claude_settings() {
+  local source_file="$SETUP_DIR/$SETUP_CLAUDE_SETTINGS_SOURCE"
+  local destination_dir="$HOME/.claude"
+  local destination="$destination_dir/settings.json"
+  local backup_dir="$HOME/.dotfiles-backup/claude"
+  local candidate
+  local sync_status=0
+
+  header "Synchronizing Claude settings"
+  if [[ "$DRY_RUN" == true ]]; then
+    candidate="$(mktemp "${TMPDIR:-/tmp}/setup-claude-settings.XXXXXX")"
+  else
+    mkdir -p "$destination_dir" && candidate="$(mktemp "$destination_dir/.settings.json.setup.XXXXXX")"
+  fi || {
+    fail "Could not create a temporary Claude settings file"
+    return 1
+  }
+  ACTIVE_CLAUDE_SETTINGS_TEMP="$candidate"
+
+  if ! setup_claude_render_settings "$source_file" "$destination" "$candidate"; then
+    fail "$SETUP_CLAUDE_CONFIG_ERROR"
+    sync_status=1
+  elif [[ -e "$destination" ]] && setup_claude_semantically_equal "$destination" "$candidate"; then
+    info "Claude settings already include the managed settings"
+  elif [[ "$DRY_RUN" == true ]]; then
+    [[ -e "$destination" ]] && dry "Back up $destination under $backup_dir"
+    dry "Atomically merge managed settings into $destination"
+  elif ! backup_claude_settings "$destination" "$backup_dir"; then
+    sync_status=1
+  elif chmod 600 "$candidate" && mv -f -- "$candidate" "$destination"; then
+    pass "Merged managed Claude settings into $destination"
+  else
+    fail "Could not atomically install the merged Claude settings: $destination"
+    sync_status=1
+  fi
+  rm -f -- "$candidate"
+  ACTIVE_CLAUDE_SETTINGS_TEMP=""
+  return "$sync_status"
+}
+
 # Keep the one encoder used for managed Codex TOML current without upgrading
 # unrelated Homebrew packages. An offline upgrade is non-fatal only when the
 # already installed encoder passes the real managed-document round trip.
@@ -1390,6 +1451,13 @@ setup_repair_apply() (
 
   if setup_repair_has_action codex "$@"; then
     prepare_codex_yq && sync_codex_config || repair_status=1
+  fi
+  if (( ${#FAILED_TASKS[@]} > 0 || repair_status != 0 )); then
+    return 1
+  fi
+
+  if setup_repair_has_action claude "$@"; then
+    sync_claude_settings || repair_status=1
   fi
   if (( ${#FAILED_TASKS[@]} > 0 || repair_status != 0 )); then
     return 1
