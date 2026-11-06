@@ -13,10 +13,11 @@
 # row there names its requirements file by absolute path, usually under
 # $WORK_DIR.
 
-SETUP_HOME_LINKS=(.vim .vimrc .zshrc .zprofile .aliases .tmux.conf .p10k.zsh .claude/CLAUDE.md)
+SETUP_HOME_LINKS=(.vim .vimrc .zshrc .zprofile .aliases .tmux.conf .p10k.zsh .claude/CLAUDE.md .claude/compact-hook.py)
 SETUP_CONFIG_LINKS=(nvim ghostty btop zellij git)
 SETUP_USER_BIN_DIRS=(.local/bin)
 SETUP_CODEX_CONFIG_SOURCE="dotfiles/codex/config.toml"
+SETUP_CLAUDE_SETTINGS_SOURCE="dotfiles/.claude/settings.managed.json"
 # Repository-relative hooks directory: pre-commit runs gitleaks, and commit-msg
 # and pre-push check commit messages with .github/scripts/check_pr.sh.
 SETUP_GIT_HOOKS_PATH=".githooks"
@@ -66,12 +67,14 @@ SETUP_REQUIRED_REPO_FILES=(
   apps/zj-radar/keyboard-navigation.patch
   dotfiles/zellij/plugins/zj_radar.wasm
   "$SETUP_CODEX_CONFIG_SOURCE"
+  "$SETUP_CLAUDE_SETTINGS_SOURCE"
   setup/repair.sh
   setup/state.sh
   setup/dependencies.sh
   setup/status_output.sh
   setup/symlink_helpers.sh
   setup/codex_config_helpers.sh
+  setup/claude_config_helpers.sh
 )
 SETUP_MACOS_APPS=(
   chatgpt font-meslo-for-powerlevel10k font-symbols-only-nerd-font

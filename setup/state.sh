@@ -11,11 +11,13 @@ SHELLS_FILE="${SETUP_SHELLS_FILE:-/etc/shells}"
 SETUP_WORK_ROOT="${SETUP_WORK_ROOT:-}"
 source "$SETUP_STATE_DIR/dependencies.sh"
 source "$SETUP_STATE_DIR/codex_config_helpers.sh"
+source "$SETUP_STATE_DIR/claude_config_helpers.sh"
 
 SETUP_STATE_AREAS=(
   "Repository"
   "Dependencies"
   "Codex"
+  "Claude"
   "Files and Paths"
   "Shell and Plugins"
   "Platform Assets"
@@ -304,6 +306,32 @@ check_codex_config() {
     ;;
   *) setup_state_fail "$SETUP_CODEX_CONFIG_ERROR" ;;
   esac
+}
+
+check_claude_settings() {
+  local source_file="$REPO_DIR/$SETUP_CLAUDE_SETTINGS_SOURCE"
+  local destination="$HOME/.claude/settings.json"
+  local discrepancies
+  local discrepancy
+
+  setup_state_check "Claude managed settings"
+  if [[ ! -e "$destination" ]]; then
+    setup_state_fail "Claude settings are missing: $destination; run ./setup.sh --fix"
+    return
+  fi
+  if ! setup_claude_valid_json "$destination"; then
+    setup_state_fail "Claude settings are not a valid JSON object: $destination"
+    return
+  fi
+  if ! discrepancies="$(setup_claude_list_discrepancies "$destination" "$source_file")"; then
+    setup_state_fail "Could not compare active and managed Claude settings"
+  elif [[ -z "$discrepancies" ]]; then
+    setup_state_complete "Claude settings include the managed settings"
+  else
+    while IFS= read -r discrepancy; do
+      [[ -n "$discrepancy" ]] && setup_state_fail "$discrepancy"
+    done <<<"$discrepancies"
+  fi
 }
 
 check_repo_sources() {
@@ -786,6 +814,10 @@ setup_state_scan() {
   SETUP_STATE_AREA="Codex"
   SETUP_STATE_ACTION="codex"
   check_codex_config "$SETUP_STATE_PLATFORM"
+
+  SETUP_STATE_AREA="Claude"
+  SETUP_STATE_ACTION="claude"
+  check_claude_settings
 
   SETUP_STATE_AREA="Files and Paths"
   SETUP_STATE_ACTION="metadata"
