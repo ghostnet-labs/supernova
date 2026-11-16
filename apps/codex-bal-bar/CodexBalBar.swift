@@ -44,6 +44,8 @@ struct BalanceSnapshot {
     let lifetimeTokens: Int?
     let streakDays: Int?
     let fetchedAt: Date
+    // Token counts from this Mac's logs rather than the account.
+    var tokensFromThisMac = false
 
     // The limit closest to running out is the one that matters right now.
     var headline: LimitMeter? { headlineMeter(in: meters) }
@@ -640,7 +642,7 @@ final class BalanceModel: ObservableObject {
                                limitReached: claudeAccount?.limitReached, planName: claudeAccount?.planName,
                                recentDays: claudeUsage?.recentDays ?? [], monthTokens: claudeUsage?.monthTokens,
                                lifetimeTokens: claudeUsage?.lifetimeTokens, streakDays: claudeUsage?.streakDays,
-                               fetchedAt: fetchedAt)
+                               fetchedAt: fetchedAt, tokensFromThisMac: true)
     }
 
     func refreshIfStale() {
@@ -950,7 +952,7 @@ struct BalancePanel: View {
             }
             if snapshot.monthTokens != nil {
                 Divider()
-                UsageChart(days: snapshot.recentDays)
+                UsageChart(days: snapshot.recentDays, onThisMac: snapshot.tokensFromThisMac)
                 StatRow(snapshot: snapshot)
             }
         } else if shown.error == nil {
@@ -1163,6 +1165,7 @@ struct Meter: View {
 
 struct UsageChart: View {
     let days: [DailyUsage]
+    var onThisMac = false
     @State private var hovered: Date?
 
     // Weekly ticks from the oldest day, skipping any too close to the trailing
@@ -1181,7 +1184,8 @@ struct UsageChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
-                Text("Daily tokens, last \(BalanceSnapshot.chartDays) days").font(.subheadline.weight(.medium))
+                Text("Daily tokens\(onThisMac ? " on this Mac" : ""), last \(BalanceSnapshot.chartDays) days")
+                    .font(.subheadline.weight(.medium))
                 Spacer()
                 Text(readout).font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
