@@ -12,6 +12,12 @@ import Foundation
         let snapshot = try BalanceSnapshot(account: account, rateLimits: limits, usage: nil)
         check(snapshot.meters.map(\.remainingPercent) == [77, 0], "round and clamp rolling limits")
         check(snapshot.headline?.id == "primary" && snapshot.planName == "Pro", "choose primary meter and plan")
+        let credit: [String: Any] = ["rateLimits": ["individualLimit": ["limit": "1000", "used": "250.5"]]]
+        let plain = try BalanceSnapshot(account: account, rateLimits: credit, usage: nil, creditUSD: nil)
+        let priced = try BalanceSnapshot(account: account, rateLimits: credit, usage: nil, creditUSD: 0.5)
+        check(plain.meters.first?.detail.contains("$") == false && priced.meters.first?.detail.contains("$") == true
+              && priced.meters.first?.detail.contains("125.25") == true && priced.meters.first?.detail.contains("500") == true,
+              "show Codex credits as dollars only with a price per credit")
         do {
             _ = try BalanceSnapshot(account: ["account": ["type": "apiKey"]], rateLimits: [:], usage: nil)
             check(false, "API key accounts must report unavailable plan limits")

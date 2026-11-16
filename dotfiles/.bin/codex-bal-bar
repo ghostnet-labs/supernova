@@ -44,6 +44,8 @@ Examples:
 Environment:
   CODEX_BIN                  Codex executable for the app (default: codex in PATH).
   CODEX_BAL_BAR_INTERVAL     Codex refresh interval in seconds, minimum 60 (default: 300).
+  CODEX_BAL_BAR_CREDIT_USD   US dollars per Codex credit, to show Codex credits as dollars.
+                             --install keeps the last value when unset; empty removes it.
   CODEX_BAL_BAR_APP_DIR      Install directory (default: ~/Applications).
   CODEX_BAL_BAR_CLAUDE_FILE  Saved Claude limits file (default: ~/Library/Application
                              Support/Codex Balance/claude-rate-limits.json).'
@@ -136,8 +138,14 @@ build_app() {
 }
 
 write_agent_plist() {
-  local codex_path="$1"
+  local codex_path="$1" credit_usd="$2"
   local interval="${CODEX_BAL_BAR_INTERVAL:-300}"
+  local credit_entry=""
+  if [[ -n "$credit_usd" ]]; then
+    credit_entry="
+		<key>CODEX_BAL_BAR_CREDIT_USD</key>
+		<string>$(xml_escape "$credit_usd")</string>"
+  fi
   mkdir -p "${agent_plist%/*}"
   printf '%s\n' "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -154,7 +162,7 @@ write_agent_plist() {
 		<key>CODEX_BIN</key>
 		<string>$(xml_escape "$codex_path")</string>
 		<key>CODEX_BAL_BAR_INTERVAL</key>
-		<string>$(xml_escape "$interval")</string>
+		<string>$(xml_escape "$interval")</string>${credit_entry}
 		<key>PATH</key>
 		<string>$(xml_escape "${codex_path%/*}"):/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>
@@ -174,6 +182,12 @@ write_agent_plist() {
 
 install_app() {
   require swiftc codesign launchctl plutil python3
+  # Kept from the last install unless set; set it empty to remove it.
+  local credit_usd="${CODEX_BAL_BAR_CREDIT_USD-$(plutil -extract EnvironmentVariables.CODEX_BAL_BAR_CREDIT_USD raw "$agent_plist" 2>/dev/null || true)}"
+  if [[ -n "$credit_usd" && ! "$credit_usd" =~ ^[0-9]*\.?[0-9]+$ ]]; then
+    printf 'error: CODEX_BAL_BAR_CREDIT_USD must be a number: %s\n' "$credit_usd" >&2
+    exit 2
+  fi
   local codex_path="${CODEX_BIN:-$(command -v codex || true)}"
   if [[ -z "$codex_path" || ! -x "$codex_path" ]]; then
     printf 'error: codex not found; install it or set CODEX_BIN\n' >&2
@@ -191,7 +205,7 @@ install_app() {
   mkdir -p "$app_dir"
   rm -rf -- "$app_path"
   mv "$build_root/$app_name.app" "$app_path"
-  write_agent_plist "$codex_path"
+  write_agent_plist "$codex_path" "$credit_usd"
   start_agent
   printf '✓ Installed %s and started it at login: %s\n' "$app_name" "$app_path"
 }

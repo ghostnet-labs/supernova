@@ -68,6 +68,11 @@ private func formatCredits(_ value: Double) -> String {
     value.formatted(.number.precision(.fractionLength(0...2)))
 }
 
+// Whole amounts drop their cents, as in "$500".
+private func formatMoney(_ amount: Double, currency: String = "USD") -> String {
+    amount.formatted(.currency(code: currency).precision(.fractionLength(amount == amount.rounded() ? 0 : 2)))
+}
+
 private func windowTitle(minutes: Double?, fallback: String) -> String {
     guard let minutes, minutes > 0 else { return fallback }
     let total = Int(minutes)
@@ -100,9 +105,18 @@ private func limitReachedText(_ raw: String?) -> String? {
 extension BalanceSnapshot {
     static let chartDays = 30
 
+    // Codex reports plain credits. CODEX_BAL_BAR_CREDIT_USD, the plan's price
+    // per credit in US dollars, shows them as dollars instead.
+    static let creditUSD = ProcessInfo.processInfo.environment["CODEX_BAL_BAR_CREDIT_USD"]
+        .flatMap(Double.init).flatMap { $0 > 0 ? $0 : nil }
+
     // Builds a snapshot from the app server's account/read, account/rateLimits/read,
     // and account/usage/read replies, showing whichever limits the plan reports.
-    init(account: [String: Any]?, rateLimits: [String: Any], usage: [String: Any]?, now: Date = Date()) throws {
+    init(account: [String: Any]?, rateLimits: [String: Any], usage: [String: Any]?, now: Date = Date(),
+         creditUSD: Double? = BalanceSnapshot.creditUSD) throws {
+        func amount(_ credits: Double) -> String {
+            creditUSD.map { formatMoney(credits * $0) } ?? formatCredits(credits)
+        }
         if let account {
             switch (account["account"] as? [String: Any])?["type"] as? String {
             case nil: throw FetchError("Not signed in to Codex. Run codex login in a terminal.")
@@ -124,7 +138,7 @@ extension BalanceSnapshot {
                 ?? Int((max(0, limit - used) * 100 / limit).rounded())
             meters.append(LimitMeter(id: "credits", title: "Credits", remainingPercent: remaining,
                                      resetsAt: timestamp(individual["resetsAt"]),
-                                     detail: "\(formatCredits(used)) of \(formatCredits(limit)) used"))
+                                     detail: "\(amount(used)) of \(amount(limit)) used"))
         }
         for (key, fallback) in [("primary", "Short-term limit"), ("secondary", "Long-term limit")] {
             guard let window = limits[key] as? [String: Any], let usedPercent = number(window["usedPercent"]) else { continue }
@@ -139,7 +153,7 @@ extension BalanceSnapshot {
         if credits?["unlimited"] as? Bool == true {
             creditBalance = "Unlimited"
         } else {
-            creditBalance = number(credits?["balance"]).map(formatCredits)
+            creditBalance = number(credits?["balance"]).map(amount)
         }
         limitReached = limitReachedText(limits["rateLimitReachedType"] as? String)
         planName = BalanceSnapshot.planName(account: account, limits: limits)
@@ -253,10 +267,7 @@ struct ClaudeAccount {
             // Amounts are in minor units, such as cents.
             let scale = pow(10, number(extra["decimal_places"]) ?? 2)
             let currency = extra["currency"] as? String ?? "USD"
-            func money(_ minor: Double) -> String {
-                let amount = minor / scale
-                return amount.formatted(.currency(code: currency).precision(.fractionLength(amount == amount.rounded() ? 0 : 2)))
-            }
+            func money(_ minor: Double) -> String { formatMoney(minor / scale, currency: currency) }
             // Round down so any spending shows below 100%. Claude Code resets
             // the monthly limit on the 1st, local time.
             meters.append(LimitMeter(id: "credits", title: "Credits",
