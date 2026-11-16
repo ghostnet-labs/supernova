@@ -1,4 +1,4 @@
-// Codex Balance - a menu bar meter for Codex credit usage.
+// Codex Balance - a menu bar meter for Codex and Claude plan usage.
 // Built, installed, and launched by dotfiles/.bin/codex-bal-bar.
 
 import AppKit
@@ -199,48 +199,7 @@ extension BalanceSnapshot {
     }
 }
 
-// MARK: - Claude plan limits
-
-// Claude has no supported endpoint for plan limits, but Claude Code hands its
-// status line the account's rate limits after each response. The
-// claude-limits-capture hook saves them to this file for the app to read.
-struct ClaudeSnapshot {
-    let meters: [LimitMeter]
-    let capturedAt: Date?
-
-    var headline: LimitMeter? { headlineMeter(in: meters) }
-
-    static var fileURL: URL {
-        if let override = ProcessInfo.processInfo.environment["CODEX_BAL_BAR_CLAUDE_FILE"], !override.isEmpty {
-            return URL(fileURLWithPath: override)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Library/Application Support/Codex Balance/claude-rate-limits.json")
-    }
-
-    // Returns nil until the status line hook has written the file at least once.
-    static func load(from url: URL = fileURL, now: Date = Date()) -> ClaudeSnapshot? {
-        guard let data = try? Data(contentsOf: url),
-              let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        let limits = saved["rate_limits"] as? [String: Any] ?? [:]
-        let titles = ["five_hour": "5-hour limit", "seven_day": "Weekly limit", "spend_limit": "Spend limit"]
-        let order = ["five_hour", "seven_day", "spend_limit"]
-        let keys = limits.keys.sorted { (order.firstIndex(of: $0) ?? order.count, $0) < (order.firstIndex(of: $1) ?? order.count, $1) }
-        let meters: [LimitMeter] = keys.compactMap { key in
-            guard let window = limits[key] as? [String: Any], let usedPercent = number(window["used_percentage"]) else { return nil }
-            let title = titles[key] ?? key.replacingOccurrences(of: "_", with: " ").capitalized + " limit"
-            let resetsAt = timestamp(window["resets_at"])
-            // A window that reset after the last capture has no newer reading yet.
-            if let resetsAt, resetsAt <= now {
-                return LimitMeter(id: key, title: title, remainingPercent: 100, resetsAt: nil, detail: "Reset")
-            }
-            let used = max(0, Int(usedPercent.rounded()))
-            return LimitMeter(id: key, title: title, remainingPercent: max(0, 100 - used), resetsAt: resetsAt,
-                              detail: "\(used)% used")
-        }
-        return ClaudeSnapshot(meters: meters, capturedAt: timestamp(saved["captured_at"]))
-    }
-}
+// MARK: - Claude
 
 enum ClaudeCode {
     static var configDirectory: URL {
@@ -251,11 +210,21 @@ enum ClaudeCode {
     }
 }
 
-// MARK: - Claude usage credits
+// ISO 8601 with or without fractional seconds.
+private func isoDate(_ string: String) -> Date? {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    if let date = formatter.date(from: string) { return date }
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter.date(from: string)
+}
 
-// Claude Code's /usage screen reads usage credits, such as an Enterprise
-// seat's monthly spend limit, from an undocumented endpoint with the Claude
-// Code login. A reply without the expected fields adds no meter.
+// MARK: - Claude plan limits and usage credits
+
+// Claude Code's /usage screen reads plan limits from an undocumented endpoint
+// with the Claude Code login: rolling windows on Pro and Max plans, and usage
+// credits, such as an Enterprise seat's monthly spend limit. A reply without
+// the expected fields adds no meter.
 struct ClaudeAccount {
     let meters: [LimitMeter]
     let limitReached: String?
@@ -265,6 +234,13 @@ struct ClaudeAccount {
     init(usage: [String: Any], planName: String? = nil, now: Date = Date()) {
         var meters: [LimitMeter] = []
         var limitReached: String?
+        // Each window has the share used, 0-100, and an ISO 8601 reset time.
+        for (key, title) in [("five_hour", "5-hour limit"), ("seven_day", "Weekly limit")] {
+            guard let window = usage[key] as? [String: Any], let utilization = number(window["utilization"]) else { continue }
+            let used = min(100, max(0, Int(utilization.rounded())))
+            meters.append(LimitMeter(id: key, title: title, remainingPercent: 100 - used,
+                                     resetsAt: (window["resets_at"] as? String).flatMap(isoDate), detail: "\(used)% used"))
+        }
         if let extra = usage["extra_usage"] as? [String: Any], extra["is_enabled"] as? Bool == true,
            let limit = number(extra["monthly_limit"]), let used = number(extra["used_credits"]), limit > 0 {
             // Amounts are in minor units, such as cents.
@@ -294,6 +270,10 @@ enum ClaudeAccountClient {
         let planName: String?
     }
 
+    struct ExpiredLogin: LocalizedError {
+        var errorDescription: String? { "Claude Code's login has expired. Use Claude Code to renew it." }
+    }
+
     private static let notSignedIn = FetchError("Not signed in to a Claude plan. Run claude, then /login, in a terminal.")
 
     // Claude Code keeps its login in the keychain on macOS and in
@@ -312,7 +292,7 @@ enum ClaudeAccountClient {
         // Only Claude Code may refresh its token: a refresh here would replace
         // the login Claude Code holds and sign it out.
         if let expiresAt = number(oauth["expiresAt"]), Date(timeIntervalSince1970: expiresAt / 1000) <= now {
-            throw FetchError("Claude Code's login has expired. Use Claude Code to renew it.")
+            throw ExpiredLogin()
         }
         return Login(accessToken: token, planName: displayPlanName(oauth["subscriptionType"] as? String))
     }
@@ -338,14 +318,17 @@ enum ClaudeAccountClient {
         request.setValue("Bearer \(login.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return try account(status: (response as? HTTPURLResponse)?.statusCode ?? 0, data: data, planName: login.planName)
+    }
+
+    static func account(status: Int, data: Data, planName: String?) throws -> ClaudeAccount {
         if status == 401 || status == 403 {
             throw FetchError("Claude rejected Claude Code's login. Use Claude Code to renew it.")
         }
         guard status == 200, let usage = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw FetchError("Claude usage request failed (HTTP \(status))")
         }
-        return ClaudeAccount(usage: usage, planName: login.planName)
+        return ClaudeAccount(usage: usage, planName: planName)
     }
 }
 
@@ -384,7 +367,8 @@ final class ClaudeUsageLog: @unchecked Sendable {
     }()
 
     init(root: URL = ClaudeCode.configDirectory.appending(path: "projects"),
-         historyURL: URL = ClaudeSnapshot.fileURL.deletingLastPathComponent().appending(path: "claude-daily-tokens.json"),
+         historyURL: URL = FileManager.default.homeDirectoryForCurrentUser
+             .appending(path: "Library/Application Support/Codex Balance/claude-daily-tokens.json"),
          statsURL: URL = ClaudeCode.configDirectory.appending(path: "stats-cache.json")) {
         self.root = root
         self.historyURL = historyURL
@@ -586,15 +570,12 @@ final class BalanceModel: ObservableObject {
     @Published private(set) var snapshot: BalanceSnapshot?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isRefreshing = false
-    @Published private(set) var claude: ClaudeSnapshot?
     @Published private(set) var claudeAccount: ClaudeAccount?
     @Published private(set) var claudeUsage: ClaudeUsage?
     @Published private(set) var claudeError: String?
     @Published private(set) var isRefreshingClaude = false
     private let claudeLog = ClaudeUsageLog()
     private var timer: Timer?
-    private var claudeTimer: Timer?
-    private var claudeFileDate: Date?
     private var wakeObserver: NSObjectProtocol?
 
     init() {
@@ -605,12 +586,6 @@ final class BalanceModel: ObservableObject {
             Task { @MainActor in self?.refresh() }
         }
         timer?.tolerance = interval / 10
-        // The Claude file is local and tiny, so check it often to keep the
-        // menu bar close to what Claude Code last reported.
-        claudeTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.reloadClaude() }
-        }
-        claudeTimer?.tolerance = 5
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -618,12 +593,12 @@ final class BalanceModel: ObservableObject {
         }
     }
 
-    // Claude's plan limits from the status line, usage credits from the
-    // account, and token history from its logs, in Codex's snapshot shape so
-    // both tabs show the same things the same way.
+    // Claude's plan limits and usage credits from the account and token
+    // history from its logs, in Codex's snapshot shape so both tabs show the
+    // same things the same way.
     var claudeSnapshot: BalanceSnapshot? {
-        guard let fetchedAt = claudeAccount?.fetchedAt ?? claudeUsage?.scannedAt ?? claude?.capturedAt else { return nil }
-        return BalanceSnapshot(meters: (claude?.meters ?? []) + (claudeAccount?.meters ?? []), creditBalance: nil,
+        guard let fetchedAt = claudeAccount?.fetchedAt ?? claudeUsage?.scannedAt else { return nil }
+        return BalanceSnapshot(meters: claudeAccount?.meters ?? [], creditBalance: nil,
                                limitReached: claudeAccount?.limitReached, planName: claudeAccount?.planName,
                                recentDays: claudeUsage?.recentDays ?? [], monthTokens: claudeUsage?.monthTokens,
                                streakDays: claudeUsage?.streakDays,
@@ -633,17 +608,6 @@ final class BalanceModel: ObservableObject {
     func refreshIfStale() {
         if let snapshot, Date().timeIntervalSince(snapshot.fetchedAt) < 60 { return }
         refresh()
-    }
-
-    // Re-reads the Claude file when it changes, or with force to re-evaluate
-    // reset times even when Claude Code has not written anything new.
-    func reloadClaude(force: Bool = false) {
-        let url = ClaudeSnapshot.fileURL
-        let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        guard force || modified != claudeFileDate || claude?.meters.contains(where: { ($0.resetsAt ?? .distantFuture) <= Date() }) == true
-        else { return }
-        claudeFileDate = modified
-        claude = ClaudeSnapshot.load(from: url)
     }
 
     // As with Codex, a failed fetch keeps the last reading and shows why.
@@ -665,7 +629,6 @@ final class BalanceModel: ObservableObject {
     }
 
     func refresh() {
-        reloadClaude(force: true)
         refreshClaude()
         guard !isRefreshing else { return }
         isRefreshing = true
