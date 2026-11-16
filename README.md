@@ -100,8 +100,8 @@ After a repair, open a new shell or run `source_zsh`.
   `.claude/CLAUDE.md`, `.claude/compact-hook.py`) are symlinked into `$HOME`, and app configs (Neovim, Ghostty, btop, Zellij, Git) into
   `~/.config`. Anything they replace is backed up first.
 - **Claude Code**: `dotfiles/.claude/settings.managed.json` is merged into
-  `~/.claude/settings.json` (not symlinked, as Claude Code and Codex Balance write
-  to it too), so keys setup doesn't own are kept. A managed key changed in the app
+  `~/.claude/settings.json` (not symlinked, as Claude Code writes to it too), so
+  keys setup doesn't own are kept. A managed key changed in the app
   goes back on the next fix. It sets global compaction hooks: `compact-hook.py`
   saves the last task list and any `.swarm/` ledger state, brings them back, and
   points the session to the project's `PROGRESS.md`. It does nothing where there's nothing to save.

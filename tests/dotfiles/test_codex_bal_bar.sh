@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # setup-test: Codex Balance menu bar app
-# Offline checks for the codex-bal-bar command, the app source, and the Claude
-# status line capture.
+# Offline checks for the codex-bal-bar command, the app source, the installer
+# with its build and launchd steps stubbed, and the Claude status line restore.
 set -euo pipefail
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
-CAPTURE="$REPO_DIR/apps/codex-bal-bar/claude-limits-capture"
 STATUSLINE="$REPO_DIR/apps/codex-bal-bar/claude-statusline.py"
+COMMAND="$REPO_DIR/dotfiles/.bin/codex-bal-bar"
 TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/codex-bal-bar-test.XXXXXX")"
-export CODEX_BAL_BAR_CLAUDE_FILE="$TMP_ROOT/support/claude-rate-limits.json"
 
 cleanup() {
   rm -rf -- "$TMP_ROOT"
@@ -17,11 +16,9 @@ trap cleanup EXIT INT TERM
 
 source "$(dirname -- "${BASH_SOURCE[0]}")/../lib/assert.sh"
 
-saved() {
-  jq -c "$1" "$CODEX_BAL_BAR_CLAUDE_FILE"
+status_line() {
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("statusLine"), sort_keys=True))' "$1"
 }
-
-COMMAND="$REPO_DIR/dotfiles/.bin/codex-bal-bar"
 
 help_output="$("$COMMAND" --help)" || fail_test "--help failed"
 remaining="$help_output"
@@ -46,68 +43,80 @@ if "$is_macos" && command -v swiftc >/dev/null 2>&1; then
   "$TMP_ROOT/check-codex-bal-bar" "$TMP_ROOT" || fail_test "Codex Balance behavior checks"
 fi
 
-bash -n "$CAPTURE" || fail_test "claude-limits-capture has a syntax error"
 python3 -c 'import ast,pathlib,sys; ast.parse(pathlib.Path(sys.argv[1]).read_text())' "$STATUSLINE" ||
-  fail_test "Claude status line helper has a syntax error"
+  fail_test "Claude status line restore has a syntax error"
 
-# Installing the integration wraps an existing status line and uninstall
-# restores it without disturbing other Claude settings.
-mkdir -p "$TMP_ROOT/claude"
+# Older versions wrapped Claude Code's status line. Restoring puts back the one
+# they replaced and keeps other settings, but leaves a status line someone
+# changed since alone, and does nothing where nothing was wrapped.
+original='{"command": "cat", "padding": 2, "type": "command"}'
+wrapper="python3 '/old/Codex Balance.app/Contents/Resources/claude-statusline.py'"
+wrap_status_line() {
+  local directory="$1"
+  mkdir -p "$directory"
+  python3 -c 'import json,sys; json.dump({"statusLine": {"type": "command", "command": sys.argv[2]}, "theme": "dark"}, open(sys.argv[1], "w"))' \
+    "$directory/settings.json" "$wrapper"
+  python3 -c 'import json,sys; json.dump({"wrapper": sys.argv[2], "original": {"type": "command", "command": "cat", "padding": 2}}, open(sys.argv[1], "w"))' \
+    "$directory/.codex-bal-bar-statusline.json" "$wrapper"
+}
 settings="$TMP_ROOT/claude/settings.json"
-printf '%s\n' '{"statusLine":{"type":"command","command":"cat","padding":2},"theme":"dark"}' >"$settings"
-wrapper="$TMP_ROOT/Applications/Codex Balance.app/Contents/Resources/claude-statusline.py"
-wrapper="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$wrapper")"
-CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE" --install "$wrapper" >/dev/null ||
-  fail_test "Claude status line integration install failed"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["theme"] == "dark" and d["statusLine"]["padding"] == 2 and sys.argv[2] in d["statusLine"]["command"]' "$settings" "$wrapper" ||
-  fail_test "Claude status line install did not preserve existing settings"
-sample='{"model":{"display_name":"Opus"},"rate_limits":{"five_hour":{"used_percentage":23.4,"resets_at":1790900000}}}'
-forwarded="$(printf '%s' "$sample" | CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE")" ||
-  fail_test "Claude status line wrapper failed"
-[[ "$forwarded" == "$sample" ]] || fail_test "Claude status line wrapper changed its output"
-if command -v jq >/dev/null 2>&1; then
-  for attempt in {1..20}; do
-    [[ -f "$CODEX_BAL_BAR_CLAUDE_FILE" ]] &&
-      [[ "$(jq -r '.rate_limits.five_hour.used_percentage // empty' "$CODEX_BAL_BAR_CLAUDE_FILE")" == 23.4 ]] && break
-    sleep 0.05
-  done
-  [[ "$(jq -r '.rate_limits.five_hour.used_percentage // empty' "$CODEX_BAL_BAR_CLAUDE_FILE")" == 23.4 ]] ||
-    fail_test "Claude status line wrapper did not capture rate limits"
+wrap_status_line "$TMP_ROOT/claude"
+CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE" >/dev/null || fail_test "status line restore failed"
+assert_equals "$(status_line "$settings")" "$original"
+python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["theme"] == "dark"' "$settings" ||
+  fail_test "status line restore lost other Claude settings"
+[[ ! -e "$TMP_ROOT/claude/.codex-bal-bar-statusline.json" ]] || fail_test "status line restore kept its backup"
+CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE" >/dev/null || fail_test "restore without a backup failed"
+assert_equals "$(status_line "$settings")" "$original"
+wrap_status_line "$TMP_ROOT/claude"
+printf '%s\n' '{"statusLine":{"type":"command","command":"mine"}}' >"$settings"
+CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE" >/dev/null || fail_test "restore of a changed status line failed"
+assert_equals "$(status_line "$settings")" '{"command": "mine", "type": "command"}'
+
+if "$is_macos"; then
+  # The installer, with the Swift build, signing, and launchd stubbed so the
+  # real login agent and app are never touched: it records the credit price,
+  # keeps it on later installs until it is set empty, rejects a non-number, and puts back a status line older versions wrapped.
+  home="$TMP_ROOT/home"
+  stubs="$TMP_ROOT/stubs"
+  mkdir -p "$stubs" "$home/Library/Application Support/Codex Balance"
+  printf '%s\n' '#!/bin/sh' 'while [ "$#" -gt 0 ]; do' '  if [ "$1" = -o ]; then : >"$2"; chmod +x "$2"; fi' '  shift' 'done' >"$stubs/swiftc"
+  printf '%s\n' '#!/bin/sh' 'exit 0' >"$stubs/codesign"
+  printf '%s\n' '#!/bin/sh' '[ "$1" = print ] && exit 1' 'exit 0' >"$stubs/launchctl"
+  printf '%s\n' '#!/bin/sh' 'exit 0' >"$stubs/codex"
+  chmod +x "$stubs"/*
+  [[ "$(PATH="$stubs:$PATH" command -v launchctl)" == "$stubs/launchctl" ]] || fail_test "launchctl stub is not first on PATH"
+  wrap_status_line "$home/.claude"
+  printf '{}\n' >"$home/Library/Application Support/Codex Balance/claude-rate-limits.json"
+  installer() {
+    env -u CODEX_BAL_BAR_CREDIT_USD -u CODEX_BAL_BAR_CLAUDE_SETTINGS HOME="$home" PATH="$stubs:$PATH" \
+      CODEX_BIN="$stubs/codex" CODEX_BAL_BAR_APP_DIR="$home/Applications" "$@"
+  }
+  plist="$home/Library/LaunchAgents/local.codex-bal-bar.plist"
+  app="$home/Applications/Codex Balance.app"
+  credit_price() {
+    plutil -extract EnvironmentVariables.CODEX_BAL_BAR_CREDIT_USD raw "$plist" 2>/dev/null || true
+  }
+
+  installer CODEX_BAL_BAR_CREDIT_USD=0.5 "$COMMAND" --install >/dev/null || fail_test "install with a credit price failed"
+  [[ -x "$app/Contents/MacOS/CodexBalBar" ]] || fail_test "install did not place the app"
+  assert_equals "$(credit_price)" "0.5"
+  assert_equals "$(status_line "$home/.claude/settings.json")" "$original"
+  [[ ! -e "$home/Library/Application Support/Codex Balance/claude-rate-limits.json" ]] ||
+    fail_test "install kept the old status line capture file"
+  [[ -z "$(ls -A "$app/Contents/Resources")" ]] || fail_test "the app still ships status line hook files"
+
+  installer "$COMMAND" --install >/dev/null || fail_test "reinstall failed"
+  assert_equals "$(credit_price)" "0.5"
+  installer CODEX_BAL_BAR_CREDIT_USD= "$COMMAND" --install >/dev/null || fail_test "install with an empty credit price failed"
+  assert_equals "$(credit_price)" ""
+  status=0
+  installer CODEX_BAL_BAR_CREDIT_USD=abc "$COMMAND" --install >/dev/null 2>&1 || status=$?
+  assert_equals "$status" "2"
+
+  installer "$COMMAND" --uninstall >/dev/null || fail_test "uninstall failed"
+  [[ ! -e "$plist" && ! -e "$app" && ! -e "$home/Library/Application Support/Codex Balance" ]] ||
+    fail_test "uninstall left the login agent, app, or saved data behind"
 fi
-CODEX_BAL_BAR_CLAUDE_SETTINGS="$settings" python3 "$STATUSLINE" --uninstall >/dev/null ||
-  fail_test "Claude status line integration uninstall failed"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["theme"] == "dark" and d["statusLine"] == {"type":"command","command":"cat","padding":2}' "$settings" ||
-  fail_test "Claude status line uninstall did not restore the original setting"
-
-if ! command -v jq >/dev/null 2>&1; then
-  printf '[SKIP] jq not installed; capture checks need it\n'
-  exit 0
-fi
-
-limits='{"five_hour":{"used_percentage":23.4,"resets_at":1790900000},"seven_day":{"used_percentage":41,"resets_at":1791300000}}'
-rm -f -- "$CODEX_BAL_BAR_CLAUDE_FILE"
-
-# A session without limits records only that the hook ran.
-printf '%s' '{"model":{"display_name":"Opus"}}' | "$CAPTURE"
-[[ "$(saved 'keys')" == '["hook_seen_at"]' ]] || fail_test "hook-only capture wrote $(saved .)"
-
-# Reported limits are saved with their capture time.
-printf '{"rate_limits":%s}' "$limits" | "$CAPTURE"
-[[ "$(saved '.rate_limits')" == "$limits" ]] || fail_test "limits not saved: $(saved .)"
-[[ "$(saved '.captured_at | type')" == '"number"' ]] || fail_test "captured_at missing"
-
-# A new session reports no limits yet; the last reading must survive.
-printf '%s' '{"rate_limits":null}' | "$CAPTURE"
-[[ "$(saved '.rate_limits')" == "$limits" ]] || fail_test "null rate_limits erased saved limits"
-printf '%s' 'not json' | "$CAPTURE"
-[[ "$(saved '.rate_limits')" == "$limits" ]] || fail_test "invalid input erased saved limits"
-
-# A corrupt saved file is replaced rather than blocking new readings.
-printf 'corrupt' >"$CODEX_BAL_BAR_CLAUDE_FILE"
-printf '%s' '{"rate_limits":{"five_hour":{"used_percentage":5,"resets_at":1790900000}}}' | "$CAPTURE"
-[[ "$(saved '.rate_limits.five_hour.used_percentage')" == 5 ]] || fail_test "corrupt file was not replaced"
-
-leftovers="$(find "$TMP_ROOT/support" -name '.claude-rate-limits.*')"
-[[ -z "$leftovers" ]] || fail_test "temporary files left behind: $leftovers"
 
 printf '[PASS] Codex Balance app checks\n'

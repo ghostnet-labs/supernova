@@ -48,12 +48,24 @@ import Foundation
         setenv("CODEX_BIN", fake.path, 1)
         let fetched = try await CodexClient.fetch(timeout: .seconds(3))
         check(fetched.headline?.remainingPercent == 60 && fetched.monthTokens == nil, "optional usage failure must not hide available rate limits")
-        let claude = scratch.appendingPathComponent("claude.json")
-        try Data(#"{"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":100},"seven_day":{"used_percentage":101,"resets_at":2000}},"captured_at":50}"#.utf8).write(to: claude)
-        let captured = ClaudeSnapshot.load(from: claude, now: Date(timeIntervalSince1970: 200))!
-        check(captured.meters.map(\.remainingPercent) == [100, 0], "handle expired Claude windows and overuse")
-        try Data("invalid".utf8).write(to: claude)
-        check(ClaudeSnapshot.load(from: claude) == nil, "invalid captures are unavailable, not a crash")
+        let windows = ClaudeAccount(usage: [
+            "five_hour": ["utilization": 42.4, "resets_at": "2030-01-01T05:00:00.123Z"],
+            "seven_day": ["utilization": 101, "resets_at": "2030-01-07T00:00:00Z"],
+            "seven_day_opus": NSNull(), "extra_usage": ["is_enabled": false]])
+        check(windows.meters.map(\.id) == ["five_hour", "seven_day"] && windows.meters.map(\.usedPercent) == [42, 100]
+              && windows.meters.allSatisfy { $0.resetsAt != nil },
+              "decode Claude plan windows with either ISO 8601 form")
+        for (status, body, expected) in [(401, "{}", "rejected"), (500, "{}", "HTTP 500"), (200, "not json", "HTTP 200")] {
+            do {
+                _ = try ClaudeAccountClient.account(status: status, data: Data(body.utf8), planName: nil)
+                check(false, "HTTP \(status) with \(body) must fail")
+            } catch {
+                check(error.localizedDescription.contains(expected), "explain HTTP \(status) from the Claude usage endpoint")
+            }
+        }
+        let replied = try ClaudeAccountClient.account(
+            status: 200, data: Data(#"{"five_hour":{"utilization":10,"resets_at":null}}"#.utf8), planName: "Max")
+        check(replied.meters.map(\.usedPercent) == [10] && replied.planName == "Max", "read a successful Claude usage reply")
 
         let credits = ClaudeAccount(usage: ["extra_usage": [
             "is_enabled": true, "monthly_limit": 50_000, "used_credits": 1234.0, "currency": "USD", "decimal_places": 2]])
@@ -69,7 +81,7 @@ import Foundation
         do {
             _ = try ClaudeAccountClient.login(from: Data(#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#.utf8))
             check(false, "an expired Claude Code login must not be used")
-        } catch is FetchError {}
+        } catch is ClaudeAccountClient.ExpiredLogin {}
         let login = try ClaudeAccountClient.login(
             from: Data(#"{"claudeAiOauth":{"accessToken":"t","expiresAt":4102444800000,"subscriptionType":"enterprise"}}"#.utf8))
         check(login.planName == "Enterprise", "read the Claude plan from the login")
@@ -112,6 +124,6 @@ import Foundation
         let saved = ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats).scan()
         check(saved?.recentDays.last?.tokens == 165 && saved?.monthTokens == month,
               "saved Claude days still count after Claude Code deletes their transcripts")
-        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude capture decoding, usage credits, and token logs")
+        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude plan windows and credits, and token logs")
     }
 }

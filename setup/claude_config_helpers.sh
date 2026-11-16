@@ -2,8 +2,8 @@
 # Shared helpers for merging the setup-managed Claude Code settings.
 # Keep this file compatible with the Bash 3.2 shipped by macOS.
 #
-# ~/.claude/settings.json is written by Claude Code and Codex Balance too, so
-# setup merges only the keys it owns: objects merge key by key, and an array
+# ~/.claude/settings.json is written by Claude Code too, so setup merges only
+# the keys it owns: objects merge key by key, and an array
 # such as hooks.PreCompact is replaced whole.
 
 SETUP_CLAUDE_CONFIG_ERROR=""
