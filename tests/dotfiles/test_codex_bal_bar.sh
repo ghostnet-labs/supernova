@@ -76,7 +76,8 @@ assert_equals "$(status_line "$settings")" '{"command": "mine", "type": "command
 if "$is_macos"; then
   # The installer, with the Swift build, signing, and launchd stubbed so the
   # real login agent and app are never touched: it records the credit price,
-  # keeps it on later installs until it is set empty, rejects a non-number, and puts back a status line older versions wrapped.
+  # keeps it on later installs until it is set empty, shows it in --status,
+  # rejects a non-number, and puts back a status line older versions wrapped.
   home="$TMP_ROOT/home"
   stubs="$TMP_ROOT/stubs"
   mkdir -p "$stubs" "$home/Library/Application Support/Codex Balance"
@@ -108,8 +109,10 @@ if "$is_macos"; then
 
   installer "$COMMAND" --install >/dev/null || fail_test "reinstall failed"
   assert_equals "$(credit_price)" "0.5"
+  assert_contains "$(installer "$COMMAND" --status)" 'Credit price: $0.5 per Codex credit'
   installer CODEX_BAL_BAR_CREDIT_USD= "$COMMAND" --install >/dev/null || fail_test "install with an empty credit price failed"
   assert_equals "$(credit_price)" ""
+  assert_contains "$(installer "$COMMAND" --status)" 'Credit price: not set'
   status=0
   installer CODEX_BAL_BAR_CREDIT_USD=abc "$COMMAND" --install >/dev/null 2>&1 || status=$?
   assert_equals "$status" "2"

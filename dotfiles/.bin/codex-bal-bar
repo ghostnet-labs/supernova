@@ -28,7 +28,7 @@ Options:
   --install       Build and install the app, then start it now and at every login.
   --start         Start the installed app after quitting it from the menu.
   --stop          Stop the app until the next login or --start.
-  --status        Show install, login agent, and running state (default).
+  --status        Show install, login agent, running state, and credit price (default).
   --uninstall     Stop the app and remove it and its saved Claude token history.
   -h, --help      Show this help message and exit.
 
@@ -215,12 +215,21 @@ restore_claude_statusline() {
 
 show_status() {
   local state="not loaded"
+  local credit_usd=""
   if agent_loaded; then
     state="$(launchctl print "$domain/$agent_label" | awk -F' = ' '/^\tstate = / {print $2; exit}')"
+  fi
+  if [[ -f "$agent_plist" ]]; then
+    credit_usd="$(plutil -extract EnvironmentVariables.CODEX_BAL_BAR_CREDIT_USD raw "$agent_plist" 2>/dev/null || true)"
   fi
   printf 'App:          %s\n' "$([[ -d "$app_path" ]] && printf '%s' "$app_path" || printf 'not installed')"
   printf 'Login agent:  %s\n' "$([[ -f "$agent_plist" ]] && printf '%s' "$agent_plist" || printf 'not registered')"
   printf 'State:        %s\n' "${state:-unknown}"
+  if [[ -n "$credit_usd" ]]; then
+    printf 'Credit price: $%s per Codex credit\n' "$credit_usd"
+  else
+    printf 'Credit price: not set (Codex shows plain credits)\n'
+  fi
 }
 
 case "$action" in
