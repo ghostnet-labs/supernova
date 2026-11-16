@@ -47,7 +47,7 @@ import Foundation
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
         setenv("CODEX_BIN", fake.path, 1)
         let fetched = try await CodexClient.fetch(timeout: .seconds(3))
-        check(fetched.headline?.remainingPercent == 60 && fetched.lifetimeTokens == nil, "optional usage failure must not hide available rate limits")
+        check(fetched.headline?.remainingPercent == 60 && fetched.monthTokens == nil, "optional usage failure must not hide available rate limits")
         let claude = scratch.appendingPathComponent("claude.json")
         try Data(#"{"rate_limits":{"five_hour":{"used_percentage":42,"resets_at":100},"seven_day":{"used_percentage":101,"resets_at":2000}},"captured_at":50}"#.utf8).write(to: claude)
         let captured = ClaudeSnapshot.load(from: claude, now: Date(timeIntervalSince1970: 200))!
@@ -87,7 +87,7 @@ import Foundation
         try [response("a", 10), response("a", 40), user, old].joined(separator: "\n")
             .write(to: projects.appendingPathComponent("demo/session.jsonl"), atomically: true, encoding: .utf8)
         try response("b", 5).write(to: subagents.appendingPathComponent("agent.jsonl"), atomically: true, encoding: .utf8)
-        // Saved days from deleted transcripts, and /stats totals through 20 days ago.
+        // Saved days from deleted transcripts, and /stats activity two days ago.
         let calendar = Calendar.current
         let dayKeys = DateFormatter()
         dayKeys.locale = Locale(identifier: "en_US_POSIX")
@@ -97,7 +97,7 @@ import Foundation
         try FileManager.default.createDirectory(at: history.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(#"{"\#(day(-10))":1000,"\#(day(-1))":50}"#.utf8).write(to: history)
         let stats = scratch.appendingPathComponent("stats-cache.json")
-        try Data(#"{"lastComputedDate":"\#(day(-20))","modelUsage":{"m":{"inputTokens":4,"outputTokens":6}},"dailyActivity":[{"date":"\#(day(-20))","messageCount":3}]}"#.utf8)
+        try Data(#"{"dailyActivity":[{"date":"\#(day(-2))","messageCount":3},{"date":"\#(day(-4))","messageCount":0}]}"#.utf8)
             .write(to: stats)
         let monthStart = dayKeys.string(from: calendar.dateInterval(of: .month, for: Date())!.start)
         let month = [(-10, 1000), (-1, 50), (0, 165)].filter { day($0.0) >= monthStart }.reduce(0) { $0 + $1.1 }
@@ -105,11 +105,12 @@ import Foundation
         for pass in ["first", "cached"] {
             let usage = log.scan()
             check(usage?.recentDays.count == BalanceSnapshot.chartDays && usage?.recentDays.last?.tokens == 165
-                  && usage?.monthTokens == month && usage?.lifetimeTokens == 10 + 1000 + 50 + 165 && usage?.streakDays == 2,
-                  "\(pass) Claude scan counts each streamed response once, adds saved days and /stats totals, and counts the streak")
+                  && usage?.monthTokens == month && usage?.streakDays == 3,
+                  "\(pass) Claude scan counts each streamed response once, adds saved days, and extends the streak with /stats activity")
         }
         try FileManager.default.removeItem(at: projects)
-        check(ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats).scan()?.lifetimeTokens == 1225,
+        let saved = ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats).scan()
+        check(saved?.recentDays.last?.tokens == 165 && saved?.monthTokens == month,
               "saved Claude days still count after Claude Code deletes their transcripts")
         print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude capture decoding, usage credits, and token logs")
     }

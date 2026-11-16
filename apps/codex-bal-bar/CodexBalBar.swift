@@ -41,7 +41,6 @@ struct BalanceSnapshot {
     let planName: String?
     let recentDays: [DailyUsage]
     let monthTokens: Int?
-    let lifetimeTokens: Int?
     let streakDays: Int?
     let fetchedAt: Date
     // Token counts from this Mac's logs rather than the account.
@@ -165,7 +164,6 @@ extension BalanceSnapshot {
         fetchedAt = now
 
         let summary = usage?["summary"] as? [String: Any]
-        lifetimeTokens = number(summary?["lifetimeTokens"]).map { Int($0) }
         streakDays = number(summary?["currentStreakDays"]).map { Int($0) }
 
         guard let buckets = usage?["dailyUsageBuckets"] as? [Any] else {
@@ -356,11 +354,10 @@ enum ClaudeAccountClient {
 // Claude Code logs each response's token counts in its session transcripts
 // and deletes transcripts after cleanupPeriodDays (30 by default). The app
 // saves every day it has counted so deleted transcripts still count, and
-// Claude Code's /stats totals cover the days before that.
+// Claude Code's /stats activity extends the streak to the days before that.
 struct ClaudeUsage {
     let recentDays: [DailyUsage]
     let monthTokens: Int
-    let lifetimeTokens: Int
     let streakDays: Int
     let scannedAt: Date
 }
@@ -403,8 +400,8 @@ final class ClaudeUsageLog: @unchecked Sendable {
             changed = true
         }
         if changed { save(history) }
-        let stats = statsTotals()
-        guard !history.isEmpty || stats != nil else { return nil }
+        let active = Set(history.filter { $0.value > 0 }.keys).union(statsActiveDays())
+        guard !history.isEmpty || !active.isEmpty else { return nil }
 
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
@@ -414,11 +411,6 @@ final class ClaudeUsageLog: @unchecked Sendable {
             }
         }
         let monthStart = days.string(from: calendar.dateInterval(of: .month, for: now)?.start ?? today)
-        // /stats totals already include every day through its last computed date.
-        let lifetime = (stats?.tokens ?? 0) + history.filter { $0.key > stats?.through ?? "" }.values.reduce(0, +)
-
-        var active = Set(history.filter { $0.value > 0 }.keys)
-        if let stats { active.formUnion(stats.activeDays) }
         // Like a streak shown during the day, one not yet extended today still counts.
         var day = active.contains(days.string(from: today)) ? today : calendar.date(byAdding: .day, value: -1, to: today) ?? today
         var streak = 0
@@ -427,7 +419,7 @@ final class ClaudeUsageLog: @unchecked Sendable {
             day = previous
         }
         return ClaudeUsage(recentDays: recentDays, monthTokens: history.filter { $0.key >= monthStart }.values.reduce(0, +),
-                           lifetimeTokens: lifetime, streakDays: streak, scannedAt: now)
+                           streakDays: streak, scannedAt: now)
     }
 
     // Re-reads only the transcripts that changed since the last scan.
@@ -488,21 +480,14 @@ final class ClaudeUsageLog: @unchecked Sendable {
         }
     }
 
-    // Claude Code's /stats saves totals through lastComputedDate, including
-    // days whose transcripts are gone. It only updates when /stats runs.
-    private func statsTotals() -> (through: String, tokens: Int, activeDays: Set<String>)? {
+    // Claude Code's /stats saves each day's activity, including days whose
+    // transcripts are gone. It only updates when /stats runs.
+    private func statsActiveDays() -> [String] {
         guard let data = try? Data(contentsOf: statsURL),
-              let stats = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let through = stats["lastComputedDate"] as? String,
-              let models = stats["modelUsage"] as? [String: Any] else { return nil }
-        let fields = ["inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"]
-        let tokens = models.values.reduce(0) { total, usage in
-            total + fields.reduce(0) { $0 + Int(number((usage as? [String: Any])?[$1]) ?? 0) }
-        }
-        let activeDays = (stats["dailyActivity"] as? [[String: Any]] ?? []).compactMap { day in
+              let stats = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return (stats["dailyActivity"] as? [[String: Any]] ?? []).compactMap { day in
             (number(day["messageCount"]) ?? 0) > 0 ? day["date"] as? String : nil
         }
-        return (through, tokens, Set(activeDays))
     }
 }
 
@@ -641,7 +626,7 @@ final class BalanceModel: ObservableObject {
         return BalanceSnapshot(meters: (claude?.meters ?? []) + (claudeAccount?.meters ?? []), creditBalance: nil,
                                limitReached: claudeAccount?.limitReached, planName: claudeAccount?.planName,
                                recentDays: claudeUsage?.recentDays ?? [], monthTokens: claudeUsage?.monthTokens,
-                               lifetimeTokens: claudeUsage?.lifetimeTokens, streakDays: claudeUsage?.streakDays,
+                               streakDays: claudeUsage?.streakDays,
                                fetchedAt: fetchedAt, tokensFromThisMac: true)
     }
 
@@ -1174,11 +1159,10 @@ struct UsageChart: View {
         days.indices.filter { $0 % 7 == 0 && $0 < days.count - 3 }.map { days[$0].day }
     }
 
-    private var readout: String {
-        if let hovered, let day = days.first(where: { $0.day == hovered }) {
-            return "\(day.day.formatted(.dateTime.month(.abbreviated).day())) · \(compactTokens(day.tokens)) tokens"
-        }
-        return "\(compactTokens(days.reduce(0) { $0 + $1.tokens })) total"
+    // The hovered day's count; nothing otherwise.
+    private var readout: String? {
+        guard let hovered, let day = days.first(where: { $0.day == hovered }) else { return nil }
+        return "\(day.day.formatted(.dateTime.month(.abbreviated).day())) · \(compactTokens(day.tokens)) tokens"
     }
 
     var body: some View {
@@ -1187,7 +1171,9 @@ struct UsageChart: View {
                 Text("Daily tokens\(onThisMac ? " on this Mac" : ""), last \(BalanceSnapshot.chartDays) days")
                     .font(.subheadline.weight(.medium))
                 Spacer()
-                Text(readout).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                if let readout {
+                    Text(readout).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
             }
             Chart(days) { day in
                 BarMark(x: .value("Day", day.day, unit: .day), y: .value("Tokens", day.tokens), width: .ratio(0.75))
@@ -1235,8 +1221,6 @@ struct StatRow: View {
     var body: some View {
         HStack(alignment: .top) {
             stat("This month", snapshot.monthTokens.map(compactTokens))
-            Spacer()
-            stat("Lifetime", snapshot.lifetimeTokens.map(compactTokens))
             Spacer()
             stat("Streak", snapshot.streakDays.map { "\($0) \($0 == 1 ? "day" : "days")" })
         }
