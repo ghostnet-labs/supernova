@@ -170,6 +170,9 @@ loads.
 `tests/setup/test_overlay.sh` checks every hook with it on and off. Put
 credentials in the overlay's `$JOB/.env.zsh`; fix mode creates it from
 `$JOB/env.zsh.example`. `.env*` files and `.local/` are never committed.
+Settings every work machine shares belong in the overlay's `zshrc.zsh` as
+exports, such as `CODEX_BAL_BAR_CREDIT_USD` for Codex Balance's dollar view,
+so each machine's `--install` and `reinstall-apps` pick them up.
 Tracked general commands live in `dotfiles/.bin`, machine-local commands in
 `~/.local/bin`, and job commands in `$WORK_DIR/bin-$JOB`.
 

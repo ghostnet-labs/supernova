@@ -37,6 +37,7 @@ Options:
 
 Examples:
   codex-bal-bar --install
+  CODEX_BAL_BAR_CREDIT_USD=0.01 codex-bal-bar --install
   codex-bal-bar
   codex-bal-bar --claude-hook
   codex-bal-bar --stop
@@ -47,6 +48,8 @@ Environment:
   CODEX_BAL_BAR_INTERVAL     Codex refresh interval in seconds, minimum 60 (default: 300).
   CODEX_BAL_BAR_CREDIT_USD   US dollars per Codex credit, to show Codex credits as dollars.
                              --install keeps the last value when unset; empty removes it.
+                             To set it on every machine, export it from a work overlay'\''s
+                             zshrc.zsh, so each install records it.
   CODEX_BAL_BAR_APP_DIR      Install directory (default: ~/Applications).
   CODEX_BAL_BAR_CLAUDE_FILE  Saved Claude limits file (default: ~/Library/Application
                              Support/Codex Balance/claude-rate-limits.json).'
