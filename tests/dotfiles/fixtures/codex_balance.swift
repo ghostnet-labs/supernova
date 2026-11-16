@@ -47,6 +47,63 @@ import Foundation
         check(captured.meters.map(\.remainingPercent) == [100, 0], "handle expired Claude windows and overuse")
         try Data("invalid".utf8).write(to: claude)
         check(ClaudeSnapshot.load(from: claude) == nil, "invalid captures are unavailable, not a crash")
-        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, and Claude capture decoding")
+
+        let credits = ClaudeAccount(usage: ["extra_usage": [
+            "is_enabled": true, "monthly_limit": 50_000, "used_credits": 1234.0, "currency": "USD", "decimal_places": 2]])
+        check(credits.meters.map(\.remainingPercent) == [97] && credits.meters[0].title == "Credits"
+              && credits.meters[0].detail.contains("12.34") && credits.limitReached == nil
+              && credits.meters[0].resetsAt == Calendar.current.dateInterval(of: .month, for: Date())?.end,
+              "decode Claude usage credits from minor units with a monthly reset")
+        let spent = ClaudeAccount(usage: ["extra_usage": [
+            "is_enabled": true, "monthly_limit": 100, "used_credits": 120, "spend_limit_reached": true]])
+        check(spent.meters.map(\.remainingPercent) == [0] && spent.limitReached != nil, "report a reached Claude spend limit")
+        check(ClaudeAccount(usage: ["extra_usage": ["is_enabled": false, "monthly_limit": 100, "used_credits": 1]]).meters.isEmpty,
+              "disabled Claude usage credits add no meter")
+        do {
+            _ = try ClaudeAccountClient.login(from: Data(#"{"claudeAiOauth":{"accessToken":"t","expiresAt":1000}}"#.utf8))
+            check(false, "an expired Claude Code login must not be used")
+        } catch is FetchError {}
+        let login = try ClaudeAccountClient.login(
+            from: Data(#"{"claudeAiOauth":{"accessToken":"t","expiresAt":4102444800000,"subscriptionType":"enterprise"}}"#.utf8))
+        check(login.planName == "Enterprise", "read the Claude plan from the login")
+
+        let projects = scratch.appendingPathComponent("projects")
+        let subagents = projects.appendingPathComponent("demo/session/subagents")
+        try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
+        let stamps = ISO8601DateFormatter()
+        stamps.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        func response(_ id: String, _ output: Int, at time: Date = Date()) -> String {
+            #"{"type":"assistant","timestamp":"\#(stamps.string(from: time))","requestId":"req_\#(id)","message":{"id":"msg_\#(id)","usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":\#(output)}}}"#
+        }
+        let user = #"{"type":"user","timestamp":"\#(stamps.string(from: Date()))","message":{"content":"usage"}}"#
+        let old = response("old", 1, at: Date().addingTimeInterval(-60 * 86_400))
+        try [response("a", 10), response("a", 40), user, old].joined(separator: "\n")
+            .write(to: projects.appendingPathComponent("demo/session.jsonl"), atomically: true, encoding: .utf8)
+        try response("b", 5).write(to: subagents.appendingPathComponent("agent.jsonl"), atomically: true, encoding: .utf8)
+        // Saved days from deleted transcripts, and /stats totals through 20 days ago.
+        let calendar = Calendar.current
+        let dayKeys = DateFormatter()
+        dayKeys.locale = Locale(identifier: "en_US_POSIX")
+        dayKeys.dateFormat = "yyyy-MM-dd"
+        func day(_ offset: Int) -> String { dayKeys.string(from: calendar.date(byAdding: .day, value: offset, to: Date())!) }
+        let history = scratch.appendingPathComponent("support/claude-daily-tokens.json")
+        try FileManager.default.createDirectory(at: history.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"\#(day(-10))":1000,"\#(day(-1))":50}"#.utf8).write(to: history)
+        let stats = scratch.appendingPathComponent("stats-cache.json")
+        try Data(#"{"lastComputedDate":"\#(day(-20))","modelUsage":{"m":{"inputTokens":4,"outputTokens":6}},"dailyActivity":[{"date":"\#(day(-20))","messageCount":3}]}"#.utf8)
+            .write(to: stats)
+        let monthStart = dayKeys.string(from: calendar.dateInterval(of: .month, for: Date())!.start)
+        let month = [(-10, 1000), (-1, 50), (0, 165)].filter { day($0.0) >= monthStart }.reduce(0) { $0 + $1.1 }
+        let log = ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats)
+        for pass in ["first", "cached"] {
+            let usage = log.scan()
+            check(usage?.recentDays.count == BalanceSnapshot.chartDays && usage?.recentDays.last?.tokens == 165
+                  && usage?.monthTokens == month && usage?.lifetimeTokens == 10 + 1000 + 50 + 165 && usage?.streakDays == 2,
+                  "\(pass) Claude scan counts each streamed response once, adds saved days and /stats totals, and counts the streak")
+        }
+        try FileManager.default.removeItem(at: projects)
+        check(ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats).scan()?.lifetimeTokens == 1225,
+              "saved Claude days still count after Claude Code deletes their transcripts")
+        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude capture decoding, usage credits, and token logs")
     }
 }

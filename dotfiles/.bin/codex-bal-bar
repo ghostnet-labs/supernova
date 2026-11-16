@@ -21,6 +21,8 @@ Description:
   plan usage in the menu bar and a usage panel when clicked. Install builds the
   app from apps/codex-bal-bar and registers a login agent. Installation also
   connects Claude Code'\''s status line to share its plan limits automatically.
+  The Claude tab also shows usage credits, such as an Enterprise monthly spend
+  limit, read with Claude Code'\''s login, and token use from its session logs.
   With no ACTION, show the current status.
 
 Options:
@@ -245,7 +247,7 @@ case "$action" in
     else
       python3 "$source_dir/claude-statusline.py" --uninstall
     fi
-    rm -f -- "$agent_plist" "$claude_file"
+    rm -f -- "$agent_plist" "$claude_file" "${claude_file%/*}/claude-daily-tokens.json"
     rm -rf -- "$app_path"
     printf '✓ Removed %s\n' "$app_name"
     ;;
