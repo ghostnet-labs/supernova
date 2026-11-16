@@ -17,10 +17,11 @@ usage() {
   codex-bal-bar [ACTION]
 
 Description:
-  Manage the Codex Balance menu bar app, which shows remaining Codex and Claude
-  plan usage in the menu bar and a usage panel when clicked. Install builds the
-  app from apps/codex-bal-bar and registers a login agent. Installation also
-  connects Claude Code'\''s status line to share its plan limits automatically.
+  Manage the Codex Balance menu bar app, which shows how much of the Codex and
+  Claude plan limits is used in the menu bar and a usage panel when clicked.
+  Install builds the app from apps/codex-bal-bar and registers a login agent.
+  Installation also connects Claude Code'\''s status line to share its plan
+  limits automatically.
   The Claude tab also shows usage credits, such as an Enterprise monthly spend
   limit, read with Claude Code'\''s login, and token use from its session logs.
   With no ACTION, show the current status.
