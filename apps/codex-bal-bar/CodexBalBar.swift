@@ -23,7 +23,10 @@ struct LimitMeter: Identifiable {
     let resetsAt: Date?
     let detail: String
 
-    var remainingFraction: Double { min(1, max(0, Double(remainingPercent) / 100)) }
+    // The app shows how much of each limit is used, so every figure and bar
+    // grows toward the limit.
+    var usedPercent: Int { min(100, max(0, 100 - remainingPercent)) }
+    var usedFraction: Double { Double(usedPercent) / 100 }
 }
 
 private func headlineMeter(in meters: [LimitMeter]) -> LimitMeter? {
@@ -844,8 +847,8 @@ func menuBarImage(_ parts: [(logo: NSImage, text: String)]) -> NSImage {
 // Codex first, then Claude when it has reported a plan limit or usage credits.
 @MainActor
 func menuBarImage(model: BalanceModel) -> NSImage {
-    let codex = model.snapshot?.headline.map { "\($0.remainingPercent)%" } ?? "--"
-    let claude = model.claudeSnapshot?.headline.map { "\($0.remainingPercent)%" }
+    let codex = model.snapshot?.headline.map { "\($0.usedPercent)%" } ?? "--"
+    let claude = model.claudeSnapshot?.headline.map { "\($0.usedPercent)%" }
     var parts = [(logo: Logo.codex, text: codex)]
     if let claude { parts.append((logo: Logo.claude, text: claude)) }
     return menuBarImage(parts)
@@ -1056,8 +1059,8 @@ struct LimitsSummary: View {
             let severity = Severity(remainingPercent: headline.remainingPercent)
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text("\(headline.remainingPercent)%").font(.system(size: 48, weight: .semibold))
-                    Text("left").font(.title3).foregroundStyle(.secondary)
+                    Text("\(headline.usedPercent)%").font(.system(size: 48, weight: .semibold))
+                    Text("used").font(.title3).foregroundStyle(.secondary)
                     Spacer()
                     if let limitReached {
                         statusLabel(limitReached, symbol: "xmark.octagon.fill", color: Palette.critical)
@@ -1114,10 +1117,10 @@ struct MeterRow: View {
                 Spacer()
                 Text(meter.detail).font(.caption).foregroundStyle(.secondary).monospacedDigit()
             }
-            Meter(fraction: meter.remainingFraction, color: Severity(remainingPercent: meter.remainingPercent).color)
+            Meter(fraction: meter.usedFraction, color: Severity(remainingPercent: meter.remainingPercent).color)
                 .accessibilityElement()
-                .accessibilityLabel("\(meter.title) remaining")
-                .accessibilityValue("\(meter.remainingPercent) percent")
+                .accessibilityLabel("\(meter.title) used")
+                .accessibilityValue("\(meter.usedPercent) percent")
             if let resetsAt = meter.resetsAt {
                 Text(resetText(resetsAt))
                     .font(.caption)

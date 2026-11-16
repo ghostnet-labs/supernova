@@ -10,7 +10,8 @@ import Foundation
             "primary": ["usedPercent": 23.4, "windowDurationMins": 300, "resetsAt": 2_000_000_000],
             "secondary": ["usedPercent": 101, "windowDurationMins": 10_080]]]]
         let snapshot = try BalanceSnapshot(account: account, rateLimits: limits, usage: nil)
-        check(snapshot.meters.map(\.remainingPercent) == [77, 0], "round and clamp rolling limits")
+        check(snapshot.meters.map(\.remainingPercent) == [77, 0] && snapshot.meters.map(\.usedPercent) == [23, 100],
+              "round and clamp rolling limits, shown as the share used")
         check(snapshot.headline?.id == "primary" && snapshot.planName == "Pro", "choose primary meter and plan")
         let credit: [String: Any] = ["rateLimits": ["individualLimit": ["limit": "1000", "used": "250.5"]]]
         let plain = try BalanceSnapshot(account: account, rateLimits: credit, usage: nil, creditUSD: nil)
