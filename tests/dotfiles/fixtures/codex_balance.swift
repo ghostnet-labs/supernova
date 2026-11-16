@@ -86,6 +86,31 @@ import Foundation
             from: Data(#"{"claudeAiOauth":{"accessToken":"t","expiresAt":4102444800000,"subscriptionType":"enterprise"}}"#.utf8))
         check(login.planName == "Enterprise", "read the Claude plan from the login")
 
+        var reads = 0
+        var renewals = 0
+        let renewed = try ClaudeAccountClient.currentLogin(read: {
+            reads += 1
+            if reads == 1 { throw ClaudeAccountClient.ExpiredLogin() }
+            return login
+        }, renew: { renewals += 1; return true }, now: Date(timeIntervalSince1970: 1_000_000))
+        check(renewed.accessToken == "t" && reads == 2 && renewals == 1,
+              "have Claude Code renew an expired login once, then read it again")
+        do {
+            _ = try ClaudeAccountClient.currentLogin(read: { throw ClaudeAccountClient.ExpiredLogin() },
+                                                     renew: { renewals += 1; return true },
+                                                     now: Date(timeIntervalSince1970: 1_000_060))
+            check(false, "a login Claude Code just failed to renew must stay expired")
+        } catch is ClaudeAccountClient.ExpiredLogin {}
+        check(renewals == 1, "ask Claude Code to renew its login at most every 15 minutes")
+        let fakeClaude = scratch.appendingPathComponent("claude fixture")
+        let claudeArguments = scratch.appendingPathComponent("claude-arguments")
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(claudeArguments.path)'\n".write(to: fakeClaude, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeClaude.path)
+        setenv("CLAUDE_BIN", fakeClaude.path, 1)
+        check(ClaudeAccountClient.renewLogin()
+              && (try? String(contentsOf: claudeArguments, encoding: .utf8)) == "-p\n/usage\n--no-session-persistence\n",
+              "renew the login with Claude Code's local /usage command, which makes no model request")
+
         let projects = scratch.appendingPathComponent("projects")
         let subagents = projects.appendingPathComponent("demo/session/subagents")
         try FileManager.default.createDirectory(at: subagents, withIntermediateDirectories: true)
@@ -124,6 +149,6 @@ import Foundation
         let saved = ClaudeUsageLog(root: projects, historyURL: history, statsURL: stats).scan()
         check(saved?.recentDays.last?.tokens == 165 && saved?.monthTokens == month,
               "saved Claude days still count after Claude Code deletes their transcripts")
-        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude plan windows and credits, and token logs")
+        print("PASS: Codex Balance RPC, optional usage errors, account types, limit windows, Claude plan windows and credits, login renewal, and token logs")
     }
 }

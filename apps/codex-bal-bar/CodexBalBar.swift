@@ -275,6 +275,7 @@ enum ClaudeAccountClient {
     }
 
     private static let notSignedIn = FetchError("Not signed in to a Claude plan. Run claude, then /login, in a terminal.")
+    private static var lastRenewal: Date?
 
     // Claude Code keeps its login in the keychain on macOS and in
     // .credentials.json elsewhere.
@@ -289,12 +290,25 @@ enum ClaudeAccountClient {
         guard let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = saved["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String, !token.isEmpty else { throw notSignedIn }
-        // Only Claude Code may refresh its token: a refresh here would replace
-        // the login Claude Code holds and sign it out.
         if let expiresAt = number(oauth["expiresAt"]), Date(timeIntervalSince1970: expiresAt / 1000) <= now {
             throw ExpiredLogin()
         }
         return Login(accessToken: token, planName: displayPlanName(oauth["subscriptionType"] as? String))
+    }
+
+    // Only Claude Code may refresh its token: a refresh here would replace the
+    // login Claude Code holds and sign it out. Claude Code renews it whenever
+    // it runs, so an expired login gets one local Claude Code command, at most
+    // every 15 minutes, before the app gives up.
+    static func currentLogin(read: () throws -> Login = readLogin, renew: () -> Bool = renewLogin,
+                             now: Date = Date()) throws -> Login {
+        do {
+            return try read()
+        } catch is ExpiredLogin where lastRenewal.map({ now.timeIntervalSince($0) >= 15 * 60 }) ?? true {
+            lastRenewal = now
+            guard renew() else { throw ExpiredLogin() }
+            return try read()
+        }
     }
 
     // Claude Code writes this item with the security tool, which the item
@@ -312,8 +326,38 @@ enum ClaudeAccountClient {
         return process.terminationStatus == 0 ? data : nil
     }
 
+    static func locateClaude() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        var candidates: [String] = []
+        if let override = environment["CLAUDE_BIN"], !override.isEmpty { candidates.append(override) }
+        candidates += (environment["PATH"] ?? "").split(separator: ":").map { "\($0)/claude" }
+        candidates += ["\(NSHomeDirectory())/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+        return candidates.first(where: FileManager.default.isExecutableFile(atPath:)).map(URL.init(fileURLWithPath:))
+    }
+
+    // Claude Code's local /usage command makes no model request, but it
+    // renews an expired login before its own requests.
+    static func renewLogin() -> Bool {
+        guard let claude = locateClaude() else { return false }
+        let process = Process()
+        process.executableURL = claude
+        process.arguments = ["-p", "/usage", "--no-session-persistence"]
+        process.currentDirectoryURL = FileManager.default.temporaryDirectory
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return false }
+        let deadline = Date().addingTimeInterval(30)
+        while process.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.1) }
+        if process.isRunning {
+            process.terminate()
+            return false
+        }
+        return process.terminationStatus == 0
+    }
+
     static func fetch(timeout: TimeInterval = 15) async throws -> ClaudeAccount {
-        let login = try readLogin()
+        let login = try currentLogin()
         var request = URLRequest(url: usageURL, timeoutInterval: timeout)
         request.setValue("Bearer \(login.accessToken)", forHTTPHeaderField: "Authorization")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
