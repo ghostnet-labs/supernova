@@ -127,11 +127,12 @@ import os
         let workspace = WorkspaceModel(sessions: store, worktrees: worktrees, defaults: defaults, start: false,
                                       confirmAgents: { confirmations += 1 })
         let begin = Date()
-        worktrees.scan = { await WorktreeScanner.scan(projectRoot: root + "/dev", additionalPaths: [external, root + "/alias"], sessions: workspace.agentSessions, running: []) }
+        worktrees.scan = { await WorktreeScanner.scan(projectRoot: root + "/dev", additionalPaths: [external, root + "/alias", root + "/copy"], sessions: workspace.agentSessions, running: []) }
         worktrees.refresh()
         while worktrees.loading { try await Task.sleep(for: .milliseconds(10)) }
-        check(workspace.groups.count == 2, "common Git directory deduplicates linked checkouts and aliases")
-        check(worktrees.records.count == 3, "all worktrees and external repository discovered")
+        check(workspace.groups.count == 3, "common Git directory deduplicates linked checkouts and aliases")
+        check(worktrees.records.count == 4, "all worktrees, external and copied repositories discovered")
+        check(worktrees.records.filter { $0.path == linked }.map(\.repositoryRoot) == [repo], "a copied repository does not claim the original's worktree")
         check(workspace.worktreeFor(store.sessions.first { $0.id == "live" }!)?.path == repo, "nested cwd maps to checkout")
         check(workspace.worktreeFor(store.sessions.first { $0.id == "alias" }!)?.path == repo, "symlink maps to checkout")
         check(workspace.worktreeFor(store.sessions.first { $0.id == "claude:live" }!)?.path == linked, "provider-prefixed identity and linked checkout")
