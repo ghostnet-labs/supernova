@@ -9,16 +9,11 @@ JIT canary. It mints the JIT configuration on the host and passes it through
 stdin; it never copies host GitHub credentials or keys to the guest.
 The Pro work below remains deferred by the user.
 
-Run the baseline macOS VM with 12 GiB RAM and 4 vCPU. First inspect the
-Pro chip, host OS, disk and existing workloads. Keep at least 12 GB for the
-host in this baseline. Do not also allocate an 8 GiB Linux worker unless
-the operating profile is changed.
-
-Use a maintained macOS virtualization tool after checking its current
-license and guest compatibility. With Tart, the host operations are:
-clone a verified pinned macOS image to a new named VM, set CPU/memory,
-and start it without host-home or host-credential sharing. Image cloning
-is deliberately not automated before those inputs are verified.
+Run the baseline macOS guest with Lima at 6 GiB RAM, 2 vCPU and an 80 GiB
+disk (`preflight.py` `guest_config`). First inspect the Pro chip, host OS,
+disk and existing workloads. Keep at least 8 GiB of allocated memory for the
+host, as MIGRATION.md's capacity table requires. Image cloning is
+deliberately not automated before the pinned image inputs are verified.
 
 Inside the guest:
 0. Provision the root-owned `/etc/ci-runner-vm` marker through the reviewed
