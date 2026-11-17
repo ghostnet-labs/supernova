@@ -770,7 +770,7 @@ build_repair_plan() {
   local candidate
   local found
   local -a discovered=()
-  local -a action_order=(dependencies radar codex claude work paths metadata links hooks shell fzf platform)
+  local -a action_order=(dependencies radar codex claude work paths metadata links hooks shell fzf history platform)
 
   SETUP_PLAN_ACTION_IDS=()
   (( ${#SETUP_FINDING_IDS[@]} > 0 )) || return 0
@@ -813,6 +813,7 @@ repair_action_label() {
     hooks) printf 'Enable the repository Git hooks' ;;
     shell) printf 'Configure the managed Zsh login shell' ;;
     fzf) printf 'Install and secure the pinned fzf-tab checkout' ;;
+    history) printf 'Import Zsh history into Atuin once' ;;
     platform) printf 'Install platform-specific applications, settings and fonts' ;;
     work) printf 'Create the selected work scaffolding' ;;
     *) printf '%s' "$1" ;;

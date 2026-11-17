@@ -306,11 +306,12 @@ integration, and the daemon are disabled. Reloading the shell abandons a
 command whose history entry is still being written, so that entry never lands
 in the wrong scope's database.
 
-Existing shell history is never imported automatically. For an explicit import,
-open the intended scoped shell, verify the destination above, and import only a
-file already separated into that scope: `HISTFILE=/path/to/personal-history atuin
-import zsh`. Do not point it at a mixed `~/.zsh_history`. The normal Zsh history
-file and Up-arrow history continue working independently of Atuin.
+A machine runs one scope, so `./setup.sh --fix` imports `~/.zsh_history` into
+that scope's Atuin history once, after installing Atuin, and leaves a
+`zsh-history-imported` marker in the scope's data folder so later runs skip it.
+`--check` reports a pending import as a warning. Delete the marker to import
+again. The normal Zsh history file and Up-arrow history continue working
+independently of Atuin.
 
 ## Pull requests
 
