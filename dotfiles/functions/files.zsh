@@ -818,7 +818,7 @@ extract() {
 # toolbox-example: fvfind
 fvfind() {
   local file
-  file=$(fzf-tmux --exact -p 80%,60% --preview 'bat --theme="gruvbox" --style=plain --color=always {}' --preview-window=right:50%)
+  file=$(fzf-tmux --exact -p 80%,60% --preview 'bat --theme="gruvbox-dark" --style=plain --color=always {}' --preview-window=right:50%)
   [ -n "$file" ] && vim "$file"
 }
 
