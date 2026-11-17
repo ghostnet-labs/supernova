@@ -81,10 +81,11 @@ history and turned common patterns into the functions listed below. Future
 commands appear through history automatically; creating more named functions is
 a separate code change.
 
-An existing Zsh archive that mixes Personal and Work commands belongs in the
+`./setup.sh --fix` imports the machine's own `~/.zsh_history` into its scope
+once. An older Zsh archive that mixes Personal and Work commands belongs in the
 Work history scope, not Personal. Helper names can also be imported as
 suggestions without executing them. Both are one-time local operations, not
-imports that run on every machine or every shell startup.
+imports that run on every shell startup.
 
 Raw history has its original text, including multiline commands. It may refer
 to an old directory, a different cluster, or an unavailable tool. Toolbox checks
@@ -371,7 +372,8 @@ On each machine where you want these features:
 Functions and tracked Personal recipes travel with Git. Old raw history,
 one-time helper-name imports, local Work recipes, and hardware
 projects do not. A fresh machine can discover functions in Toolbox immediately
-after loading them; Atuin learns their invocations as you use them. Old history
+after loading them; Atuin learns their invocations as you use them. Fix mode
+imports only that machine's own `~/.zsh_history`; history from another machine
 requires an explicit import into the intended scope. Never automatically treat
 a mixed legacy history file as Personal history.
 

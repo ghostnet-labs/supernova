@@ -704,6 +704,21 @@ check_zj_radar() {
   fi
 }
 
+check_atuin_history() {
+  local history_file="$HOME/.zsh_history"
+  local data_dir
+
+  setup_state_check "Atuin history import"
+  data_dir="$(setup_atuin_data_dir "$CONFIG_WORK_ENV" "$CONFIG_JOB")"
+  if [[ ! -s "$history_file" ]]; then
+    setup_state_complete "no Zsh history to import into Atuin"
+  elif [[ -e "$data_dir/$SETUP_ATUIN_HISTORY_MARKER" ]]; then
+    setup_state_complete "Zsh history is imported into Atuin's ${data_dir##*/} history"
+  else
+    setup_state_warn "~/.zsh_history ($(wc -l <"$history_file" | tr -d ' ') lines) is not yet imported into Atuin's ${data_dir##*/} history"
+  fi
+}
+
 check_rectangle_settings() {
   local setting key value_type value current
 
@@ -835,6 +850,8 @@ setup_state_scan() {
   check_fzf_tab
   SETUP_STATE_ACTION="radar"
   check_zj_radar
+  SETUP_STATE_ACTION="history"
+  check_atuin_history
 
   SETUP_STATE_AREA="Platform Assets"
   SETUP_STATE_ACTION="platform"

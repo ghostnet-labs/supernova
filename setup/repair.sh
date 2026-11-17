@@ -1343,6 +1343,57 @@ sync_claude_settings() {
   return "$sync_status"
 }
 
+# Imports ~/.zsh_history into the selected scope's Atuin history once, so
+# Ctrl+R starts with the shell's past commands. The marker stops later runs.
+import_atuin_history() {
+  local history_file="$HOME/.zsh_history"
+  local data_dir
+  local config_dir
+  local scope
+  local first_line=""
+
+  data_dir="$(setup_atuin_data_dir "$WORK_ENV" "$JOB")"
+  scope="${data_dir##*/}"
+  config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/atuin/scopes/$scope"
+  header "Importing Zsh history into Atuin"
+  if [[ ! -s "$history_file" || -e "$data_dir/$SETUP_ATUIN_HISTORY_MARKER" ]]; then
+    info "Zsh history needs no import into Atuin"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == true ]]; then
+    dry "Import $history_file into Atuin's $scope history"
+    return 0
+  fi
+  if ! command -v atuin >/dev/null 2>&1; then
+    fail "atuin is required to import Zsh history"
+    return 1
+  fi
+  # Use the scope's config the shell uses, and leave one setup didn't write.
+  [[ -e "$config_dir/config.toml" ]] && IFS= read -r first_line <"$config_dir/config.toml"
+  if [[ -e "$config_dir/config.toml" && "$first_line" != '# Managed by setup: local Atuin history.' ]]; then
+    fail "$config_dir/config.toml is not setup-managed; move it aside to import Zsh history"
+    return 1
+  fi
+  if ! (umask 077 && mkdir -p -- "$config_dir" "$data_dir" &&
+    { [[ -e "$config_dir/config.toml" ]] || cp -- "$SETUP_DIR/dotfiles/atuin/config.toml" "$config_dir/config.toml"; }); then
+    fail "Could not prepare Atuin's $scope folders"
+    return 1
+  fi
+  if ! run_spinner "Importing $history_file into Atuin's $scope history" \
+    env HISTFILE="$history_file" ATUIN_CONFIG_DIR="$config_dir" ATUIN_DATA_DIR="$data_dir" \
+    ATUIN_DB_PATH="$data_dir/history.db" ATUIN_RECORD_STORE_PATH="$data_dir/records.db" \
+    ATUIN_KEY_PATH="$data_dir/key" ATUIN_AUTO_SYNC=false ATUIN_UPDATE_CHECK=false \
+    ATUIN_DAEMON__ENABLED=false atuin import zsh; then
+    fail "Atuin could not import $history_file"
+    return 1
+  fi
+  if ! : >"$data_dir/$SETUP_ATUIN_HISTORY_MARKER"; then
+    fail "Could not record the Atuin history import in $data_dir"
+    return 1
+  fi
+  pass "Imported $history_file into Atuin's $scope history"
+}
+
 # Keep the one encoder used for managed Codex TOML current without upgrading
 # unrelated Homebrew packages. An offline upgrade is non-fatal only when the
 # already installed encoder passes the real managed-document round trip.
@@ -1473,6 +1524,7 @@ setup_repair_apply() (
   setup_repair_has_action hooks "$@" && configure_git_hooks
   setup_repair_has_action shell "$@" && configure_zsh_shell
   setup_repair_has_action fzf "$@" && install_fzf_tab
+  setup_repair_has_action history "$@" && import_atuin_history
   if setup_repair_has_action platform "$@"; then
     install_apps
     configure_rectangle

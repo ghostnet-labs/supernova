@@ -207,6 +207,15 @@ setup_install_method() {
   esac
 }
 
+# Atuin's per-scope data folder, named as dotfiles/functions/atuin.zsh names it.
+# Fix mode imports ~/.zsh_history into it once and leaves this marker there.
+SETUP_ATUIN_HISTORY_MARKER="zsh-history-imported"
+setup_atuin_data_dir() {
+  local scope=personal
+  [[ "$1" == true ]] && scope="work-$2"
+  printf '%s/atuin/scopes/%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}" "$scope"
+}
+
 setup_zj_radar_target() {
   local current_platform="$1"
   local architecture
