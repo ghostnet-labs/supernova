@@ -15,10 +15,9 @@ def source_hashes(source):
         + list((source.parent / "lib/agents").glob("*.swift"))
         + [source / "Info.plist", source / "session_stream.py"]
     )
-    if source.name == "agent-workspace":
-        inputs += list((source.parent / "lib/worktrees").glob("*.swift"))
-        inputs.append(source / "sign_app.py")
-        inputs += list((source / "fonts").glob("*"))
+    inputs += list((source.parent / "lib/worktrees").glob("*.swift"))
+    inputs.append(source / "sign_app.py")
+    inputs += list((source / "fonts").glob("*"))
     inputs += [Path(__file__).resolve(), root / "dotfiles/.bin" / source.name]
     inputs += [
         source.parent / "lib" / name
@@ -27,7 +26,6 @@ def source_hashes(source):
             "GhosttyLaunch.swift",
             "GitStatus.swift",
             "SessionPresentation.swift",
-            "HardwareReport.swift",
             "TextLine.swift",
             "octicons/Octicons.swift",
         )
@@ -66,8 +64,7 @@ def main():
         if json.loads(manifest.read_text()) != source_hashes(source):
             raise SystemExit("Installed sources do not match the build manifest")
     elif command == "plist":
-        workspace = source.name == "agent-workspace"
-        prefix = "AGENT_WORKSPACE" if workspace else "AGENT_CONTROL"
+        prefix = "AGENT_WORKSPACE"
         destination = Path(remaining[0])
         previous = (
             plistlib.loads(destination.read_bytes()).get("EnvironmentVariables", {})
@@ -93,8 +90,8 @@ def main():
             if value:
                 environment[key] = value
         data = {
-            "Label": "local.agent-workspace" if workspace else "local.agent-control-center",
-            "ProgramArguments": [str(bundle / "Contents/MacOS" / ("AgentWorkspace" if workspace else "AgentControlCenter"))],
+            "Label": "local.agent-workspace",
+            "ProgramArguments": [str(bundle / "Contents/MacOS" / "AgentWorkspace")],
             "EnvironmentVariables": environment,
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},

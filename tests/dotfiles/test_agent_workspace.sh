@@ -121,6 +121,7 @@ assert_contains "$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:AGENT
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments' "$plist")" != *'--open'* ]] || fail_test 'login opens window'
 assert_contains "$(cat "$bundle/Contents/Resources/SourceHashes.json")" 'apps/lib/agents/Store.swift'
 assert_contains "$(cat "$bundle/Contents/Resources/SourceHashes.json")" 'apps/lib/worktrees/Worktrees.swift'
+assert_not_contains "$(cat "$bundle/Contents/Resources/SourceHashes.json")" 'apps/lib/HardwareReport.swift'
 cp "$bundle/Contents/MacOS/AgentWorkspace" "$scratch/compiled"
 cp "$plist" "$scratch/previous.plist"
 export WORKSPACE_TEST_COMPILED="$scratch/compiled"
