@@ -186,7 +186,7 @@ detect loss of the entire Studio.
 
 ## Pro and Air
 
-See `macos/README.md` for the 12 GiB macOS guest and conventional ARM64
+See `macos/README.md` for the 6 GiB / 2 vCPU Lima macOS guest and conventional ARM64
 runner. The Pro remains optional to the Linux cluster; required macOS jobs
 need a fallback when it is asleep. An optional 8 GiB Linux-worker profile
 is a later change with private inter-node connectivity and drain testing,
