@@ -15,6 +15,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
   - `tests/setup/` covers `setup.sh`, `bootstrap.sh`, `setup/`, the Git hooks, and repository-wide rules such as no here-documents
   - `tests/dotfiles/` covers `dotfiles/` and the apps under `apps/`; a topic's functions are usually covered by `test_functions_<topic>.zsh`
   - `tests/github/` covers `.github/scripts/`, the ruleset, the linter pins in `ci.yml`, and `.claude/settings.json`
+  - `tests/infra/` covers `infra/runner-platform/`
   - `tests/fixtures/overlay/` is the fake `acme` work overlay the work-scope tests use
   - Put new tests here, never in a PATH directory such as `dotfiles/.bin`. Any `tests/*/test_*.{sh,zsh,py}` file is found automatically. Give it a `# setup-test: Label` header in its first five lines naming what it covers (for example `Git hooks`, shown as `Tests: Git hooks`), and add `# setup-test-scope: work` when it exercises Work scope (a work overlay's own `$WORK_ROOT/tests/$JOB/` tests always are)
   - New shell tests source `tests/lib/assert.sh` for `fail_test`, `assert_contains`, `assert_not_contains`, and `assert_equals` instead of defining their own. Python tests that need Textual must skip, not fail, when it is missing
@@ -30,6 +31,7 @@ Dotfiles and system setup repo. Manages shell/editor configs, install automation
 - `dotfiles/.bin/reinstall-apps` rebuilds and restarts every app with an `Info.plist` under `apps/` (and under `$WORK_ROOT/apps` with a work overlay) by running each app's `--install` (or `NAME-app --install`) in parallel. A new Swift app is picked up automatically, and its `--install` must stop or quit the running copy before replacing it; `--list` prints what it would run. Each successful install records the committed Git objects of the app's directory, `apps/lib`, and its installer in the untracked `.local/app-builds/NAME`, and `--stale` rebuilds only apps whose record is missing or differs
 - `apps/zellij-tab-picker/` — Rust source of `dotfiles/zellij/plugins/tab-picker.wasm`. Rebuild with `cargo build --release --locked --target wasm32-wasip1` there and copy `target/wasm32-wasip1/release/zellij-tab-picker.wasm` over the tracked `.wasm`
 - `apps/zj-radar/keyboard-navigation.patch` — Applied to upstream zj-radar to build `dotfiles/zellij/plugins/zj_radar.wasm`; the base commit and build command are in the patch header
+- `infra/runner-platform/` — The staged local ARM64 CI runner platform (K3s/Lima pilot, ARC, macOS VM, monitoring), driven by Python scripts such as `pilot.py`; independent of `setup.sh` and not linked into `$HOME`. See its README
 - `dotfiles/zellij/plugins/` — The built Zellij plugin `.wasm` files Zellij loads; their source is under `apps/`
 - `.local/` — Machine-local and gitignored except `env.zsh.example`: fix mode writes `.local/.env.zsh` and work setups get `.local/<job>-venv`
 - `ruff.toml` — Ruff settings: a pinned rule set and `extend-include` for Python commands without a `.py` suffix; add new extensionless Python commands there
