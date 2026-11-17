@@ -2533,8 +2533,8 @@ def install_resume_handler(force: bool) -> int:
         macos_dir.mkdir()
         shutil.move(str(binary), macos_dir / "CodexResume")
         launcher = resources / "codex-sessions"
-        shutil.copy2(source, launcher)
-        launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        # Link back to the checkout so the script still finds session_stream beside it.
+        launcher.symlink_to(source)
         (staged_app / "Contents" / "Info.plist").write_text(INFO_PLIST, encoding="utf-8")
         app_dir.parent.mkdir(parents=True, exist_ok=True)
         if app_dir.exists():

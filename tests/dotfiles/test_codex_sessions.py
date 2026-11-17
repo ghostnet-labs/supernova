@@ -11,6 +11,7 @@ import os
 import runpy
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -739,6 +740,37 @@ class TranscriptCliTests(unittest.TestCase):
                         self.assertIn("NO MATCHES", str(app.query_one("#transcript-empty").content))
 
             asyncio.run(mount())
+
+
+class ResumeHandlerInstallTests(unittest.TestCase):
+    def test_installed_launcher_imports_session_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            lsregister = root / "lsregister"
+            lsregister.write_text("#!/bin/sh\n", encoding="utf-8")
+            lsregister.chmod(0o755)
+
+            def fake_run(command, **_kwargs):
+                if command[0] == "clang":
+                    Path(command[command.index("-o") + 1]).write_bytes(b"binary")
+                return subprocess.CompletedProcess(command, 0)
+
+            install = SCRIPT_GLOBALS["install_resume_handler"]
+            with (
+                mock.patch.object(sys, "platform", "darwin"),
+                mock.patch("shutil.which", return_value="clang"),
+                mock.patch("subprocess.run", side_effect=fake_run),
+                mock.patch.dict(install.__globals__, {"LSREGISTER": lsregister}),
+                mock.patch.object(Path, "home", return_value=home),
+                mock.patch("sys.stdout", io.StringIO()),
+            ):
+                self.assertEqual(install(False), 0)
+
+            launcher = home / "Applications" / "Codex Resume.app" / "Contents" / "Resources" / "codex-sessions"
+            result = subprocess.run([str(launcher), "--help"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
