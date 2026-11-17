@@ -32,6 +32,8 @@ for repo in "$scratch/dev/repo" "$scratch/external"; do
   git -C "$repo" -c user.name=Fixture -c user.email=fixture@example.invalid -c core.hooksPath=/dev/null -c commit.gpgsign=false commit -m 'test: fixture repository'
 done
 git -C "$scratch/dev/repo" worktree add -b feature "$scratch/dev/linked"
+# A copied repository keeps the original's worktree entries, so both list dev/linked.
+cp -R "$scratch/dev/repo" "$scratch/copy"
 ln -s "$scratch/dev/repo" "$scratch/alias"
 swiftc -parse-as-library -swift-version 5 -target "$(uname -m)-apple-macos14.0" \
   "$root/apps/agent-workspace/Workspace.swift" "$root/apps/agent-workspace/WorkspaceViews.swift" "$root/apps/agent-workspace/CreateWorktree.swift" "$root/apps/agent-workspace/WorkspaceThemes.swift" \

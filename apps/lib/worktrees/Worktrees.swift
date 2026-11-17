@@ -257,19 +257,24 @@ enum WorktreeScanner {
         var records: [WorktreeRecord] = []
         var branches: [String: [BranchRecord]] = [:]
         var seenRepositories: Set<String> = []
+        var seenPaths: Set<String> = []
         for repo in paths.map(canonical).sorted() {
             let firstRecord = records.count
             var isDir: ObjCBool = false
             // Linked worktrees share their repository's common Git dir; list each repository once.
             guard fm.fileExists(atPath: repo, isDirectory: &isDir), isDir.boolValue,
                   let commonDir = try? GitTool.run(["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"]),
-                  seenRepositories.insert(canonical(commonDir)).inserted,
+                  case let common = canonical(commonDir), seenRepositories.insert(common).inserted,
                   let porcelain = try? GitTool.run(["-C", repo, "worktree", "list", "--porcelain"]) else { continue }
             // Git always lists the main worktree first.
             var primary: String?
             var hasStashes = false
             for block in worktreeBlocks(porcelain) {
                 guard let path = blockPath(block) else { continue }
+                // A copied repository keeps the original's worktree entries; each path belongs to the
+                // repository its `.git` file points into, and is listed once.
+                if primary != nil, !belongs(path, to: common) { continue }
+                guard seenPaths.insert(path).inserted else { continue }
                 primary = primary ?? path
                 let (record, stashes) = inspect(block, path: path, root: primary ?? path, sessions: sessions, running: running)
                 records.append(record)
@@ -297,6 +302,13 @@ enum WorktreeScanner {
     /// `git worktree list --porcelain` output split into one block of lines per worktree.
     static func worktreeBlocks(_ porcelain: String) -> [[String]] {
         porcelain.components(separatedBy: "\n\n").map { $0.split(separator: "\n").map(String.init) }.filter { !$0.isEmpty }
+    }
+
+    /// False only when the linked worktree's `.git` file points into another repository's Git dir.
+    private static func belongs(_ path: String, to commonDir: String) -> Bool {
+        guard let file = try? String(contentsOfFile: path + "/.git", encoding: .utf8), file.hasPrefix("gitdir: ") else { return true }
+        let gitdir = canonical(file.dropFirst("gitdir: ".count).trimmingCharacters(in: .whitespacesAndNewlines))
+        return gitdir.hasPrefix(commonDir + "/")
     }
 
     static func blockPath(_ block: [String]) -> String? {
