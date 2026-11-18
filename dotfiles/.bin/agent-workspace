@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Build, install, and manage the Agent Workspace menu bar app.
+# toolbox: agents macos git | Open and manage the app for live Codex and Claude agents, their conversations, and Git worktrees.
+# toolbox-args: [--open|--start|--stop|--status|--install|--uninstall]
+# toolbox-example: agent-workspace --open
+# toolbox-example: agent-workspace --status
+# toolbox-example: agent-workspace --install
 
 set -euo pipefail
 
