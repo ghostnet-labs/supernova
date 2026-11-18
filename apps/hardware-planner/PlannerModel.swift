@@ -43,7 +43,7 @@ final class PlannerModel: ObservableObject {
                 guard let store, let loaded = try await store.load(id) else { throw HardwareError.invalid("Project was not found in this data directory.") }
                 var selected = loaded
                 if let assemblyID = link?.assemblyID {
-                    guard loaded.assemblies.contains(where: { $0.id == assemblyID }) else { throw HardwareError.invalid("The linked assembly revision is not in this project. Import the matching project JSON; the report remains available in Agent Control Center.") }
+                    guard loaded.assemblies.contains(where: { $0.id == assemblyID }) else { throw HardwareError.invalid("The linked assembly revision is not in this project. Import the matching project JSON to open that revision.") }
                     selected.selectedAssemblyID = assemblyID
                 }
                 let source = link?.sourceID.flatMap { id in loaded.sources.first { $0.id == id } }
