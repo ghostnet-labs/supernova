@@ -223,6 +223,15 @@ final class ProviderClient: @unchecked Sendable {
                     self.stderr = String((self.stderr + message).suffix(2048))
                 }
             }
+            // Exit, not stdout EOF, ends a connection: a leftover descendant can hold the pipe open.
+            child.terminationHandler = { [weak self] exited in
+                self?.queue.async { [weak self] in
+                    guard let self, token == self.generation, !self.stopped, self.process === exited else { return }
+                    self.process = nil
+                    self.input = nil
+                    self.failed("\(self.source.command) exited (\(exited.terminationStatus)). \(self.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+                }
+            }
             try child.run()
             process = child
             input = stdin.fileHandleForWriting
@@ -245,13 +254,6 @@ final class ProviderClient: @unchecked Sendable {
                     scanned = pending.endIndex
                     return true
                 }) {}
-                child.waitUntilExit()
-                self?.queue.async { [weak self] in
-                    guard let self, token == self.generation, !self.stopped else { return }
-                    self.process = nil
-                    self.input = nil
-                    self.failed("\(self.source.command) exited (\(child.terminationStatus)). \(self.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-                }
             }
             watch(token: token)
             if let bootstrap { write(bootstrap) }
