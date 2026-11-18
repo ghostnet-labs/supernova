@@ -46,13 +46,26 @@ release_install_lock() {
   INSTALL_LOCK_HELD=false
 }
 
+# Print every descendant PID of $1, depth first.
+setup_process_tree() {
+  local child
+  for child in $(pgrep -P "$1" 2>/dev/null); do
+    printf '%s\n' "$child"
+    setup_process_tree "$child"
+  done
+}
+
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
   setup_status_clear
 
   if [[ -n "$ACTIVE_TASK_PID" ]]; then
-    kill -TERM "$ACTIVE_TASK_PID" 2>/dev/null || true
+    # Collect the tree first: orphans are reparented once their parent dies.
+    local tree_pids
+    tree_pids="$(setup_process_tree "$ACTIVE_TASK_PID")"
+    # shellcheck disable=SC2086
+    kill -TERM "$ACTIVE_TASK_PID" $tree_pids 2>/dev/null || true
     wait "$ACTIVE_TASK_PID" 2>/dev/null || true
     ACTIVE_TASK_PID=""
   fi

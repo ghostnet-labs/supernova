@@ -479,6 +479,21 @@ HOME="$TMP_ROOT" SETUP_INSTALL_LOCK_DIR="$cleanup_dir" /bin/bash -c '
   [[ ! -e "$INSTALL_LOCK_DIR" ]]
 ' _ "$REPAIR" "$cleanup_child_file" || fail_test "repair cleanup left a child or lock behind"
 
+cleanup_grandchild_file="$TMP_ROOT/cleanup-grandchild"
+: >"$cleanup_grandchild_file"
+HOME="$TMP_ROOT" /bin/bash -c '
+  source "$1"
+  /bin/bash -c "sleep 30 & printf \"%s\n\" \$! >\"\$1\"; wait" _ "$2" &
+  ACTIVE_TASK_PID=$!
+  for _ in $(seq 50); do [[ -s "$2" ]] && break; sleep 0.1; done
+  grandchild="$(sed -n "1p" "$2")"
+  [[ -n "$grandchild" ]] || exit 1
+  cleanup
+  for _ in $(seq 20); do kill -0 "$grandchild" 2>/dev/null || exit 0; sleep 0.1; done
+  kill -KILL "$grandchild" 2>/dev/null
+  exit 1
+' _ "$REPAIR" "$cleanup_grandchild_file" || fail_test "repair cleanup left a grandchild behind"
+
 # ~/.claude doesn't exist on a new machine until Claude Code first runs.
 fresh_home="$TMP_ROOT/fresh-home"
 mkdir "$fresh_home"
