@@ -83,9 +83,8 @@ a separate code change.
 
 `./setup.sh --fix` imports the machine's own `~/.zsh_history` into its scope
 once. An older Zsh archive that mixes Personal and Work commands belongs in the
-Work history scope, not Personal. Helper names can also be imported as
-suggestions without executing them. Both are one-time local operations, not
-imports that run on every shell startup.
+Work history scope, not Personal. It is a one-time local operation, not an
+import that runs on every shell startup.
 
 Raw history has its original text, including multiline commands. It may refer
 to an old directory, a different cluster, or an unavailable tool. Toolbox checks
@@ -126,9 +125,7 @@ Use the normal setup scope controls when configuring a machine.
 
 Catalog and history entries appear only when you pass `--catalog` or `--history`.
 
-One-time helper suggestions can be added to both Atuin scopes, so Personal
-helper names are also discoverable in the Work Ctrl+R search. Other
-future Personal commands are not automatically copied into Work history.
+Personal commands are not copied into Work history.
 
 To inspect the active destination:
 
