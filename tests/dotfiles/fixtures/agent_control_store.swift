@@ -162,12 +162,16 @@ import Foundation
         setenv("AGENT_CONTROL_SESSIONS_BIN", repo + "/dotfiles/.bin/codex-sessions", 1)
         let fakeSSH = scratch.appendingPathComponent("ssh.py")
         let sshPID = scratch.appendingPathComponent("ssh.pid")
+        let sleeperPIDs = scratch.appendingPathComponent("sleeper.pids")
+        // Each launch leaves a sleeper holding stdout open, so the provider must notice SSH
+        // exiting without waiting for the pipe to reach EOF.
         try """
         #!/usr/bin/env python3
-        import os, pathlib, sys
+        import os, pathlib, subprocess, sys
         assert '-oBatchMode=yes' in sys.argv and '-oStrictHostKeyChecking=yes' in sys.argv
         assert sys.argv[-2] == 'fixture-host' and sys.argv[-3] == '--'
         pathlib.Path(\(String(reflecting: sshPID.path))).write_text(str(os.getpid()))
+        with open(\(String(reflecting: sleeperPIDs.path)), 'a') as pids: pids.write(f'{subprocess.Popen(["sleep", "60"]).pid}\\n')
         os.execv('/bin/sh', ['sh', '-c', sys.argv[-1]])
         """.write(to: fakeSSH, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fakeSSH.path)
@@ -222,8 +226,10 @@ import Foundation
         kill(remotePID, SIGTERM)
         // Reconnecting waits out the provider's 1 s retry, then relaunches SSH and reruns the
         // Python bootstrap; on a CI host running several suites at once that can pass 8 s.
-        check(wait(seconds: 30) { remoteFailures > 0 && remoteBaselines >= 2 }, "SSH disconnection reconnects with a silent baseline")
+        let reconnected = wait(seconds: 30) { remoteFailures > 0 && remoteBaselines >= 2 }
         remote.stop()
+        for pid in try String(contentsOf: sleeperPIDs, encoding: .utf8).split(separator: "\n").compactMap({ Int32($0) }) { kill(pid, SIGKILL) }
+        check(reconnected, "SSH disconnection reconnects with a silent baseline")
         check(!FileManager.default.fileExists(atPath: row.path.path), "remote cache removed on stop")
         print("PASS: SSH bootstrap, lazy chunks, Unicode, replacement, reconnect, and cache cleanup")
 
